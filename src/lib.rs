@@ -334,13 +334,15 @@ fn handle_creation(state: &mut GameState, input: &str, step: CreationStep) -> Ve
     }
 }
 
+const NPC_TAG: usize = 1 << 31;
+
 fn npc_candidates(state: &GameState) -> Vec<(usize, String)> {
     let loc = match state.world.locations.get(&state.current_location) {
         Some(loc) => loc,
         None => return Vec::new(),
     };
     loc.npcs.iter()
-        .filter_map(|&id| state.world.npcs.get(&id).map(|npc| (id as usize, npc.name.clone())))
+        .filter_map(|&id| state.world.npcs.get(&id).map(|npc| ((id as usize) | NPC_TAG, npc.name.clone())))
         .collect()
 }
 
@@ -381,14 +383,18 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
 
                 return match resolver::resolve_target(&target, &candidates) {
                     ResolveResult::Found(id) => {
-                        let id = id as u32;
-                        if let Some(npc) = state.world.npcs.get(&id) {
-                            vec![format!("{} — {} ({})", npc.name, npc.role_description(), npc.disposition_description())]
-                        } else if let Some(item) = state.world.items.get(&id) {
-                            vec![format!("{}: {}", item.name, item.description)]
+                        if id & NPC_TAG != 0 {
+                            let npc_id = (id & !NPC_TAG) as u32;
+                            if let Some(npc) = state.world.npcs.get(&npc_id) {
+                                return vec![format!("{} — {} ({})", npc.name, npc.role_description(), npc.disposition_description())];
+                            }
                         } else {
-                            vec![format!("You don't see any \"{}\" here.", target)]
+                            let item_id = id as u32;
+                            if let Some(item) = state.world.items.get(&item_id) {
+                                return vec![format!("{}: {}", item.name, item.description)];
+                            }
                         }
+                        vec![format!("You don't see any \"{}\" here.", target)]
                     }
                     ResolveResult::Ambiguous(matches) => resolver::format_disambiguation(&matches),
                     ResolveResult::NotFound => vec![format!("You don't see any \"{}\" here.", target)],
@@ -495,8 +501,8 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
 
             match resolver::resolve_target(&name, &candidates) {
                 ResolveResult::Found(id) => {
-                    let id = id as u32;
-                    if let Some(npc) = state.world.npcs.get(&id) {
+                    let npc_id = (id & !NPC_TAG) as u32;
+                    if let Some(npc) = state.world.npcs.get(&npc_id) {
                         npc.generate_dialogue(&mut rng)
                     } else {
                         vec![narration::templates::NPC_NOT_FOUND.replace("{name}", &name)]
