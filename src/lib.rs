@@ -491,6 +491,31 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
             }
             vec![narration::templates::ITEM_NOT_FOUND.replace("{item}", &item_name)]
         }
+        Command::Drop(item_name) => {
+            let mut found_id = None;
+            for &item_id in &state.character.inventory {
+                if let Some(item) = state.world.items.get(&item_id) {
+                    if item.name.to_lowercase().contains(&item_name.to_lowercase()) {
+                        found_id = Some(item_id);
+                        break;
+                    }
+                }
+            }
+            if let Some(item_id) = found_id {
+                state.character.inventory.retain(|&id| id != item_id);
+                if let Some(item) = state.world.items.get_mut(&item_id) {
+                    item.carried_by_player = false;
+                    item.location = Some(state.current_location);
+                }
+                if let Some(loc) = state.world.locations.get_mut(&state.current_location) {
+                    loc.items.push(item_id);
+                }
+                let name = state.world.items.get(&item_id).map(|i| i.name.as_str()).unwrap_or(&item_name).to_string();
+                vec![format!("You drop the {}.", name)]
+            } else {
+                vec![format!("You don't have any \"{}\".", item_name)]
+            }
+        }
         Command::Use(item_name) => {
             for &item_id in &state.character.inventory {
                 if let Some(item) = state.world.items.get(&item_id) {

@@ -7,6 +7,7 @@ pub enum Command {
     Go(Direction),
     Talk(String),
     Take(String),
+    Drop(String),
     Use(String),
     Inventory,
     CharacterSheet,
@@ -24,46 +25,90 @@ pub fn parse(input: &str) -> Command {
     }
 
     let lower = input.to_lowercase();
-    let parts: Vec<&str> = lower.split_whitespace().collect();
-    let verb = parts[0];
-    let args = if parts.len() > 1 {
-        parts[1..].join(" ")
-    } else {
-        String::new()
-    };
+    let words: Vec<&str> = lower.split_whitespace().collect();
+
+    // 2-word phrases first
+    if words.len() >= 2 {
+        let two = format!("{} {}", words[0], words[1]);
+        let rest = if words.len() > 2 { words[2..].join(" ") } else { String::new() };
+
+        match two.as_str() {
+            "look at" | "check out" => {
+                return if rest.is_empty() { Command::Look(None) } else { Command::Look(Some(rest)) };
+            }
+            "look around" => return Command::Look(None),
+            "go to" => {
+                return parse_direction(&rest).map(Command::Go)
+                    .unwrap_or(Command::Unknown(input.to_string()));
+            }
+            "talk to" | "speak to" | "speak with" => {
+                return if rest.is_empty() {
+                    Command::Unknown("Talk to whom?".to_string())
+                } else {
+                    Command::Talk(rest)
+                };
+            }
+            "pick up" => {
+                return if rest.is_empty() {
+                    Command::Unknown("Pick up what?".to_string())
+                } else {
+                    Command::Take(rest)
+                };
+            }
+            "put down" => {
+                return if rest.is_empty() {
+                    Command::Unknown("Drop what?".to_string())
+                } else {
+                    Command::Drop(rest)
+                };
+            }
+            _ => {}
+        }
+    }
+
+    // 1-word verbs
+    let verb = words[0];
+    let args = if words.len() > 1 { words[1..].join(" ") } else { String::new() };
 
     match verb {
-        "look" | "l" | "examine" => {
+        "look" | "l" | "examine" | "inspect" | "see" | "search" => {
             if args.is_empty() { Command::Look(None) } else { Command::Look(Some(args)) }
         }
-        "go" => parse_direction(&args).map(Command::Go).unwrap_or(Command::Unknown(input.to_string())),
+        "where" | "surroundings" => Command::Look(None),
+        "go" | "walk" | "move" | "head" => {
+            parse_direction(&args).map(Command::Go)
+                .unwrap_or_else(|| if args.is_empty() {
+                    Command::Unknown("Go where?".to_string())
+                } else {
+                    Command::Unknown(input.to_string())
+                })
+        }
         "n" | "north" => Command::Go(Direction::North),
         "s" | "south" => Command::Go(Direction::South),
         "e" | "east" => Command::Go(Direction::East),
         "w" | "west" => Command::Go(Direction::West),
         "u" | "up" => Command::Go(Direction::Up),
         "d" | "down" => Command::Go(Direction::Down),
-        "talk" | "speak" => {
+        "talk" | "speak" | "ask" => {
             if args.is_empty() { Command::Unknown("Talk to whom?".to_string()) } else { Command::Talk(args) }
         }
-        "take" | "get" => {
+        "take" | "get" | "grab" | "collect" => {
             if args.is_empty() { Command::Unknown("Take what?".to_string()) } else { Command::Take(args) }
         }
-        "pick" if parts.get(1) == Some(&"up") => {
-            let rest = if parts.len() > 2 { parts[2..].join(" ") } else { String::new() };
-            if rest.is_empty() { Command::Unknown("Pick up what?".to_string()) } else { Command::Take(rest) }
+        "drop" | "discard" => {
+            if args.is_empty() { Command::Unknown("Drop what?".to_string()) } else { Command::Drop(args) }
         }
-        "use" => {
+        "use" | "activate" | "apply" => {
             if args.is_empty() { Command::Unknown("Use what?".to_string()) } else { Command::Use(args) }
         }
-        "inventory" | "i" | "inv" => Command::Inventory,
-        "character" | "char" | "sheet" => Command::CharacterSheet,
-        "check" => {
+        "inventory" | "i" | "inv" | "items" | "bag" => Command::Inventory,
+        "character" | "char" | "sheet" | "stats" | "status" => Command::CharacterSheet,
+        "check" | "roll" | "try" => {
             if args.is_empty() { Command::Unknown("Check which skill?".to_string()) } else { Command::Check(args) }
         }
         "save" => { if args.is_empty() { Command::Save(None) } else { Command::Save(Some(args)) } }
-        "load" => { if args.is_empty() { Command::Load(None) } else { Command::Load(Some(args)) } }
-        "help" | "?" => { if args.is_empty() { Command::Help(None) } else { Command::Help(Some(args)) } }
+        "load" | "restore" => { if args.is_empty() { Command::Load(None) } else { Command::Load(Some(args)) } }
+        "help" | "?" | "commands" => { if args.is_empty() { Command::Help(None) } else { Command::Help(Some(args)) } }
         _ => Command::Unknown(input.to_string()),
     }
 }
@@ -205,5 +250,40 @@ mod tests {
         assert_eq!(resolve_skill("Stealth"), Some(Skill::Stealth));
         assert_eq!(resolve_skill("sleight of hand"), Some(Skill::SleightOfHand));
         assert_eq!(resolve_skill("nonsense"), None);
+    }
+
+    #[test]
+    fn test_verb_phrase_look_at() {
+        assert_eq!(parse("look at chest"), Command::Look(Some("chest".to_string())));
+    }
+
+    #[test]
+    fn test_verb_phrase_talk_to() {
+        assert_eq!(parse("talk to magnus"), Command::Talk("magnus".to_string()));
+    }
+
+    #[test]
+    fn test_verb_phrase_pick_up() {
+        assert_eq!(parse("pick up torch"), Command::Take("torch".to_string()));
+    }
+
+    #[test]
+    fn test_verb_phrase_speak_with() {
+        assert_eq!(parse("speak with elder"), Command::Talk("elder".to_string()));
+    }
+
+    #[test]
+    fn test_verb_phrase_check_out() {
+        assert_eq!(parse("check out door"), Command::Look(Some("door".to_string())));
+    }
+
+    #[test]
+    fn test_verb_phrase_put_down() {
+        assert_eq!(parse("put down sword"), Command::Drop("sword".to_string()));
+    }
+
+    #[test]
+    fn test_verb_phrase_go_to() {
+        assert_eq!(parse("go to north"), Command::Go(Direction::North));
     }
 }
