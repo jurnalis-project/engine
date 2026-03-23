@@ -3,3 +3,4 @@ pub mod rules;
 pub mod character;
 pub mod state;
 pub mod parser;
+pub mod world;
