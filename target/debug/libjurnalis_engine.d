@@ -1,1 +1,0 @@
-/Users/aposto/Projects/jurnalis/jurnalis-engine/target/debug/libjurnalis_engine.rlib: /Users/aposto/Projects/jurnalis/jurnalis-engine/src/lib.rs /Users/aposto/Projects/jurnalis/jurnalis-engine/src/types.rs
