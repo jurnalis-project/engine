@@ -288,4 +288,107 @@ mod tests {
     fn test_verb_phrase_go_to() {
         assert_eq!(parse("go to north"), Command::Go(Direction::North));
     }
+
+    #[test]
+    fn test_look_aliases() {
+        assert_eq!(parse("examine chest"), Command::Look(Some("chest".to_string())));
+        assert_eq!(parse("inspect door"), Command::Look(Some("door".to_string())));
+        assert_eq!(parse("see sword"), Command::Look(Some("sword".to_string())));
+        assert_eq!(parse("search room"), Command::Look(Some("room".to_string())));
+    }
+
+    #[test]
+    fn test_look_around_variants() {
+        assert_eq!(parse("look"), Command::Look(None));
+        assert_eq!(parse("look around"), Command::Look(None));
+        assert_eq!(parse("where"), Command::Look(None));
+        assert_eq!(parse("surroundings"), Command::Look(None));
+    }
+
+    #[test]
+    fn test_go_aliases() {
+        assert_eq!(parse("walk north"), Command::Go(Direction::North));
+        assert_eq!(parse("move south"), Command::Go(Direction::South));
+        assert_eq!(parse("head east"), Command::Go(Direction::East));
+        assert_eq!(parse("go to west"), Command::Go(Direction::West));
+    }
+
+    #[test]
+    fn test_talk_aliases() {
+        assert_eq!(parse("speak elder"), Command::Talk("elder".to_string()));
+        assert_eq!(parse("ask guard"), Command::Talk("guard".to_string()));
+        assert_eq!(parse("talk to merchant"), Command::Talk("merchant".to_string()));
+        assert_eq!(parse("speak to wizard"), Command::Talk("wizard".to_string()));
+        assert_eq!(parse("speak with hermit"), Command::Talk("hermit".to_string()));
+    }
+
+    #[test]
+    fn test_take_extra_aliases() {
+        assert_eq!(parse("grab torch"), Command::Take("torch".to_string()));
+        assert_eq!(parse("collect gems"), Command::Take("gems".to_string()));
+    }
+
+    #[test]
+    fn test_drop_aliases() {
+        assert_eq!(parse("drop sword"), Command::Drop("sword".to_string()));
+        assert_eq!(parse("discard junk"), Command::Drop("junk".to_string()));
+        assert_eq!(parse("put down shield"), Command::Drop("shield".to_string()));
+    }
+
+    #[test]
+    fn test_use_aliases() {
+        assert_eq!(parse("activate lever"), Command::Use("lever".to_string()));
+        assert_eq!(parse("apply potion"), Command::Use("potion".to_string()));
+    }
+
+    #[test]
+    fn test_inventory_extra_aliases() {
+        assert_eq!(parse("items"), Command::Inventory);
+        assert_eq!(parse("bag"), Command::Inventory);
+    }
+
+    #[test]
+    fn test_character_aliases() {
+        assert_eq!(parse("stats"), Command::CharacterSheet);
+        assert_eq!(parse("status"), Command::CharacterSheet);
+    }
+
+    #[test]
+    fn test_check_aliases() {
+        assert_eq!(parse("roll perception"), Command::Check("perception".to_string()));
+        assert_eq!(parse("try stealth"), Command::Check("stealth".to_string()));
+    }
+
+    #[test]
+    fn test_load_alias() {
+        assert_eq!(parse("restore"), Command::Load(None));
+        assert_eq!(parse("restore mysave"), Command::Load(Some("mysave".to_string())));
+    }
+
+    #[test]
+    fn test_help_aliases() {
+        assert_eq!(parse("commands"), Command::Help(None));
+    }
+
+    #[test]
+    fn test_bare_verbs_give_helpful_errors() {
+        match parse("talk") { Command::Unknown(s) => assert!(s.contains("whom"), "Got: {}", s), other => panic!("Expected Unknown, got {:?}", other) }
+        match parse("take") { Command::Unknown(s) => assert!(s.contains("what"), "Got: {}", s), other => panic!("Expected Unknown, got {:?}", other) }
+        match parse("drop") { Command::Unknown(s) => assert!(s.contains("what"), "Got: {}", s), other => panic!("Expected Unknown, got {:?}", other) }
+        match parse("use") { Command::Unknown(s) => assert!(s.contains("what"), "Got: {}", s), other => panic!("Expected Unknown, got {:?}", other) }
+        match parse("go") { Command::Unknown(s) => assert!(s.contains("where"), "Got: {}", s), other => panic!("Expected Unknown, got {:?}", other) }
+    }
+
+    #[test]
+    fn test_multi_word_targets() {
+        assert_eq!(parse("look at old rusty key"), Command::Look(Some("old rusty key".to_string())));
+        assert_eq!(parse("talk to the wise elder"), Command::Talk("the wise elder".to_string()));
+        assert_eq!(parse("pick up torn map"), Command::Take("torn map".to_string()));
+    }
+
+    #[test]
+    fn test_check_out_no_target() {
+        // "check out" with no target resolves to Look(None), not Check error
+        assert_eq!(parse("check out"), Command::Look(None));
+    }
 }
