@@ -1,4 +1,6 @@
 // jurnalis-engine/src/parser/mod.rs
+pub mod resolver;
+
 use crate::types::{Direction, Skill};
 
 #[derive(Debug, Clone, PartialEq)]
