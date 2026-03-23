@@ -23,7 +23,7 @@ impl Ability {
     }
 
     pub fn modifier(score: i32) -> i32 {
-        ((score - 10) as f32 / 2.0).floor() as i32
+        (score - 10).div_euclid(2)
     }
 }
 

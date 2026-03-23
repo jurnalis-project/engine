@@ -14,7 +14,9 @@ use rand::rngs::StdRng;
 use output::GameOutput;
 use parser::Command;
 use state::{GameState, GamePhase, CreationStep, SAVE_VERSION};
-use character::{race::Race, class::Class, create_character, STANDARD_ARRAY, generate_random_scores};
+use character::{race::Race, class::Class, STANDARD_ARRAY, generate_random_scores};
+#[cfg(test)]
+use character::create_character;
 use types::{Ability, Skill};
 
 pub fn new_game(seed: u64) -> GameOutput {
@@ -68,13 +70,16 @@ pub fn process_input(state_json: &str, input: &str) -> GameOutput {
         }
     };
 
+    let old_state_json = state_json.to_string();
+
     let result = match state.game_phase {
         GamePhase::CharacterCreation(step) => handle_creation(&mut state, input, step),
         GamePhase::Exploration => handle_exploration(&mut state, input),
     };
 
     let new_state_json = serde_json::to_string(&state).unwrap();
-    GameOutput::new(result, new_state_json, true)
+    let state_changed = new_state_json != old_state_json;
+    GameOutput::new(result, new_state_json, state_changed)
 }
 
 fn handle_creation(state: &mut GameState, input: &str, step: CreationStep) -> Vec<String> {
@@ -270,9 +275,13 @@ fn handle_creation(state: &mut GameState, input: &str, step: CreationStep) -> Ve
             }
 
             let mut skills = Vec::new();
+            let mut seen = std::collections::HashSet::new();
             for &idx in &indices {
                 if idx < 1 || idx > choices.len() {
                     return vec![format!("Invalid choice: {}. Pick from 1-{}.", idx, choices.len())];
+                }
+                if !seen.insert(idx) {
+                    return vec![format!("Duplicate choice: {}. Each skill must be different.", idx)];
                 }
                 skills.push(choices[idx - 1]);
             }
