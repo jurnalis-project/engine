@@ -13,6 +13,7 @@ use rand::rngs::StdRng;
 
 use output::GameOutput;
 use parser::Command;
+use parser::resolver::{self, ResolveResult};
 use state::{GameState, GamePhase, CreationStep, SAVE_VERSION};
 use character::{race::Race, class::Class, STANDARD_ARRAY, generate_random_scores};
 #[cfg(test)]
@@ -341,26 +342,71 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
     match command {
         Command::Look(target) => {
             if let Some(target) = target {
-                // Look at specific thing
+                // Look at specific thing — search room NPCs, room items, and inventory items.
+                // Use a tagged index to avoid ID collisions between NPC and item ID spaces.
+                // Tags: even indices = NPC, odd indices = item (index encodes type + original id).
                 let loc = state.world.locations.get(&state.current_location).cloned();
                 if let Some(loc) = loc {
-                    // Check NPCs
+                    // We build a flat tagged candidate list where the resolver key uniquely
+                    // identifies both the entity type and original id.
+                    // Convention: tag = (original_id << 1) | kind  where kind 0=NPC, 1=item
+                    let mut owned_candidates: Vec<(usize, String)> = Vec::new();
+                    let mut npc_ids_seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
+                    let mut item_ids_seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
+
                     for &npc_id in &loc.npcs {
                         if let Some(npc) = state.world.npcs.get(&npc_id) {
-                            if npc.name.to_lowercase().contains(&target.to_lowercase()) {
-                                return vec![format!("{} — {} ({})", npc.name, npc.role_description(), npc.disposition_description())];
-                            }
+                            let tag = ((npc_id as usize) << 1) | 0;
+                            owned_candidates.push((tag, npc.name.clone()));
+                            npc_ids_seen.insert(npc_id);
                         }
                     }
-                    // Check items
                     for &item_id in &loc.items {
                         if let Some(item) = state.world.items.get(&item_id) {
-                            if !item.carried_by_player && item.name.to_lowercase().contains(&target.to_lowercase()) {
-                                return vec![format!("{}: {}", item.name, item.description)];
+                            if !item.carried_by_player && !item_ids_seen.contains(&item_id) {
+                                let tag = ((item_id as usize) << 1) | 1;
+                                owned_candidates.push((tag, item.name.clone()));
+                                item_ids_seen.insert(item_id);
                             }
                         }
                     }
-                    return vec![format!("You don't see any \"{}\" here.", target)];
+                    for &item_id in &state.character.inventory {
+                        if let Some(item) = state.world.items.get(&item_id) {
+                            if !item_ids_seen.contains(&item_id) {
+                                let tag = ((item_id as usize) << 1) | 1;
+                                owned_candidates.push((tag, item.name.clone()));
+                                item_ids_seen.insert(item_id);
+                            }
+                        }
+                    }
+
+                    let candidates: Vec<(usize, &str)> = owned_candidates.iter()
+                        .map(|(tag, name)| (*tag, name.as_str()))
+                        .collect();
+
+                    return match resolver::resolve_target(&target, &candidates) {
+                        ResolveResult::Found(tag) => {
+                            let kind = tag & 1;
+                            let id = (tag >> 1) as u32;
+                            if kind == 0 {
+                                // NPC
+                                if let Some(npc) = state.world.npcs.get(&id) {
+                                    vec![format!("{} — {} ({})", npc.name, npc.role_description(), npc.disposition_description())]
+                                } else {
+                                    vec![format!("You don't see any \"{}\" here.", target)]
+                                }
+                            } else {
+                                // Item
+                                if let Some(item) = state.world.items.get(&id) {
+                                    vec![format!("{}: {}", item.name, item.description)]
+                                } else {
+                                    vec![format!("You don't see any \"{}\" here.", target)]
+                                }
+                            }
+                        }
+                        ResolveResult::Ambiguous(matches) => resolver::format_disambiguation(&matches),
+                        ResolveResult::NotFound => vec![format!("You don't see any \"{}\" here.", target)],
+                    };
                 }
                 vec!["You are nowhere.".to_string()]
             } else {
@@ -460,71 +506,110 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
         Command::Talk(name) => {
             let loc = state.world.locations.get(&state.current_location).cloned();
             if let Some(loc) = loc {
-                for &npc_id in &loc.npcs {
-                    if let Some(npc) = state.world.npcs.get(&npc_id) {
-                        if npc.name.to_lowercase().contains(&name.to_lowercase()) {
-                            return npc.generate_dialogue(&mut rng);
+                let owned_candidates: Vec<(usize, String)> = loc.npcs.iter()
+                    .filter_map(|&npc_id| {
+                        state.world.npcs.get(&npc_id).map(|npc| (npc_id as usize, npc.name.clone()))
+                    })
+                    .collect();
+                let candidates: Vec<(usize, &str)> = owned_candidates.iter()
+                    .map(|(id, name)| (*id, name.as_str()))
+                    .collect();
+
+                return match resolver::resolve_target(&name, &candidates) {
+                    ResolveResult::Found(id) => {
+                        let id = id as u32;
+                        if let Some(npc) = state.world.npcs.get(&id) {
+                            npc.generate_dialogue(&mut rng)
+                        } else {
+                            vec![narration::templates::NPC_NOT_FOUND.replace("{name}", &name)]
                         }
                     }
-                }
+                    ResolveResult::Ambiguous(matches) => resolver::format_disambiguation(&matches),
+                    ResolveResult::NotFound => vec![narration::templates::NPC_NOT_FOUND.replace("{name}", &name)],
+                };
             }
             vec![narration::templates::NPC_NOT_FOUND.replace("{name}", &name)]
         }
         Command::Take(item_name) => {
             let loc = state.world.locations.get(&state.current_location).cloned();
             if let Some(loc) = loc {
-                for &item_id in &loc.items {
-                    if let Some(item) = state.world.items.get(&item_id) {
-                        if !item.carried_by_player && item.name.to_lowercase().contains(&item_name.to_lowercase()) {
-                            let name = item.name.clone();
-                            state.world.items.get_mut(&item_id).unwrap().carried_by_player = true;
-                            state.world.items.get_mut(&item_id).unwrap().location = None;
-                            state.character.inventory.push(item_id);
-                            // Remove from location
-                            if let Some(loc) = state.world.locations.get_mut(&state.current_location) {
-                                loc.items.retain(|&id| id != item_id);
-                            }
-                            return vec![narration::templates::TAKE_ITEM.replace("{item}", &name)];
+                let owned_candidates: Vec<(usize, String)> = loc.items.iter()
+                    .filter_map(|&item_id| {
+                        state.world.items.get(&item_id)
+                            .filter(|item| !item.carried_by_player)
+                            .map(|item| (item_id as usize, item.name.clone()))
+                    })
+                    .collect();
+                let candidates: Vec<(usize, &str)> = owned_candidates.iter()
+                    .map(|(id, name)| (*id, name.as_str()))
+                    .collect();
+
+                return match resolver::resolve_target(&item_name, &candidates) {
+                    ResolveResult::Found(id) => {
+                        let item_id = id as u32;
+                        let name = state.world.items.get(&item_id).map(|i| i.name.clone()).unwrap_or_else(|| item_name.clone());
+                        state.world.items.get_mut(&item_id).unwrap().carried_by_player = true;
+                        state.world.items.get_mut(&item_id).unwrap().location = None;
+                        state.character.inventory.push(item_id);
+                        if let Some(loc) = state.world.locations.get_mut(&state.current_location) {
+                            loc.items.retain(|&id| id != item_id);
                         }
+                        vec![narration::templates::TAKE_ITEM.replace("{item}", &name)]
                     }
-                }
+                    ResolveResult::Ambiguous(matches) => resolver::format_disambiguation(&matches),
+                    ResolveResult::NotFound => vec![narration::templates::ITEM_NOT_FOUND.replace("{item}", &item_name)],
+                };
             }
             vec![narration::templates::ITEM_NOT_FOUND.replace("{item}", &item_name)]
         }
         Command::Drop(item_name) => {
-            let mut found_id = None;
-            for &item_id in &state.character.inventory {
-                if let Some(item) = state.world.items.get(&item_id) {
-                    if item.name.to_lowercase().contains(&item_name.to_lowercase()) {
-                        found_id = Some(item_id);
-                        break;
+            let owned_candidates: Vec<(usize, String)> = state.character.inventory.iter()
+                .filter_map(|&item_id| {
+                    state.world.items.get(&item_id).map(|item| (item_id as usize, item.name.clone()))
+                })
+                .collect();
+            let candidates: Vec<(usize, &str)> = owned_candidates.iter()
+                .map(|(id, name)| (*id, name.as_str()))
+                .collect();
+
+            match resolver::resolve_target(&item_name, &candidates) {
+                ResolveResult::Found(id) => {
+                    let item_id = id as u32;
+                    let current_location = state.current_location;
+                    state.character.inventory.retain(|&id| id != item_id);
+                    if let Some(item) = state.world.items.get_mut(&item_id) {
+                        item.carried_by_player = false;
+                        item.location = Some(current_location);
                     }
+                    if let Some(loc) = state.world.locations.get_mut(&current_location) {
+                        loc.items.push(item_id);
+                    }
+                    let name = state.world.items.get(&item_id).map(|i| i.name.clone()).unwrap_or_else(|| item_name.clone());
+                    vec![format!("You drop the {}.", name)]
                 }
-            }
-            if let Some(item_id) = found_id {
-                state.character.inventory.retain(|&id| id != item_id);
-                if let Some(item) = state.world.items.get_mut(&item_id) {
-                    item.carried_by_player = false;
-                    item.location = Some(state.current_location);
-                }
-                if let Some(loc) = state.world.locations.get_mut(&state.current_location) {
-                    loc.items.push(item_id);
-                }
-                let name = state.world.items.get(&item_id).map(|i| i.name.as_str()).unwrap_or(&item_name).to_string();
-                vec![format!("You drop the {}.", name)]
-            } else {
-                vec![format!("You don't have any \"{}\".", item_name)]
+                ResolveResult::Ambiguous(matches) => resolver::format_disambiguation(&matches),
+                ResolveResult::NotFound => vec![format!("You don't have any \"{}\".", item_name)],
             }
         }
         Command::Use(item_name) => {
-            for &item_id in &state.character.inventory {
-                if let Some(item) = state.world.items.get(&item_id) {
-                    if item.name.to_lowercase().contains(&item_name.to_lowercase()) {
-                        return vec![format!("You use the {}. (Effects not yet implemented.)", item.name)];
-                    }
+            let owned_candidates: Vec<(usize, String)> = state.character.inventory.iter()
+                .filter_map(|&item_id| {
+                    state.world.items.get(&item_id).map(|item| (item_id as usize, item.name.clone()))
+                })
+                .collect();
+            let candidates: Vec<(usize, &str)> = owned_candidates.iter()
+                .map(|(id, name)| (*id, name.as_str()))
+                .collect();
+
+            match resolver::resolve_target(&item_name, &candidates) {
+                ResolveResult::Found(id) => {
+                    let item_id = id as u32;
+                    let name = state.world.items.get(&item_id).map(|i| i.name.clone()).unwrap_or_else(|| item_name.clone());
+                    vec![format!("You use the {}. (Effects not yet implemented.)", name)]
                 }
+                ResolveResult::Ambiguous(matches) => resolver::format_disambiguation(&matches),
+                ResolveResult::NotFound => vec![format!("You don't have any \"{}\".", item_name)],
             }
-            vec![format!("You don't have any \"{}\".", item_name)]
         }
         Command::Inventory => {
             if state.character.inventory.is_empty() {
@@ -697,6 +782,69 @@ mod tests {
         let state_json = serde_json::to_string(&state).unwrap();
         let output = process_input(&state_json, "inventory");
         assert!(output.text.iter().any(|t| t.contains("carrying") || t.contains("anything")));
+    }
+
+    #[test]
+    fn test_look_at_inventory_item() {
+        let mut state = create_test_exploration_state();
+        // Give the player an item
+        let item_id = *state.world.items.keys().next().unwrap();
+        let item_name = state.world.items.get(&item_id).unwrap().name.clone();
+        state.world.items.get_mut(&item_id).unwrap().carried_by_player = true;
+        state.character.inventory.push(item_id);
+        // Remove from location so it's only in inventory
+        for loc in state.world.locations.values_mut() {
+            loc.items.retain(|&id| id != item_id);
+        }
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, &format!("look {}", item_name.to_lowercase()));
+        assert!(output.text.iter().any(|t| t.contains(&item_name)), "Should find item '{}' in inventory. Got: {:?}", item_name, output.text);
+    }
+
+    #[test]
+    fn test_drop_command() {
+        let mut state = create_test_exploration_state();
+        // Give the player an item
+        let item_id = *state.world.items.keys().next().unwrap();
+        let item_name = state.world.items.get(&item_id).unwrap().name.clone();
+        state.world.items.get_mut(&item_id).unwrap().carried_by_player = true;
+        state.character.inventory.push(item_id);
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, &format!("drop {}", item_name.to_lowercase()));
+        assert!(output.text.iter().any(|t| t.to_lowercase().contains("drop")), "Should confirm drop. Got: {:?}", output.text);
+
+        // Verify item is no longer in inventory
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert!(!new_state.character.inventory.contains(&item_id));
+    }
+
+    #[test]
+    fn test_fuzzy_target_npc() {
+        let state = create_test_exploration_state();
+        let state_json = serde_json::to_string(&state).unwrap();
+        let loc = state.world.locations.get(&state.current_location).unwrap();
+        if let Some(&npc_id) = loc.npcs.first() {
+            let npc = state.world.npcs.get(&npc_id).unwrap();
+            let first_3_chars: String = npc.name.chars().take(3).collect();
+            let output = process_input(&state_json, &format!("talk {}", first_3_chars.to_lowercase()));
+            let all_text = output.text.join(" ");
+            assert!(!all_text.contains("no one called"), "Fuzzy match should find NPC with prefix '{}'. Got: {:?}", first_3_chars, output.text);
+        }
+    }
+
+    #[test]
+    fn test_talk_to_verb_phrase() {
+        let state = create_test_exploration_state();
+        let state_json = serde_json::to_string(&state).unwrap();
+        let loc = state.world.locations.get(&state.current_location).unwrap();
+        if let Some(&npc_id) = loc.npcs.first() {
+            let npc = state.world.npcs.get(&npc_id).unwrap();
+            let name_lower = npc.name.to_lowercase();
+            let output = process_input(&state_json, &format!("talk to {}", name_lower));
+            assert!(output.text.iter().any(|t| t.contains("says:")), "Should talk to NPC. Got: {:?}", output.text);
+        }
     }
 
     fn create_test_exploration_state() -> GameState {
