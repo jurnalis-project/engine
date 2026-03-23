@@ -36,6 +36,7 @@ pub const SAVE_FAILURE: &[&str] = &[
 ];
 
 pub const TAKE_ITEM: &str = "You pick up the {item}.";
+pub const DROP_ITEM: &str = "You drop the {item}.";
 pub const ITEM_NOT_FOUND: &str = "You don't see any \"{item}\" here.";
 pub const NPC_NOT_FOUND: &str = "There's no one called \"{name}\" here.";
 pub const NO_EXIT: &str = "You can't go {direction}.";
@@ -45,13 +46,23 @@ pub const EMPTY_INVENTORY: &str = "You aren't carrying anything.";
 pub const HELP_TEXT: &str = "\
 Commands:
   look [target]     - Examine surroundings or a specific thing
+                      (also: examine, inspect, see, search, l)
   go <direction>    - Move (or use n/s/e/w/u/d)
+                      (also: walk, move, head)
   talk <npc>        - Talk to someone
+                      (also: talk to, speak, speak to, ask)
   take <item>       - Pick up an item
+                      (also: get, grab, pick up, collect)
+  drop <item>       - Drop an item from your inventory
+                      (also: put down, discard)
   use <item>        - Use an item
+                      (also: activate, apply)
   inventory (i)     - Check your inventory
+                      (also: inv, items, bag)
   character (char)  - View character sheet
+                      (also: sheet, stats, status)
   check <skill>     - Attempt a skill check
+                      (also: roll, try)
   save [name]       - Save game
-  load [name]       - Load game
-  help [command]    - Show this help";
+  load [name]       - Load game (also: restore)
+  help              - Show this help (also: ?, commands)";

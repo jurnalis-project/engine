@@ -553,7 +553,7 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
                         loc.items.push(item_id);
                     }
                     let name = state.world.items.get(&item_id).map(|i| i.name.clone()).unwrap_or_else(|| item_name.clone());
-                    vec![format!("You drop the {}.", name)]
+                    vec![narration::templates::DROP_ITEM.replace("{item}", &name)]
                 }
                 ResolveResult::Ambiguous(matches) => resolver::format_disambiguation(&matches),
                 ResolveResult::NotFound => vec![format!("You don't have any \"{}\".", item_name)],
