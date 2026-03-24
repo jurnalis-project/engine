@@ -1,7 +1,10 @@
 // jurnalis-engine/src/equipment/mod.rs
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use crate::types::ItemId;
-use crate::state::{DamageType, WeaponCategory, ArmorCategory};
+use crate::state::{DamageType, WeaponCategory, ArmorCategory, Item, ItemType};
+use crate::character::Character;
+use crate::types::Ability;
 
 // -- Weapon property bitflags --
 pub const FINESSE: u16    = 1 << 0;
@@ -114,9 +117,131 @@ pub const SRD_ARMOR: &[ArmorDef] = &[
     ArmorDef { name: "Shield", category: ArmorCategory::Shield, base_ac: 2, max_dex_bonus: None, str_requirement: 0, stealth_disadvantage: false, cost_cp: 1000, weight_qp: 24 },
 ];
 
+pub fn calculate_ac(character: &Character, items: &HashMap<ItemId, Item>) -> i32 {
+    let dex_mod = character.ability_modifier(Ability::Dexterity);
+
+    let base_ac = match character.equipped.body {
+        Some(body_id) => {
+            match items.get(&body_id).map(|i| &i.item_type) {
+                Some(ItemType::Armor { base_ac, max_dex_bonus, .. }) => {
+                    let dex_contribution = match max_dex_bonus {
+                        None => dex_mod,
+                        Some(0) => 0,
+                        Some(cap) => dex_mod.min(*cap as i32),
+                    };
+                    *base_ac as i32 + dex_contribution
+                }
+                _ => 10 + dex_mod,
+            }
+        }
+        None => 10 + dex_mod,
+    };
+
+    let shield_bonus = match character.equipped.off_hand {
+        Some(oh_id) => {
+            match items.get(&oh_id).map(|i| &i.item_type) {
+                Some(ItemType::Armor { category: ArmorCategory::Shield, base_ac, .. }) => *base_ac as i32,
+                _ => 0,
+            }
+        }
+        None => 0,
+    };
+
+    base_ac + shield_bonus
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+    use crate::types::Ability;
+    use crate::character::{create_character, race::Race, class::Class};
+    use crate::state::{Item, ItemType, ArmorCategory};
+
+    fn test_character(dex: i32) -> crate::character::Character {
+        let mut scores = HashMap::new();
+        scores.insert(Ability::Strength, 10);
+        scores.insert(Ability::Dexterity, dex);
+        scores.insert(Ability::Constitution, 10);
+        scores.insert(Ability::Intelligence, 10);
+        scores.insert(Ability::Wisdom, 10);
+        scores.insert(Ability::Charisma, 10);
+        create_character("Test".to_string(), Race::Human, Class::Fighter, scores, vec![])
+    }
+
+    fn make_armor(id: u32, name: &str, category: ArmorCategory, base_ac: u32, max_dex: Option<u32>) -> Item {
+        Item {
+            id, name: name.to_string(), description: String::new(),
+            item_type: ItemType::Armor {
+                category, base_ac, max_dex_bonus: max_dex,
+                str_requirement: 0, stealth_disadvantage: false,
+            },
+            location: None, carried_by_player: true,
+        }
+    }
+
+    #[test]
+    fn test_ac_no_armor() {
+        let c = test_character(14); // DEX 14+1(human) = 15, mod = +2
+        let items = HashMap::new();
+        assert_eq!(calculate_ac(&c, &items), 12); // 10 + 2
+    }
+
+    #[test]
+    fn test_ac_light_armor() {
+        let mut c = test_character(16); // DEX 16+1 = 17, mod = +3
+        let mut items = HashMap::new();
+        items.insert(0, make_armor(0, "Leather", ArmorCategory::Light, 11, None));
+        c.equipped.body = Some(0);
+        assert_eq!(calculate_ac(&c, &items), 14); // 11 + 3
+    }
+
+    #[test]
+    fn test_ac_medium_armor_caps_dex() {
+        let mut c = test_character(16); // mod = +3
+        let mut items = HashMap::new();
+        items.insert(0, make_armor(0, "Breastplate", ArmorCategory::Medium, 14, Some(2)));
+        c.equipped.body = Some(0);
+        assert_eq!(calculate_ac(&c, &items), 16); // 14 + min(3, 2) = 16
+    }
+
+    #[test]
+    fn test_ac_heavy_armor_ignores_dex() {
+        let mut c = test_character(16); // mod = +3
+        let mut items = HashMap::new();
+        items.insert(0, make_armor(0, "Chain Mail", ArmorCategory::Heavy, 16, Some(0)));
+        c.equipped.body = Some(0);
+        assert_eq!(calculate_ac(&c, &items), 16); // 16 flat
+    }
+
+    #[test]
+    fn test_ac_with_shield() {
+        let mut c = test_character(14); // mod = +2
+        let mut items = HashMap::new();
+        items.insert(0, make_armor(0, "Shield", ArmorCategory::Shield, 2, None));
+        c.equipped.off_hand = Some(0);
+        assert_eq!(calculate_ac(&c, &items), 14); // 10 + 2 (dex) + 2 (shield)
+    }
+
+    #[test]
+    fn test_ac_armor_plus_shield() {
+        let mut c = test_character(14); // mod = +2
+        let mut items = HashMap::new();
+        items.insert(0, make_armor(0, "Chain Mail", ArmorCategory::Heavy, 16, Some(0)));
+        items.insert(1, make_armor(1, "Shield", ArmorCategory::Shield, 2, None));
+        c.equipped.body = Some(0);
+        c.equipped.off_hand = Some(1);
+        assert_eq!(calculate_ac(&c, &items), 18); // 16 + 2
+    }
+
+    #[test]
+    fn test_ac_heavy_armor_ignores_negative_dex() {
+        let mut c = test_character(6); // DEX 6+1(human) = 7, mod = -2
+        let mut items = HashMap::new();
+        items.insert(0, make_armor(0, "Chain Mail", ArmorCategory::Heavy, 16, Some(0)));
+        c.equipped.body = Some(0);
+        assert_eq!(calculate_ac(&c, &items), 16); // -2 DEX must not reduce AC
+    }
 
     #[test]
     fn test_srd_weapons_count() {
