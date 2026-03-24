@@ -68,6 +68,10 @@ Commands:
                       (also: get, grab, pick up, collect)
   drop <item>       - Drop an item from your inventory
                       (also: put down, discard)
+  equip <item>      - Equip a weapon or armor
+                      (also: wear, wield, don, put on)
+  unequip <item>    - Remove equipped gear
+                      (also: doff, take off)
   use <item>        - Use an item
                       (also: activate, apply)
   inventory (i)     - Check your inventory

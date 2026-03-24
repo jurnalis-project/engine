@@ -593,7 +593,16 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
             let mut lines = vec!["You are carrying:".to_string()];
             for &item_id in &state.character.inventory {
                 if let Some(item) = state.world.items.get(&item_id) {
-                    lines.push(format!("  - {}", item.name));
+                    let equipped_tag = if state.character.equipped.main_hand == Some(item_id) {
+                        " (equipped - main hand)"
+                    } else if state.character.equipped.off_hand == Some(item_id) {
+                        " (equipped - off hand)"
+                    } else if state.character.equipped.body == Some(item_id) {
+                        " (equipped - body)"
+                    } else {
+                        ""
+                    };
+                    lines.push(format!("  - {}{}", item.name, equipped_tag));
                 }
             }
             lines
@@ -1098,6 +1107,29 @@ mod tests {
         assert!(new_state.character.equipped.main_hand.is_none());
         // Item still in inventory
         assert!(new_state.character.inventory.contains(&weapon_id));
+    }
+
+    #[test]
+    fn test_character_sheet_shows_ac() {
+        let state = create_test_exploration_state();
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "character");
+        assert!(output.text.iter().any(|t| t.contains("AC:")), "Character sheet should show AC. Got: {:?}", output.text);
+    }
+
+    #[test]
+    fn test_inventory_shows_equipped() {
+        let mut state = create_test_exploration_state();
+        let weapon_id = state.world.items.iter()
+            .find(|(_, item)| matches!(item.item_type, state::ItemType::Weapon { .. }))
+            .map(|(&id, _)| id).unwrap();
+        state.world.items.get_mut(&weapon_id).unwrap().carried_by_player = true;
+        state.character.inventory.push(weapon_id);
+        state.character.equipped.main_hand = Some(weapon_id);
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "inventory");
+        assert!(output.text.iter().any(|t| t.contains("equipped")), "Inventory should mark equipped items. Got: {:?}", output.text);
     }
 
     fn create_test_exploration_state() -> GameState {
