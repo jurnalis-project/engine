@@ -618,6 +618,12 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
         Command::Help(_) => {
             vec![narration::templates::HELP_TEXT.to_string()]
         }
+        Command::Equip(item) => {
+            vec![format!("[Equip '{}' — not yet implemented.]", item)]
+        }
+        Command::Unequip(item) => {
+            vec![format!("[Unequip '{}' — not yet implemented.]", item)]
+        }
         Command::Unknown(s) => {
             if s.is_empty() {
                 vec![]

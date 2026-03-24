@@ -11,6 +11,8 @@ pub enum Command {
     Take(String),
     Drop(String),
     Use(String),
+    Equip(String),
+    Unequip(String),
     Inventory,
     CharacterSheet,
     Check(String),
@@ -64,6 +66,20 @@ pub fn parse(input: &str) -> Command {
                     Command::Drop(rest)
                 };
             }
+            "put on" => {
+                return if rest.is_empty() {
+                    Command::Unknown("Equip what?".to_string())
+                } else {
+                    Command::Equip(rest)
+                };
+            }
+            "take off" => {
+                return if rest.is_empty() {
+                    Command::Unknown("Unequip what?".to_string())
+                } else {
+                    Command::Unequip(rest)
+                };
+            }
             _ => {}
         }
     }
@@ -102,6 +118,12 @@ pub fn parse(input: &str) -> Command {
         }
         "use" | "activate" | "apply" => {
             if args.is_empty() { Command::Unknown("Use what?".to_string()) } else { Command::Use(args) }
+        }
+        "equip" | "wear" | "wield" | "don" => {
+            if args.is_empty() { Command::Unknown("Equip what?".to_string()) } else { Command::Equip(args) }
+        }
+        "unequip" | "doff" => {
+            if args.is_empty() { Command::Unknown("Unequip what?".to_string()) } else { Command::Unequip(args) }
         }
         "inventory" | "i" | "inv" | "items" | "bag" => Command::Inventory,
         "character" | "char" | "sheet" | "stats" | "status" => Command::CharacterSheet,
@@ -390,5 +412,41 @@ mod tests {
     fn test_check_out_no_target() {
         // "check out" with no target resolves to Look(None), not Check error
         assert_eq!(parse("check out"), Command::Look(None));
+    }
+
+    #[test]
+    fn test_equip_command() {
+        assert_eq!(parse("equip longsword"), Command::Equip("longsword".to_string()));
+        assert_eq!(parse("wield dagger"), Command::Equip("dagger".to_string()));
+        assert_eq!(parse("wear chain mail"), Command::Equip("chain mail".to_string()));
+        assert_eq!(parse("don leather"), Command::Equip("leather".to_string()));
+        assert_eq!(parse("put on chain mail"), Command::Equip("chain mail".to_string()));
+    }
+
+    #[test]
+    fn test_unequip_command() {
+        assert_eq!(parse("unequip longsword"), Command::Unequip("longsword".to_string()));
+        assert_eq!(parse("take off chain mail"), Command::Unequip("chain mail".to_string()));
+        assert_eq!(parse("doff plate"), Command::Unequip("plate".to_string()));
+    }
+
+    #[test]
+    fn test_equip_bare_verb_error() {
+        match parse("equip") { Command::Unknown(s) => assert!(s.contains("what"), "Got: {}", s), other => panic!("Expected Unknown, got {:?}", other) }
+        match parse("unequip") { Command::Unknown(s) => assert!(s.contains("what"), "Got: {}", s), other => panic!("Expected Unknown, got {:?}", other) }
+    }
+
+    #[test]
+    fn test_put_on_vs_put_down() {
+        // "put on" -> Equip, "put down" -> Drop
+        assert_eq!(parse("put on chain mail"), Command::Equip("chain mail".to_string()));
+        assert_eq!(parse("put down sword"), Command::Drop("sword".to_string()));
+    }
+
+    #[test]
+    fn test_take_off_vs_take() {
+        // "take off" -> Unequip, "take" -> Take
+        assert_eq!(parse("take off helmet"), Command::Unequip("helmet".to_string()));
+        assert_eq!(parse("take sword"), Command::Take("sword".to_string()));
     }
 }
