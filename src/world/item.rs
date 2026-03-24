@@ -2,7 +2,7 @@
 use rand::Rng;
 use std::collections::HashMap;
 use crate::types::{ItemId, LocationId};
-use crate::state::{Item, ItemType};
+use crate::state::{Item, ItemType, DamageType, WeaponCategory};
 
 const WEAPONS: &[(&str, &str, u32)] = &[
     ("Rusty Shortsword", "A battered shortsword, still sharp enough to cut.", 6),
@@ -47,7 +47,16 @@ pub fn generate_items(
                     id,
                     name: w.0.to_string(),
                     description: w.1.to_string(),
-                    item_type: ItemType::Weapon { damage_die: w.2 },
+                    item_type: ItemType::Weapon {
+                        damage_dice: 1,
+                        damage_die: w.2,
+                        damage_type: DamageType::Slashing,
+                        properties: 0,
+                        category: WeaponCategory::Simple,
+                        versatile_die: 0,
+                        range_normal: 0,
+                        range_long: 0,
+                    },
                     location: Some(location),
                     carried_by_player: false,
                 }

@@ -73,10 +73,44 @@ pub struct Item {
     pub carried_by_player: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DamageType { Slashing, Piercing, Bludgeoning }
+
+impl std::fmt::Display for DamageType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DamageType::Slashing => write!(f, "slashing"),
+            DamageType::Piercing => write!(f, "piercing"),
+            DamageType::Bludgeoning => write!(f, "bludgeoning"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WeaponCategory { Simple, Martial }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ArmorCategory { Light, Medium, Heavy, Shield }
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ItemType {
-    Weapon { damage_die: u32 },
-    Armor { ac_bonus: i32 },
+    Weapon {
+        damage_dice: u32,
+        damage_die: u32,
+        damage_type: DamageType,
+        properties: u16,
+        category: WeaponCategory,
+        versatile_die: u32,
+        range_normal: u32,
+        range_long: u32,
+    },
+    Armor {
+        category: ArmorCategory,
+        base_ac: u32,
+        max_dex_bonus: Option<u32>,
+        str_requirement: u32,
+        stealth_disadvantage: bool,
+    },
     Consumable { effect: String },
     Key { unlocks: String },
     Misc,
@@ -189,5 +223,46 @@ mod tests {
     fn test_load_invalid_json() {
         let result = load_game("not valid json");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_weapon_item_type_has_srd_fields() {
+        let weapon = ItemType::Weapon {
+            damage_dice: 1,
+            damage_die: 8,
+            damage_type: DamageType::Slashing,
+            properties: 0,
+            category: WeaponCategory::Martial,
+            versatile_die: 10,
+            range_normal: 0,
+            range_long: 0,
+        };
+        match weapon {
+            ItemType::Weapon { damage_die, damage_type, category, .. } => {
+                assert_eq!(damage_die, 8);
+                assert_eq!(damage_type, DamageType::Slashing);
+                assert_eq!(category, WeaponCategory::Martial);
+            }
+            _ => panic!("Expected Weapon"),
+        }
+    }
+
+    #[test]
+    fn test_armor_item_type_has_srd_fields() {
+        let armor = ItemType::Armor {
+            category: ArmorCategory::Heavy,
+            base_ac: 16,
+            max_dex_bonus: Some(0),
+            str_requirement: 13,
+            stealth_disadvantage: true,
+        };
+        match armor {
+            ItemType::Armor { base_ac, category, stealth_disadvantage, .. } => {
+                assert_eq!(base_ac, 16);
+                assert_eq!(category, ArmorCategory::Heavy);
+                assert!(stealth_disadvantage);
+            }
+            _ => panic!("Expected Armor"),
+        }
     }
 }
