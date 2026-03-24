@@ -43,6 +43,19 @@ pub const NO_EXIT: &str = "You can't go {direction}.";
 pub const UNKNOWN_COMMAND: &str = "I don't understand \"{input}\". Type 'help' for commands.";
 pub const EMPTY_INVENTORY: &str = "You aren't carrying anything.";
 
+pub const EQUIP_WIELD: &str = "You wield the {item}.";
+pub const EQUIP_WIELD_OFF: &str = "You wield the {item} in your off hand.";
+pub const EQUIP_WEAR: &str = "You put on the {item}.";
+pub const EQUIP_SHIELD: &str = "You strap on the {item}.";
+pub const EQUIP_SWAP_WEAPON: &str = "You put away the {old} and wield the {new}.";
+pub const EQUIP_SWAP_ARMOR: &str = "You remove the {old} and put on the {new}.";
+pub const EQUIP_TWO_HAND_CLEAR: &str = "You put away the {offhand} and wield the {weapon} with both hands.";
+pub const EQUIP_NOT_FOUND: &str = "You don't have any \"{name}\".";
+pub const EQUIP_CANT: &str = "You can't equip the {item}.";
+pub const UNEQUIP_WEAPON: &str = "You put away the {item}.";
+pub const UNEQUIP_ARMOR: &str = "You remove the {item}.";
+pub const UNEQUIP_NOT_EQUIPPED: &str = "You don't have \"{name}\" equipped.";
+
 pub const HELP_TEXT: &str = "\
 Commands:
   look [target]     - Examine surroundings or a specific thing
