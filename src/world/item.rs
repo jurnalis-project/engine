@@ -2,15 +2,8 @@
 use rand::Rng;
 use std::collections::HashMap;
 use crate::types::{ItemId, LocationId};
-use crate::state::{Item, ItemType, DamageType, WeaponCategory};
-
-const WEAPONS: &[(&str, &str, u32)] = &[
-    ("Rusty Shortsword", "A battered shortsword, still sharp enough to cut.", 6),
-    ("Wooden Club", "A simple club carved from oak.", 4),
-    ("Dagger", "A small blade, easy to conceal.", 4),
-    ("Handaxe", "A sturdy axe suited for one hand.", 6),
-    ("Quarterstaff", "A long wooden staff, balanced for fighting.", 6),
-];
+use crate::state::{Item, ItemType, WeaponCategory};
+use crate::equipment::{SRD_WEAPONS, SRD_ARMOR};
 
 const CONSUMABLES: &[(&str, &str, &str)] = &[
     ("Healing Potion", "A small vial of red liquid that restores vitality.", "heal_1d8"),
@@ -40,47 +33,69 @@ pub fn generate_items(
         let id = i as ItemId;
         let location = location_ids[rng.gen_range(0..location_ids.len())];
 
-        let item = match rng.gen_range(0..3) {
+        let item = match rng.gen_range(0..4) {
             0 => {
-                let w = &WEAPONS[rng.gen_range(0..WEAPONS.len())];
+                // Weapon from SRD table — simple weapons 2x more likely
+                let simple: Vec<_> = SRD_WEAPONS.iter().filter(|w| w.category == WeaponCategory::Simple).collect();
+                let martial: Vec<_> = SRD_WEAPONS.iter().filter(|w| w.category == WeaponCategory::Martial).collect();
+                let w = if rng.gen_bool(0.67) && !simple.is_empty() {
+                    simple[rng.gen_range(0..simple.len())]
+                } else {
+                    let all = if martial.is_empty() { &simple } else { &martial };
+                    all[rng.gen_range(0..all.len())]
+                };
                 Item {
-                    id,
-                    name: w.0.to_string(),
-                    description: w.1.to_string(),
+                    id, name: w.name.to_string(),
+                    description: format!("A {}.", w.name.to_lowercase()),
                     item_type: ItemType::Weapon {
-                        damage_dice: 1,
-                        damage_die: w.2,
-                        damage_type: DamageType::Slashing,
-                        properties: 0,
-                        category: WeaponCategory::Simple,
-                        versatile_die: 0,
-                        range_normal: 0,
-                        range_long: 0,
+                        damage_dice: w.damage_dice, damage_die: w.damage_die,
+                        damage_type: w.damage_type, properties: w.properties,
+                        category: w.category, versatile_die: w.versatile_die,
+                        range_normal: w.range_normal, range_long: w.range_long,
                     },
-                    location: Some(location),
-                    carried_by_player: false,
+                    location: Some(location), carried_by_player: false,
                 }
             }
             1 => {
+                // Armor from SRD table — light armor more common
+                let light: Vec<_> = SRD_ARMOR.iter()
+                    .filter(|a| matches!(a.category, crate::state::ArmorCategory::Light | crate::state::ArmorCategory::Shield))
+                    .collect();
+                let heavier: Vec<_> = SRD_ARMOR.iter()
+                    .filter(|a| !matches!(a.category, crate::state::ArmorCategory::Light | crate::state::ArmorCategory::Shield))
+                    .collect();
+                let a = if rng.gen_bool(0.6) && !light.is_empty() {
+                    light[rng.gen_range(0..light.len())]
+                } else if !heavier.is_empty() {
+                    heavier[rng.gen_range(0..heavier.len())]
+                } else {
+                    light[rng.gen_range(0..light.len())]
+                };
+                Item {
+                    id, name: a.name.to_string(),
+                    description: format!("A set of {} armor.", a.name.to_lowercase()),
+                    item_type: ItemType::Armor {
+                        category: a.category, base_ac: a.base_ac,
+                        max_dex_bonus: a.max_dex_bonus, str_requirement: a.str_requirement,
+                        stealth_disadvantage: a.stealth_disadvantage,
+                    },
+                    location: Some(location), carried_by_player: false,
+                }
+            }
+            2 => {
                 let c = &CONSUMABLES[rng.gen_range(0..CONSUMABLES.len())];
                 Item {
-                    id,
-                    name: c.0.to_string(),
-                    description: c.1.to_string(),
+                    id, name: c.0.to_string(), description: c.1.to_string(),
                     item_type: ItemType::Consumable { effect: c.2.to_string() },
-                    location: Some(location),
-                    carried_by_player: false,
+                    location: Some(location), carried_by_player: false,
                 }
             }
             _ => {
                 let m = &MISC_ITEMS[rng.gen_range(0..MISC_ITEMS.len())];
                 Item {
-                    id,
-                    name: m.0.to_string(),
-                    description: m.1.to_string(),
+                    id, name: m.0.to_string(), description: m.1.to_string(),
                     item_type: ItemType::Misc,
-                    location: Some(location),
-                    carried_by_player: false,
+                    location: Some(location), carried_by_player: false,
                 }
             }
         };
@@ -121,5 +136,27 @@ mod tests {
         for item in items.values() {
             assert!(!item.carried_by_player);
         }
+    }
+
+    #[test]
+    fn test_generates_weapons_from_srd_table() {
+        use crate::equipment::SRD_WEAPONS;
+        let mut rng = StdRng::seed_from_u64(42);
+        let items = generate_items(&mut rng, &[0, 1, 2], 20);
+        let weapons: Vec<_> = items.values().filter(|i| matches!(i.item_type, ItemType::Weapon { .. })).collect();
+        assert!(!weapons.is_empty(), "Should generate some weapons");
+        // Verify weapon names come from SRD table
+        for w in &weapons {
+            assert!(SRD_WEAPONS.iter().any(|srd| srd.name == w.name),
+                "Weapon '{}' should be from SRD table", w.name);
+        }
+    }
+
+    #[test]
+    fn test_generates_armor() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let items = generate_items(&mut rng, &[0, 1, 2], 30);
+        let armor: Vec<_> = items.values().filter(|i| matches!(i.item_type, ItemType::Armor { .. })).collect();
+        assert!(!armor.is_empty(), "Should generate some armor with 30 items");
     }
 }
