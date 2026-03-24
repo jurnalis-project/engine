@@ -5,6 +5,7 @@ pub mod state;
 pub mod parser;
 pub mod world;
 pub mod narration;
+pub mod equipment;
 pub mod output;
 
 use std::collections::{HashMap, HashSet};
