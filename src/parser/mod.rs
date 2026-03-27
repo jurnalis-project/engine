@@ -19,6 +19,13 @@ pub enum Command {
     Save(Option<String>),
     Load(Option<String>),
     Help(Option<String>),
+    // Combat commands
+    Attack(String),
+    Approach(String),
+    Retreat,
+    Dodge,
+    Disengage,
+    Dash,
     Unknown(String),
 }
 
@@ -80,6 +87,27 @@ pub fn parse(input: &str) -> Command {
                     Command::Unequip(rest)
                 };
             }
+            "swing at" => {
+                return if rest.is_empty() {
+                    Command::Unknown("Attack what?".to_string())
+                } else {
+                    Command::Attack(rest)
+                };
+            }
+            "move to" | "move toward" => {
+                // Check if it looks like a direction first
+                if let Some(dir) = parse_direction(&rest) {
+                    return Command::Go(dir);
+                }
+                return if rest.is_empty() {
+                    Command::Unknown("Move toward what?".to_string())
+                } else {
+                    Command::Approach(rest)
+                };
+            }
+            "move away" | "fall back" | "back up" => {
+                return Command::Retreat;
+            }
             _ => {}
         }
     }
@@ -125,6 +153,16 @@ pub fn parse(input: &str) -> Command {
         "unequip" | "doff" => {
             if args.is_empty() { Command::Unknown("Unequip what?".to_string()) } else { Command::Unequip(args) }
         }
+        "attack" | "hit" | "strike" | "shoot" => {
+            if args.is_empty() { Command::Unknown("Attack what?".to_string()) } else { Command::Attack(args) }
+        }
+        "approach" | "advance" | "close" => {
+            if args.is_empty() { Command::Unknown("Approach what?".to_string()) } else { Command::Approach(args) }
+        }
+        "retreat" => Command::Retreat,
+        "dodge" => Command::Dodge,
+        "disengage" | "withdraw" => Command::Disengage,
+        "dash" | "run" | "sprint" => Command::Dash,
         "inventory" | "i" | "inv" | "items" | "bag" => Command::Inventory,
         "character" | "char" | "sheet" | "stats" | "status" => Command::CharacterSheet,
         "check" | "roll" | "try" => {
@@ -434,6 +472,62 @@ mod tests {
     fn test_equip_bare_verb_error() {
         match parse("equip") { Command::Unknown(s) => assert!(s.contains("what"), "Got: {}", s), other => panic!("Expected Unknown, got {:?}", other) }
         match parse("unequip") { Command::Unknown(s) => assert!(s.contains("what"), "Got: {}", s), other => panic!("Expected Unknown, got {:?}", other) }
+    }
+
+    #[test]
+    fn test_attack_command() {
+        assert_eq!(parse("attack goblin"), Command::Attack("goblin".to_string()));
+        assert_eq!(parse("hit orc"), Command::Attack("orc".to_string()));
+        assert_eq!(parse("strike skeleton"), Command::Attack("skeleton".to_string()));
+        assert_eq!(parse("shoot goblin"), Command::Attack("goblin".to_string()));
+        assert_eq!(parse("swing at goblin"), Command::Attack("goblin".to_string()));
+    }
+
+    #[test]
+    fn test_approach_command() {
+        assert_eq!(parse("approach goblin"), Command::Approach("goblin".to_string()));
+        assert_eq!(parse("advance goblin"), Command::Approach("goblin".to_string()));
+        assert_eq!(parse("close goblin"), Command::Approach("goblin".to_string()));
+        assert_eq!(parse("move to goblin"), Command::Approach("goblin".to_string()));
+        assert_eq!(parse("move toward goblin"), Command::Approach("goblin".to_string()));
+    }
+
+    #[test]
+    fn test_retreat_command() {
+        assert_eq!(parse("retreat"), Command::Retreat);
+        assert_eq!(parse("move away"), Command::Retreat);
+        assert_eq!(parse("fall back"), Command::Retreat);
+        assert_eq!(parse("back up"), Command::Retreat);
+    }
+
+    #[test]
+    fn test_dodge_command() {
+        assert_eq!(parse("dodge"), Command::Dodge);
+    }
+
+    #[test]
+    fn test_disengage_command() {
+        assert_eq!(parse("disengage"), Command::Disengage);
+        assert_eq!(parse("withdraw"), Command::Disengage);
+    }
+
+    #[test]
+    fn test_dash_command() {
+        assert_eq!(parse("dash"), Command::Dash);
+        assert_eq!(parse("run"), Command::Dash);
+        assert_eq!(parse("sprint"), Command::Dash);
+    }
+
+    #[test]
+    fn test_combat_bare_verbs_give_helpful_errors() {
+        match parse("attack") { Command::Unknown(s) => assert!(s.contains("what"), "Got: {}", s), other => panic!("Expected Unknown, got {:?}", other) }
+        match parse("approach") { Command::Unknown(s) => assert!(s.contains("what"), "Got: {}", s), other => panic!("Expected Unknown, got {:?}", other) }
+    }
+
+    #[test]
+    fn test_move_to_direction_still_works() {
+        // "move to north" should still resolve as Go(North), not Approach
+        assert_eq!(parse("move to north"), Command::Go(Direction::North));
     }
 
     #[test]

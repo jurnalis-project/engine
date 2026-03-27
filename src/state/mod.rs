@@ -17,6 +17,7 @@ pub struct GameState {
     pub rng_seed: u64,
     pub rng_counter: u64,
     pub game_phase: GamePhase,
+    pub active_combat: Option<crate::combat::CombatState>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,6 +56,31 @@ pub struct Npc {
     pub disposition: Disposition,
     pub dialogue_tags: Vec<String>,
     pub location: LocationId,
+    pub combat_stats: Option<CombatStats>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CombatStats {
+    pub max_hp: i32,
+    pub current_hp: i32,
+    pub ac: i32,
+    pub speed: i32,
+    pub ability_scores: HashMap<crate::types::Ability, i32>,
+    pub attacks: Vec<NpcAttack>,
+    pub proficiency_bonus: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NpcAttack {
+    pub name: String,
+    pub hit_bonus: i32,
+    pub damage_dice: u32,
+    pub damage_die: u32,
+    pub damage_bonus: i32,
+    pub damage_type: DamageType,
+    pub reach: u32,
+    pub range_normal: u32,
+    pub range_long: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -196,6 +222,7 @@ mod tests {
             rng_seed: 42,
             rng_counter: 0,
             game_phase: GamePhase::Exploration,
+            active_combat: None,
         }
     }
 

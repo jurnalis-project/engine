@@ -7,6 +7,7 @@ pub mod world;
 pub mod narration;
 pub mod equipment;
 pub mod output;
+pub mod combat;
 
 use std::collections::{HashMap, HashSet};
 use rand::SeedableRng;
@@ -44,6 +45,7 @@ pub fn new_game(seed: u64) -> GameOutput {
         rng_seed: seed,
         rng_counter: 0,
         game_phase: GamePhase::CharacterCreation(CreationStep::ChooseRace),
+        active_combat: None,
     };
 
     let state_json = serde_json::to_string(&state).unwrap();
@@ -74,9 +76,13 @@ pub fn process_input(state_json: &str, input: &str) -> GameOutput {
 
     let old_state_json = state_json.to_string();
 
-    let result = match state.game_phase {
-        GamePhase::CharacterCreation(step) => handle_creation(&mut state, input, step),
-        GamePhase::Exploration => handle_exploration(&mut state, input),
+    let result = if state.active_combat.is_some() {
+        handle_combat(&mut state, input)
+    } else {
+        match state.game_phase {
+            GamePhase::CharacterCreation(step) => handle_creation(&mut state, input, step),
+            GamePhase::Exploration => handle_exploration(&mut state, input),
+        }
     };
 
     let new_state_json = serde_json::to_string(&state).unwrap();
@@ -488,6 +494,46 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
 
                     if let Some(loc) = loc {
                         lines.extend(narration::narrate_enter_location(&mut rng, &loc, state));
+
+                        // Check for hostile NPCs to trigger combat
+                        let hostile_ids: Vec<u32> = loc.npcs.iter()
+                            .filter_map(|&id| {
+                                state.world.npcs.get(&id)
+                                    .filter(|npc| npc.disposition == state::Disposition::Hostile)
+                                    .filter(|npc| npc.combat_stats.is_some())
+                                    .filter(|npc| npc.combat_stats.as_ref().unwrap().current_hp > 0)
+                                    .map(|_| id)
+                            })
+                            .collect();
+
+                        if !hostile_ids.is_empty() {
+                            let combat_state = combat::start_combat(
+                                &mut rng, &state.character, &hostile_ids, &state.world.npcs,
+                            );
+                            lines.push(String::new());
+                            lines.extend(combat::format_initiative(&combat_state, state));
+
+                            // Check if it's the player's turn first
+                            if combat_state.is_player_turn() {
+                                lines.push(String::new());
+                                lines.push("Your turn! Use: attack <target>, approach <target>, retreat, dodge, disengage, dash".to_string());
+                            } else {
+                                // Process NPC turns before the player's first turn
+                                state.active_combat = Some(combat_state);
+                                let npc_lines = process_npc_turns(state, &mut rng);
+                                lines.extend(npc_lines);
+                                if let Some(ref combat) = state.active_combat {
+                                    if let Some(victory) = combat.check_end(state) {
+                                        lines.extend(end_combat(state, victory));
+                                    } else {
+                                        lines.push(String::new());
+                                        lines.push("Your turn! Use: attack <target>, approach <target>, retreat, dodge, disengage, dash".to_string());
+                                    }
+                                }
+                                return lines;
+                            }
+                            state.active_combat = Some(combat_state);
+                        }
                     }
                     lines
                 }
@@ -820,6 +866,9 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
                 ResolveResult::NotFound => vec![narration::templates::UNEQUIP_NOT_EQUIPPED.replace("{name}", &target_str)],
             }
         }
+        Command::Attack(_) | Command::Approach(_) | Command::Retreat | Command::Dodge | Command::Disengage | Command::Dash => {
+            vec!["You're not in combat.".to_string()]
+        }
         Command::Unknown(s) => {
             if s.is_empty() {
                 vec![]
@@ -827,6 +876,536 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
                 vec![narration::templates::UNKNOWN_COMMAND.replace("{input}", &s)]
             }
         }
+    }
+}
+
+fn process_npc_turns(state: &mut GameState, rng: &mut StdRng) -> Vec<String> {
+    let mut lines = Vec::new();
+
+    loop {
+        // Take combat out to avoid borrow conflict
+        let mut combat = match state.active_combat.take() {
+            Some(c) => c,
+            None => break,
+        };
+
+        if let Some(_) = combat.check_end(state) {
+            state.active_combat = Some(combat);
+            break;
+        }
+
+        if combat.is_player_turn() {
+            state.active_combat = Some(combat);
+            break;
+        }
+
+        let combatant = combat.current_combatant();
+        if let combat::Combatant::Npc(npc_id) = combatant {
+            let npc_lines = combat::resolve_npc_turn(rng, npc_id, state, &mut combat);
+            lines.extend(npc_lines);
+        }
+
+        combat.advance_turn(state);
+        state.active_combat = Some(combat);
+    }
+
+    lines
+}
+
+fn end_combat(state: &mut GameState, victory: bool) -> Vec<String> {
+    state.active_combat = None;
+    if victory {
+        vec![
+            String::new(),
+            "=== VICTORY ===".to_string(),
+            "All enemies have been defeated!".to_string(),
+        ]
+    } else {
+        vec![
+            String::new(),
+            "=== DEFEAT ===".to_string(),
+            "You have fallen in battle...".to_string(),
+            "Your adventure ends here.".to_string(),
+        ]
+    }
+}
+
+fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
+    let command = parser::parse(input);
+    let mut rng = StdRng::seed_from_u64(state.rng_seed + state.rng_counter);
+    state.rng_counter += 1;
+
+    // Allow non-combat commands during combat (these don't consume combat state)
+    match &command {
+        Command::Look(target) => {
+            if target.is_some() {
+                return vec!["You're in combat! Use 'look' to see the battlefield.".to_string()];
+            }
+            let combat = state.active_combat.take().unwrap();
+            let result = combat::format_combat_status(state, &combat);
+            state.active_combat = Some(combat);
+            return result;
+        }
+        Command::Inventory => {
+            if state.character.inventory.is_empty() {
+                return vec![narration::templates::EMPTY_INVENTORY.to_string()];
+            }
+            let mut inv_lines = vec!["You are carrying:".to_string()];
+            for &item_id in &state.character.inventory {
+                if let Some(item) = state.world.items.get(&item_id) {
+                    let equipped_tag = if state.character.equipped.main_hand == Some(item_id) {
+                        " (equipped - main hand)"
+                    } else if state.character.equipped.off_hand == Some(item_id) {
+                        " (equipped - off hand)"
+                    } else if state.character.equipped.body == Some(item_id) {
+                        " (equipped - body)"
+                    } else {
+                        ""
+                    };
+                    inv_lines.push(format!("  - {}{}", item.name, equipped_tag));
+                }
+            }
+            return inv_lines;
+        }
+        Command::CharacterSheet => {
+            return narration::narrate_character_sheet(state);
+        }
+        Command::Help(_) => {
+            return vec![
+                "Combat commands:".to_string(),
+                "  attack <target>   - Attack an enemy".to_string(),
+                "  approach <target> - Move toward an enemy".to_string(),
+                "  retreat           - Move away from all enemies".to_string(),
+                "  dodge             - Dodge (grants disadvantage on incoming attacks)".to_string(),
+                "  disengage         - Disengage (no opportunity attacks this turn)".to_string(),
+                "  dash              - Dash (double movement this turn)".to_string(),
+                "  equip <item>      - Equip a weapon/armor".to_string(),
+                "  unequip <item>    - Unequip gear".to_string(),
+                "  look              - View combat status".to_string(),
+                "  inventory         - Check inventory".to_string(),
+                "  character         - View character sheet".to_string(),
+            ];
+        }
+        // Block exploration commands
+        Command::Go(_) | Command::Talk(_) | Command::Take(_) | Command::Drop(_) => {
+            return vec!["You can't do that during combat!".to_string()];
+        }
+        Command::Save(_) | Command::Load(_) | Command::Check(_) | Command::Use(_) => {
+            return vec!["You can't do that during combat!".to_string()];
+        }
+        _ => {}
+    }
+
+    // Take combat out for the duration of action processing
+    let mut combat = state.active_combat.take().unwrap();
+
+    if !combat.is_player_turn() {
+        state.active_combat = Some(combat);
+        return vec!["It's not your turn!".to_string()];
+    }
+
+    let mut lines = Vec::new();
+
+    match command {
+        Command::Attack(target_name) => {
+            let owned_candidates = {
+                // Build candidates from combat initiative order
+                combat.initiative_order.iter()
+                    .filter_map(|(c, _)| {
+                        if let combat::Combatant::Npc(id) = c {
+                            let npc = state.world.npcs.get(id)?;
+                            let stats = npc.combat_stats.as_ref()?;
+                            if stats.current_hp > 0 {
+                                Some((*id as usize, npc.name.clone()))
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let candidates: Vec<(usize, &str)> = owned_candidates.iter()
+                .map(|(id, name)| (*id, name.as_str()))
+                .collect();
+
+            match resolver::resolve_target(&target_name, &candidates) {
+                ResolveResult::Found(id) => {
+                    let npc_id = id as u32;
+
+                    if combat.player_action_used {
+                        state.active_combat = Some(combat);
+                        return vec!["You've already used your action this turn. You can still move (approach/retreat).".to_string()];
+                    }
+
+                    let distance = *combat.distances.get(&npc_id).unwrap_or(&30);
+                    let target_ac = state.world.npcs.get(&npc_id)
+                        .and_then(|n| n.combat_stats.as_ref())
+                        .map(|s| s.ac)
+                        .unwrap_or(10);
+                    let target_dodging = combat.npc_dodging.get(&npc_id).copied().unwrap_or(false);
+
+                    let weapon_id = state.character.equipped.main_hand;
+                    let off_hand_free = state.character.equipped.off_hand.is_none();
+
+                    // Check range
+                    if let Some(weapon_item) = weapon_id.and_then(|id| state.world.items.get(&id)) {
+                        if let state::ItemType::Weapon { range_normal, range_long, properties, .. } = &weapon_item.item_type {
+                            let is_reach = properties & crate::equipment::REACH != 0;
+                            let melee_range = if is_reach { 10 } else { 5 };
+                            let is_melee_only = *range_normal == 0 && *range_long == 0;
+
+                            if is_melee_only && distance > melee_range {
+                                let msg = format!("You're too far away to attack with {}. Move closer first (approach <target>).",
+                                    weapon_item.name);
+                                state.active_combat = Some(combat);
+                                return vec![msg];
+                            }
+                            if *range_long > 0 && distance > *range_long as u32 {
+                                let msg = format!("The target is out of range of your {}.", weapon_item.name);
+                                state.active_combat = Some(combat);
+                                return vec![msg];
+                            }
+                        }
+                    } else if weapon_id.is_none() && distance > 5 {
+                        state.active_combat = Some(combat);
+                        return vec!["You're too far away for an unarmed strike. Move closer first (approach <target>).".to_string()];
+                    }
+
+                    let result = combat::resolve_player_attack(
+                        &mut rng, &state.character, target_ac, target_dodging,
+                        weapon_id, &state.world.items, distance, off_hand_free,
+                    );
+
+                    let npc_name = state.world.npcs.get(&npc_id)
+                        .map(|n| n.name.clone())
+                        .unwrap_or_else(|| "the enemy".to_string());
+
+                    if result.weapon_name == "Unarmed" {
+                        lines.push(format!("You punch {} for {} {} damage.",
+                            npc_name, result.damage, result.damage_type));
+                    } else if result.hit {
+                        if result.natural_20 {
+                            lines.push(format!("You attack {} with {} -- CRITICAL HIT! {} {} damage!",
+                                npc_name, result.weapon_name, result.damage, result.damage_type));
+                        } else {
+                            lines.push(format!("You attack {} with {} ({}+{}={} vs AC {}) -- hit for {} {} damage.",
+                                npc_name, result.weapon_name, result.attack_roll,
+                                result.total_attack - result.attack_roll, result.total_attack, target_ac,
+                                result.damage, result.damage_type));
+                        }
+                    } else if result.natural_1 {
+                        lines.push(format!("You attack {} with {} -- natural 1, miss!",
+                            npc_name, result.weapon_name));
+                    } else {
+                        lines.push(format!("You attack {} with {} ({}+{}={} vs AC {}) -- miss.",
+                            npc_name, result.weapon_name, result.attack_roll,
+                            result.total_attack - result.attack_roll, result.total_attack, target_ac));
+                    }
+                    if result.disadvantage {
+                        lines.push("(Rolled with disadvantage)".to_string());
+                    }
+
+                    // Apply damage
+                    if result.hit {
+                        if let Some(npc) = state.world.npcs.get_mut(&npc_id) {
+                            if let Some(stats) = npc.combat_stats.as_mut() {
+                                stats.current_hp -= result.damage;
+                                if stats.current_hp <= 0 {
+                                    stats.current_hp = 0;
+                                    lines.push(format!("{} is slain!", npc_name));
+                                }
+                            }
+                        }
+                    }
+
+                    combat.player_action_used = true;
+                }
+                ResolveResult::Ambiguous(matches) => {
+                    state.active_combat = Some(combat);
+                    return resolver::format_disambiguation(&matches);
+                }
+                ResolveResult::NotFound => {
+                    state.active_combat = Some(combat);
+                    return vec![format!("There's no \"{}\" to attack.", target_name)];
+                }
+            }
+        }
+        Command::Approach(target_name) => {
+            let owned_candidates: Vec<(usize, String)> = combat.initiative_order.iter()
+                .filter_map(|(c, _)| {
+                    if let combat::Combatant::Npc(id) = c {
+                        let npc = state.world.npcs.get(id)?;
+                        let stats = npc.combat_stats.as_ref()?;
+                        if stats.current_hp > 0 { Some((*id as usize, npc.name.clone())) } else { None }
+                    } else { None }
+                })
+                .collect();
+            let candidates: Vec<(usize, &str)> = owned_candidates.iter()
+                .map(|(id, name)| (*id, name.as_str()))
+                .collect();
+
+            match resolver::resolve_target(&target_name, &candidates) {
+                ResolveResult::Found(id) => {
+                    let npc_id = id as u32;
+                    let approach_lines = combat::approach_target(&mut rng, npc_id, state, &mut combat);
+                    lines.extend(approach_lines);
+                }
+                ResolveResult::Ambiguous(matches) => {
+                    state.active_combat = Some(combat);
+                    return resolver::format_disambiguation(&matches);
+                }
+                ResolveResult::NotFound => {
+                    state.active_combat = Some(combat);
+                    return vec![format!("There's no \"{}\" here.", target_name)];
+                }
+            }
+        }
+        Command::Retreat => {
+            let retreat_lines = combat::retreat(&mut rng, state, &mut combat);
+            lines.extend(retreat_lines);
+        }
+        Command::Dodge => {
+            if combat.player_action_used {
+                state.active_combat = Some(combat);
+                return vec!["You've already used your action this turn.".to_string()];
+            }
+            combat.player_dodging = true;
+            combat.player_action_used = true;
+            lines.push("You take the Dodge action. Attacks against you have disadvantage until your next turn.".to_string());
+        }
+        Command::Disengage => {
+            if combat.player_action_used {
+                state.active_combat = Some(combat);
+                return vec!["You've already used your action this turn.".to_string()];
+            }
+            combat.player_disengaging = true;
+            combat.player_action_used = true;
+            lines.push("You take the Disengage action. You can retreat without provoking opportunity attacks.".to_string());
+        }
+        Command::Dash => {
+            if combat.player_action_used {
+                state.active_combat = Some(combat);
+                return vec!["You've already used your action this turn.".to_string()];
+            }
+            combat.player_movement_remaining += state.character.speed;
+            combat.player_action_used = true;
+            lines.push(format!("You take the Dash action. Movement this turn: {} ft.", combat.player_movement_remaining));
+        }
+        Command::Equip(target_str) => {
+            if combat.player_action_used {
+                state.active_combat = Some(combat);
+                return vec!["You've already used your action this turn.".to_string()];
+            }
+            state.active_combat = Some(combat);
+            let result = handle_equip_command(state, &target_str);
+            state.active_combat.as_mut().unwrap().player_action_used = true;
+            return result;
+        }
+        Command::Unequip(target_str) => {
+            if combat.player_action_used {
+                state.active_combat = Some(combat);
+                return vec!["You've already used your action this turn.".to_string()];
+            }
+            state.active_combat = Some(combat);
+            let result = handle_unequip_command(state, &target_str);
+            state.active_combat.as_mut().unwrap().player_action_used = true;
+            return result;
+        }
+        Command::Unknown(s) => {
+            state.active_combat = Some(combat);
+            if s.is_empty() {
+                return vec![];
+            }
+            return vec![format!("Unknown combat command: \"{}\". Type 'help' for commands.", s)];
+        }
+        _ => {
+            state.active_combat = Some(combat);
+            return vec!["You can't do that during combat!".to_string()];
+        }
+    }
+
+    // After player action, check if combat ended
+    if let Some(victory) = combat.check_end(state) {
+        state.active_combat = Some(combat);
+        lines.extend(end_combat(state, victory));
+        return lines;
+    }
+
+    // Advance past player turn and process NPC turns
+    combat.advance_turn(state);
+    state.active_combat = Some(combat);
+
+    let npc_lines = process_npc_turns(state, &mut rng);
+    lines.extend(npc_lines);
+
+    // Check combat end again after NPC turns
+    if let Some(ref combat) = state.active_combat {
+        if let Some(victory) = combat.check_end(state) {
+            lines.extend(end_combat(state, victory));
+            return lines;
+        }
+        // Show turn prompt
+        lines.push(String::new());
+        lines.push(format!("Your turn! (Round {}, HP: {}/{})",
+            combat.round, state.character.current_hp, state.character.max_hp));
+        lines.push("Commands: attack <target>, approach <target>, retreat, dodge, disengage, dash".to_string());
+    }
+
+    lines
+}
+
+fn handle_equip_command(state: &mut GameState, target_str: &str) -> Vec<String> {
+    let words: Vec<&str> = target_str.split_whitespace().collect();
+    let (target_name, force_off_hand) = if words.len() >= 3
+        && words[words.len()-2] == "off" && words[words.len()-1] == "hand"
+    {
+        (words[..words.len()-2].join(" "), true)
+    } else {
+        (target_str.to_string(), false)
+    };
+
+    if target_name.is_empty() {
+        return vec!["Equip what?".to_string()];
+    }
+
+    let owned_candidates = inventory_item_candidates(state);
+    let candidates: Vec<(usize, &str)> = owned_candidates.iter()
+        .map(|(id, name)| (*id, name.as_str()))
+        .collect();
+
+    match resolver::resolve_target(&target_name, &candidates) {
+        ResolveResult::Found(id) => {
+            let item_id = id as u32;
+            let item = match state.world.items.get(&item_id) {
+                Some(item) => item.clone(),
+                None => return vec![narration::templates::EQUIP_NOT_FOUND.replace("{name}", &target_name)],
+            };
+
+            match &item.item_type {
+                state::ItemType::Weapon { properties, .. } => {
+                    let is_two_handed = properties & equipment::TWO_HANDED != 0;
+                    let is_light = properties & equipment::LIGHT != 0;
+                    if force_off_hand && !is_light {
+                        return vec![format!("The {} is too unwieldy to wield in your off hand.", item.name)];
+                    }
+                    if force_off_hand && is_two_handed {
+                        return vec![format!("The {} requires both hands.", item.name)];
+                    }
+                    let mut result_lines = Vec::new();
+                    if is_two_handed {
+                        if let Some(old_id) = state.character.equipped.main_hand.take() {
+                            if old_id != item_id {
+                                let old_name = state.world.items.get(&old_id).map(|i| i.name.clone()).unwrap_or_default();
+                                result_lines.push(narration::templates::EQUIP_SWAP_WEAPON.replace("{old}", &old_name).replace("{new}", &item.name));
+                            }
+                        }
+                        if let Some(oh_id) = state.character.equipped.off_hand.take() {
+                            let oh_name = state.world.items.get(&oh_id).map(|i| i.name.clone()).unwrap_or_default();
+                            result_lines.push(narration::templates::EQUIP_TWO_HAND_CLEAR.replace("{offhand}", &oh_name).replace("{weapon}", &item.name));
+                        }
+                        state.character.equipped.main_hand = Some(item_id);
+                        if result_lines.is_empty() {
+                            result_lines.push(narration::templates::EQUIP_WIELD.replace("{item}", &item.name));
+                        }
+                    } else if force_off_hand {
+                        if let Some(old_id) = state.character.equipped.off_hand.replace(item_id) {
+                            if old_id != item_id {
+                                let old_name = state.world.items.get(&old_id).map(|i| i.name.clone()).unwrap_or_default();
+                                result_lines.push(narration::templates::EQUIP_SWAP_WEAPON.replace("{old}", &old_name).replace("{new}", &item.name));
+                            }
+                        }
+                        if result_lines.is_empty() {
+                            result_lines.push(narration::templates::EQUIP_WIELD_OFF.replace("{item}", &item.name));
+                        }
+                    } else {
+                        if let Some(old_id) = state.character.equipped.main_hand.replace(item_id) {
+                            if old_id != item_id {
+                                let old_name = state.world.items.get(&old_id).map(|i| i.name.clone()).unwrap_or_default();
+                                result_lines.push(narration::templates::EQUIP_SWAP_WEAPON.replace("{old}", &old_name).replace("{new}", &item.name));
+                            }
+                        }
+                        if result_lines.is_empty() {
+                            result_lines.push(narration::templates::EQUIP_WIELD.replace("{item}", &item.name));
+                        }
+                    }
+                    result_lines
+                }
+                state::ItemType::Armor { category, .. } => {
+                    let mut result_lines = Vec::new();
+                    if *category == state::ArmorCategory::Shield {
+                        if let Some(old_id) = state.character.equipped.off_hand.replace(item_id) {
+                            if old_id != item_id {
+                                let old_name = state.world.items.get(&old_id).map(|i| i.name.clone()).unwrap_or_default();
+                                result_lines.push(narration::templates::EQUIP_SWAP_WEAPON.replace("{old}", &old_name).replace("{new}", &item.name));
+                            }
+                        }
+                        if result_lines.is_empty() {
+                            result_lines.push(narration::templates::EQUIP_SHIELD.replace("{item}", &item.name));
+                        }
+                    } else {
+                        if let Some(old_id) = state.character.equipped.body.replace(item_id) {
+                            if old_id != item_id {
+                                let old_name = state.world.items.get(&old_id).map(|i| i.name.clone()).unwrap_or_default();
+                                result_lines.push(narration::templates::EQUIP_SWAP_ARMOR.replace("{old}", &old_name).replace("{new}", &item.name));
+                            }
+                        }
+                        if result_lines.is_empty() {
+                            result_lines.push(narration::templates::EQUIP_WEAR.replace("{item}", &item.name));
+                        }
+                    }
+                    result_lines
+                }
+                _ => vec![narration::templates::EQUIP_CANT.replace("{item}", &item.name)],
+            }
+        }
+        ResolveResult::Ambiguous(matches) => resolver::format_disambiguation(&matches),
+        ResolveResult::NotFound => vec![narration::templates::EQUIP_NOT_FOUND.replace("{name}", &target_name)],
+    }
+}
+
+fn handle_unequip_command(state: &mut GameState, target_str: &str) -> Vec<String> {
+    let mut equipped_candidates: Vec<(usize, String)> = Vec::new();
+    if let Some(mh) = state.character.equipped.main_hand {
+        if let Some(item) = state.world.items.get(&mh) {
+            equipped_candidates.push((mh as usize, item.name.clone()));
+        }
+    }
+    if let Some(oh) = state.character.equipped.off_hand {
+        if let Some(item) = state.world.items.get(&oh) {
+            equipped_candidates.push((oh as usize, item.name.clone()));
+        }
+    }
+    if let Some(body) = state.character.equipped.body {
+        if let Some(item) = state.world.items.get(&body) {
+            equipped_candidates.push((body as usize, item.name.clone()));
+        }
+    }
+
+    let candidates: Vec<(usize, &str)> = equipped_candidates.iter()
+        .map(|(id, name)| (*id, name.as_str()))
+        .collect();
+
+    match resolver::resolve_target(target_str, &candidates) {
+        ResolveResult::Found(id) => {
+            let item_id = id as u32;
+            let name = state.world.items.get(&item_id).map(|i| i.name.clone()).unwrap_or_else(|| target_str.to_string());
+            let is_weapon = matches!(
+                state.world.items.get(&item_id).map(|i| &i.item_type),
+                Some(state::ItemType::Weapon { .. })
+            );
+            if state.character.equipped.main_hand == Some(item_id) { state.character.equipped.main_hand = None; }
+            if state.character.equipped.off_hand == Some(item_id) { state.character.equipped.off_hand = None; }
+            if state.character.equipped.body == Some(item_id) { state.character.equipped.body = None; }
+            if is_weapon {
+                vec![narration::templates::UNEQUIP_WEAPON.replace("{item}", &name)]
+            } else {
+                vec![narration::templates::UNEQUIP_ARMOR.replace("{item}", &name)]
+            }
+        }
+        ResolveResult::Ambiguous(matches) => resolver::format_disambiguation(&matches),
+        ResolveResult::NotFound => vec![narration::templates::UNEQUIP_NOT_EQUIPPED.replace("{name}", target_str)],
     }
 }
 
@@ -1162,6 +1741,7 @@ mod tests {
             rng_seed: 42,
             rng_counter: 100,
             game_phase: GamePhase::Exploration,
+            active_combat: None,
         }
     }
 }

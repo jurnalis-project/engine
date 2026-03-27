@@ -82,4 +82,17 @@ Commands:
                       (also: roll, try)
   save [name]       - Save game
   load [name]       - Load game (also: restore)
-  help              - Show this help (also: ?, commands)";
+  help              - Show this help (also: ?, commands)
+
+Combat commands (available during combat):
+  attack <target>   - Attack an enemy
+                      (also: hit, strike, swing at, shoot)
+  approach <target> - Move toward an enemy
+                      (also: advance, close, move to, move toward)
+  retreat           - Move away from all enemies
+                      (also: move away, fall back, back up)
+  dodge             - Take Dodge action (disadvantage on incoming attacks)
+  disengage         - Take Disengage action (no opportunity attacks)
+                      (also: withdraw)
+  dash              - Take Dash action (double movement)
+                      (also: run, sprint)";

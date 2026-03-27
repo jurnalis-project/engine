@@ -58,6 +58,7 @@ pub fn generate_npcs(
             disposition,
             dialogue_tags,
             location,
+            combat_stats: None,
         });
     }
 

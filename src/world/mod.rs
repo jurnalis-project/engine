@@ -5,7 +5,8 @@ pub mod item;
 pub mod trigger;
 
 use rand::Rng;
-use crate::state::WorldState;
+use crate::state::{WorldState, Disposition};
+use crate::combat::monsters;
 use std::collections::{HashMap, HashSet};
 
 pub fn generate_world(rng: &mut impl Rng, location_count: usize) -> WorldState {
@@ -14,7 +15,18 @@ pub fn generate_world(rng: &mut impl Rng, location_count: usize) -> WorldState {
     let location_ids: Vec<_> = locations.keys().copied().collect();
 
     let npc_count = location_count / 3 + 1;
-    let npcs = npc::generate_npcs(rng, &location_refs, npc_count);
+    let mut npcs = npc::generate_npcs(rng, &location_refs, npc_count);
+
+    // Assign combat stats to hostile NPCs from SRD monster table
+    let monster_names: Vec<&str> = monsters::SRD_MONSTERS.iter().map(|m| m.name).collect();
+    for npc in npcs.values_mut() {
+        if npc.disposition == Disposition::Hostile {
+            let idx = rng.gen_range(0..monster_names.len());
+            if let Some(def) = monsters::find_monster(monster_names[idx]) {
+                npc.combat_stats = Some(monsters::monster_to_combat_stats(def));
+            }
+        }
+    }
 
     let item_count = location_count / 2 + 2;
     let items = item::generate_items(rng, &location_ids, item_count);
