@@ -628,7 +628,72 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
                 ResolveResult::Found(id) => {
                     let item_id = id as u32;
                     let name = state.world.items.get(&item_id).map(|i| i.name.clone()).unwrap_or_else(|| item_name.clone());
-                    vec![format!("You use the {}. (Effects not yet implemented.)", name)]
+                    let item_type = state.world.items.get(&item_id).map(|i| i.item_type.clone());
+                    match item_type {
+                        Some(state::ItemType::Consumable { ref effect }) => {
+                            let result = match effect.as_str() {
+                                "heal_1d8" => {
+                                    let rolls = rules::dice::roll_dice(&mut rng, 1, 8);
+                                    let roll_total: i32 = rolls.iter().sum();
+                                    let old_hp = state.character.current_hp;
+                                    state.character.current_hp = (state.character.current_hp + roll_total).min(state.character.max_hp);
+                                    let healed = state.character.current_hp - old_hp;
+                                    if healed > 0 {
+                                        vec![narration::templates::USE_HEAL
+                                            .replace("{item}", &name)
+                                            .replace("{roll}", &healed.to_string())
+                                            .replace("{current}", &state.character.current_hp.to_string())
+                                            .replace("{max}", &state.character.max_hp.to_string())]
+                                    } else {
+                                        vec![narration::templates::USE_HEAL_FULL
+                                            .replace("{item}", &name)
+                                            .replace("{current}", &state.character.current_hp.to_string())
+                                            .replace("{max}", &state.character.max_hp.to_string())]
+                                    }
+                                }
+                                "light" => {
+                                    let loc_id = state.current_location;
+                                    if let Some(loc) = state.world.locations.get_mut(&loc_id) {
+                                        match loc.light_level {
+                                            state::LightLevel::Dark => {
+                                                loc.light_level = state::LightLevel::Dim;
+                                                vec![narration::templates::USE_LIGHT_UPGRADE
+                                                    .replace("{item}", &name)
+                                                    .replace("{old_level}", "dark")
+                                                    .replace("{new_level}", "dim")]
+                                            }
+                                            state::LightLevel::Dim => {
+                                                loc.light_level = state::LightLevel::Bright;
+                                                vec![narration::templates::USE_LIGHT_UPGRADE
+                                                    .replace("{item}", &name)
+                                                    .replace("{old_level}", "dim")
+                                                    .replace("{new_level}", "bright")]
+                                            }
+                                            state::LightLevel::Bright => {
+                                                vec![narration::templates::USE_LIGHT_ALREADY_BRIGHT
+                                                    .replace("{item}", &name)]
+                                            }
+                                        }
+                                    } else {
+                                        vec![narration::templates::USE_UNKNOWN_EFFECT.replace("{item}", &name)]
+                                    }
+                                }
+                                "nourish" => {
+                                    vec![narration::templates::USE_NOURISH.replace("{item}", &name)]
+                                }
+                                _ => {
+                                    vec![narration::templates::USE_UNKNOWN_EFFECT.replace("{item}", &name)]
+                                }
+                            };
+                            // Consume the item: remove from inventory and world
+                            state.character.inventory.retain(|&id| id != item_id);
+                            state.world.items.remove(&item_id);
+                            result
+                        }
+                        _ => {
+                            vec![narration::templates::USE_NOT_CONSUMABLE.replace("{item}", &name)]
+                        }
+                    }
                 }
                 ResolveResult::Ambiguous(matches) => resolver::format_disambiguation(&matches),
                 ResolveResult::NotFound => vec![format!("You don't have any \"{}\".", item_name)],
@@ -1893,6 +1958,132 @@ mod tests {
             assert!(npc.combat_stats.is_some(),
                 "Hostile NPC '{}' should have combat stats", npc.name);
         }
+    }
+
+    fn give_consumable_to_player(state: &mut GameState, name: &str, description: &str, effect: &str) -> u32 {
+        let item_id = (state.world.items.len() as u32) + 1000;
+        let item = state::Item {
+            id: item_id,
+            name: name.to_string(),
+            description: description.to_string(),
+            item_type: state::ItemType::Consumable { effect: effect.to_string() },
+            location: None,
+            carried_by_player: true,
+        };
+        state.world.items.insert(item_id, item);
+        state.character.inventory.push(item_id);
+        item_id
+    }
+
+    #[test]
+    fn test_use_healing_potion_restores_hp() {
+        let mut state = create_test_exploration_state();
+        state.character.current_hp = state.character.max_hp - 5;
+        give_consumable_to_player(&mut state, "Healing Potion", "A potion.", "heal_1d8");
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "use healing potion");
+        // Should mention healing / HP restored
+        assert!(output.text.iter().any(|t| t.contains("HP") || t.contains("heal") || t.contains("hp")),
+            "Should mention HP in output. Got: {:?}", output.text);
+        // Item should be consumed
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert!(!new_state.character.inventory.contains(&1000),
+            "Healing Potion should be removed from inventory");
+        assert!(!new_state.world.items.contains_key(&1000),
+            "Healing Potion should be removed from world items");
+    }
+
+    #[test]
+    fn test_use_healing_potion_caps_at_max_hp() {
+        let mut state = create_test_exploration_state();
+        // Only 1 HP missing — heal should cap at max
+        state.character.current_hp = state.character.max_hp - 1;
+        give_consumable_to_player(&mut state, "Healing Potion", "A potion.", "heal_1d8");
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "use healing potion");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert!(new_state.character.current_hp <= new_state.character.max_hp,
+            "HP should not exceed max_hp");
+    }
+
+    #[test]
+    fn test_use_torch_dark_to_dim() {
+        let mut state = create_test_exploration_state();
+        let loc_id = state.current_location;
+        state.world.locations.get_mut(&loc_id).unwrap().light_level = state::LightLevel::Dark;
+        give_consumable_to_player(&mut state, "Torch", "A torch.", "light");
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "use torch");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(new_state.world.locations[&loc_id].light_level, state::LightLevel::Dim,
+            "Dark room should become Dim after using torch");
+        assert!(!new_state.character.inventory.contains(&1000));
+    }
+
+    #[test]
+    fn test_use_torch_dim_to_bright() {
+        let mut state = create_test_exploration_state();
+        let loc_id = state.current_location;
+        state.world.locations.get_mut(&loc_id).unwrap().light_level = state::LightLevel::Dim;
+        give_consumable_to_player(&mut state, "Torch", "A torch.", "light");
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "use torch");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(new_state.world.locations[&loc_id].light_level, state::LightLevel::Bright,
+            "Dim room should become Bright after using torch");
+    }
+
+    #[test]
+    fn test_use_torch_already_bright() {
+        let mut state = create_test_exploration_state();
+        let loc_id = state.current_location;
+        state.world.locations.get_mut(&loc_id).unwrap().light_level = state::LightLevel::Bright;
+        give_consumable_to_player(&mut state, "Torch", "A torch.", "light");
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "use torch");
+        // Should inform player
+        assert!(output.text.iter().any(|t| t.to_lowercase().contains("bright") || t.to_lowercase().contains("already")),
+            "Should mention already bright. Got: {:?}", output.text);
+        // Still consumed
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert!(!new_state.character.inventory.contains(&1000));
+    }
+
+    #[test]
+    fn test_use_rations_nourish() {
+        let mut state = create_test_exploration_state();
+        give_consumable_to_player(&mut state, "Rations", "Food.", "nourish");
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "use rations");
+        assert!(output.text.iter().any(|t| t.to_lowercase().contains("nourish") || t.to_lowercase().contains("food") || t.to_lowercase().contains("eat")),
+            "Should mention nourishment. Got: {:?}", output.text);
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert!(!new_state.character.inventory.contains(&1000));
+    }
+
+    #[test]
+    fn test_use_non_consumable_item() {
+        let mut state = create_test_exploration_state();
+        // Add a misc item
+        let item_id = 2000u32;
+        let item = state::Item {
+            id: item_id,
+            name: "Old Coin".to_string(),
+            description: "A coin.".to_string(),
+            item_type: state::ItemType::Misc,
+            location: None,
+            carried_by_player: true,
+        };
+        state.world.items.insert(item_id, item);
+        state.character.inventory.push(item_id);
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "use old coin");
+        assert!(output.text.iter().any(|t| t.to_lowercase().contains("can't use")),
+            "Should say can't use. Got: {:?}", output.text);
+        // Item should NOT be consumed
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert!(new_state.character.inventory.contains(&item_id),
+            "Non-consumable item should still be in inventory");
     }
 
     fn create_test_exploration_state() -> GameState {
