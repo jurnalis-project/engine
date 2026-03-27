@@ -516,6 +516,7 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
                             // Check if it's the player's turn first
                             if combat_state.is_player_turn() {
                                 lines.push(String::new());
+                                lines.extend(combat::format_enemy_summary(state, &combat_state));
                                 lines.push("Your turn! Use: attack <target>, approach <target>, retreat, dodge, disengage, dash".to_string());
                             } else {
                                 // Process NPC turns before the player's first turn
@@ -527,6 +528,7 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
                                         lines.extend(end_combat(state, victory));
                                     } else {
                                         lines.push(String::new());
+                                        lines.extend(combat::format_enemy_summary(state, combat));
                                         lines.push("Your turn! Use: attack <target>, approach <target>, retreat, dodge, disengage, dash".to_string());
                                     }
                                 }
@@ -1246,10 +1248,11 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
             lines.extend(end_combat(state, victory));
             return lines;
         }
-        // Show turn prompt
+        // Show turn prompt with enemy summary
         lines.push(String::new());
         lines.push(format!("Your turn! (Round {}, HP: {}/{})",
             combat.round, state.character.current_hp, state.character.max_hp));
+        lines.extend(combat::format_enemy_summary(state, combat));
         lines.push("Commands: attack <target>, approach <target>, retreat, dodge, disengage, dash".to_string());
     }
 

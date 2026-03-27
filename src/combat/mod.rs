@@ -635,6 +635,25 @@ pub fn format_combat_status(state: &GameState, combat: &CombatState) -> Vec<Stri
     lines
 }
 
+/// Compact enemy status lines for the turn prompt.
+pub fn format_enemy_summary(state: &GameState, combat: &CombatState) -> Vec<String> {
+    let mut lines = Vec::new();
+    for (combatant, _) in &combat.initiative_order {
+        if let Combatant::Npc(id) = combatant {
+            if let Some(npc) = state.world.npcs.get(id) {
+                if let Some(stats) = &npc.combat_stats {
+                    if stats.current_hp <= 0 { continue; }
+                    let distance = combat.distances.get(id).copied().unwrap_or(0);
+                    let range_label = if distance <= 5 { "melee".to_string() } else { format!("{}ft", distance) };
+                    lines.push(format!("  {} — HP {}/{}, {}",
+                        npc.name, stats.current_hp, stats.max_hp, range_label));
+                }
+            }
+        }
+    }
+    lines
+}
+
 /// Format initiative order announcement.
 pub fn format_initiative(combat: &CombatState, state: &GameState) -> Vec<String> {
     let mut lines = Vec::new();
