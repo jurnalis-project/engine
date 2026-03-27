@@ -56,6 +56,15 @@ pub const UNEQUIP_WEAPON: &str = "You put away the {item}.";
 pub const UNEQUIP_ARMOR: &str = "You remove the {item}.";
 pub const UNEQUIP_NOT_EQUIPPED: &str = "You don't have \"{name}\" equipped.";
 
+// Consumable effect templates
+pub const USE_HEAL: &str = "You drink the {item}. You recover {roll} HP. (HP: {current}/{max})";
+pub const USE_HEAL_FULL: &str = "You drink the {item}. You feel refreshed, but you're already at full health. (HP: {current}/{max})";
+pub const USE_LIGHT_UPGRADE: &str = "You light the {item}. The room brightens from {old_level} to {new_level}.";
+pub const USE_LIGHT_ALREADY_BRIGHT: &str = "You light the {item}, but the room is already brightly lit.";
+pub const USE_NOURISH: &str = "You eat the {item}. You feel nourished and ready for the journey ahead.";
+pub const USE_UNKNOWN_EFFECT: &str = "You use the {item}. Nothing happens.";
+pub const USE_NOT_CONSUMABLE: &str = "You can't use the {item} that way.";
+
 pub const HELP_TEXT: &str = "\
 Commands:
   look [target]     - Examine surroundings or a specific thing
