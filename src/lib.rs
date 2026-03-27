@@ -1711,6 +1711,187 @@ mod tests {
         assert!(output.text.iter().any(|t| t.contains("equipped")), "Inventory should mark equipped items. Got: {:?}", output.text);
     }
 
+    fn create_test_combat_state() -> GameState {
+        let mut state = create_test_exploration_state();
+        // Add a hostile goblin with combat stats to current location
+        let npc_id = 100;
+        let loc_id = state.current_location;
+        state.world.npcs.insert(npc_id, state::Npc {
+            id: npc_id,
+            name: "Test Goblin".to_string(),
+            role: state::NpcRole::Guard,
+            disposition: state::Disposition::Hostile,
+            dialogue_tags: vec![],
+            location: loc_id,
+            combat_stats: Some(state::CombatStats {
+                max_hp: 7, current_hp: 7, ac: 15, speed: 30,
+                ability_scores: {
+                    let mut m = HashMap::new();
+                    m.insert(Ability::Strength, 8);
+                    m.insert(Ability::Dexterity, 14);
+                    m
+                },
+                attacks: vec![state::NpcAttack {
+                    name: "Scimitar".to_string(), hit_bonus: 4,
+                    damage_dice: 1, damage_die: 6, damage_bonus: 2,
+                    damage_type: state::DamageType::Slashing, reach: 5,
+                    range_normal: 0, range_long: 0,
+                }],
+                proficiency_bonus: 2,
+            }),
+        });
+        if let Some(loc) = state.world.locations.get_mut(&loc_id) {
+            loc.npcs.push(npc_id);
+        }
+
+        // Give player a weapon
+        let weapon_id = 200;
+        state.world.items.insert(weapon_id, state::Item {
+            id: weapon_id,
+            name: "Longsword".to_string(),
+            description: "A fine longsword.".to_string(),
+            item_type: state::ItemType::Weapon {
+                damage_dice: 1, damage_die: 8,
+                damage_type: state::DamageType::Slashing,
+                properties: crate::equipment::VERSATILE,
+                category: state::WeaponCategory::Martial,
+                versatile_die: 10, range_normal: 0, range_long: 0,
+            },
+            location: None,
+            carried_by_player: true,
+        });
+        state.character.inventory.push(weapon_id);
+        state.character.equipped.main_hand = Some(weapon_id);
+
+        // Start combat
+        let mut rng = rand::rngs::StdRng::seed_from_u64(state.rng_seed + state.rng_counter);
+        state.rng_counter += 1;
+        let combat_state = combat::start_combat(&mut rng, &state.character, &[npc_id], &state.world.npcs);
+        state.active_combat = Some(combat_state);
+        state
+    }
+
+    #[test]
+    fn test_combat_blocks_exploration_commands() {
+        let state = create_test_combat_state();
+        let state_json = serde_json::to_string(&state).unwrap();
+
+        let go_output = process_input(&state_json, "go north");
+        assert!(go_output.text.iter().any(|t| t.contains("can't do that during combat")),
+            "Go should be blocked. Got: {:?}", go_output.text);
+
+        let take_output = process_input(&state_json, "take sword");
+        assert!(take_output.text.iter().any(|t| t.contains("can't do that during combat")),
+            "Take should be blocked. Got: {:?}", take_output.text);
+    }
+
+    #[test]
+    fn test_combat_allows_look() {
+        let state = create_test_combat_state();
+        let state_json = serde_json::to_string(&state).unwrap();
+
+        let output = process_input(&state_json, "look");
+        assert!(output.text.iter().any(|t| t.contains("Combat")),
+            "Look should show combat status. Got: {:?}", output.text);
+    }
+
+    #[test]
+    fn test_combat_allows_inventory() {
+        let state = create_test_combat_state();
+        let state_json = serde_json::to_string(&state).unwrap();
+
+        let output = process_input(&state_json, "inventory");
+        assert!(output.text.iter().any(|t| t.contains("carrying")),
+            "Inventory should work in combat. Got: {:?}", output.text);
+    }
+
+    #[test]
+    fn test_combat_allows_help() {
+        let state = create_test_combat_state();
+        let state_json = serde_json::to_string(&state).unwrap();
+
+        let output = process_input(&state_json, "help");
+        assert!(output.text.iter().any(|t| t.contains("attack")),
+            "Help should show combat commands. Got: {:?}", output.text);
+    }
+
+    #[test]
+    fn test_combat_dodge_action() {
+        let mut state = create_test_combat_state();
+        // Ensure it's player's turn
+        if let Some(ref mut combat) = state.active_combat {
+            // Force player turn
+            for (i, (c, _)) in combat.initiative_order.iter().enumerate() {
+                if *c == combat::Combatant::Player {
+                    combat.current_turn = i;
+                    break;
+                }
+            }
+            combat.player_action_used = false;
+        }
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "dodge");
+        assert!(output.text.iter().any(|t| t.contains("Dodge")),
+            "Should confirm dodge. Got: {:?}", output.text);
+    }
+
+    #[test]
+    fn test_combat_disengage_action() {
+        let mut state = create_test_combat_state();
+        if let Some(ref mut combat) = state.active_combat {
+            for (i, (c, _)) in combat.initiative_order.iter().enumerate() {
+                if *c == combat::Combatant::Player {
+                    combat.current_turn = i;
+                    break;
+                }
+            }
+            combat.player_action_used = false;
+        }
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "disengage");
+        assert!(output.text.iter().any(|t| t.contains("Disengage")),
+            "Should confirm disengage. Got: {:?}", output.text);
+    }
+
+    #[test]
+    fn test_combat_dash_action() {
+        let mut state = create_test_combat_state();
+        if let Some(ref mut combat) = state.active_combat {
+            for (i, (c, _)) in combat.initiative_order.iter().enumerate() {
+                if *c == combat::Combatant::Player {
+                    combat.current_turn = i;
+                    break;
+                }
+            }
+            combat.player_action_used = false;
+        }
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "dash");
+        assert!(output.text.iter().any(|t| t.contains("Dash")),
+            "Should confirm dash. Got: {:?}", output.text);
+    }
+
+    #[test]
+    fn test_combat_not_in_combat_message() {
+        let state = create_test_exploration_state();
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "attack goblin");
+        assert!(output.text.iter().any(|t| t.contains("not in combat")),
+            "Should say not in combat. Got: {:?}", output.text);
+    }
+
+    #[test]
+    fn test_hostile_npcs_get_combat_stats() {
+        let state = create_test_exploration_state();
+        let hostile_npcs: Vec<_> = state.world.npcs.values()
+            .filter(|n| n.disposition == state::Disposition::Hostile)
+            .collect();
+        for npc in &hostile_npcs {
+            assert!(npc.combat_stats.is_some(),
+                "Hostile NPC '{}' should have combat stats", npc.name);
+        }
+    }
+
     fn create_test_exploration_state() -> GameState {
         let mut rng = StdRng::seed_from_u64(42);
         let mut scores = HashMap::new();
