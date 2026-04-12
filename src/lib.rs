@@ -757,8 +757,11 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
             let filename = name.unwrap_or_else(|| "autosave".to_string());
             vec![format!("[Load '{}.json'. Frontend handles file I/O.]", filename)]
         }
-        Command::Help(_) => {
-            vec![narration::templates::HELP_TEXT.to_string()]
+        Command::Help(topic) => {
+            narration::templates::render_help(
+                topic.as_deref(),
+                narration::templates::HelpPhase::Exploration,
+            )
         }
         Command::Equip(target_str) => {
             // Check for "off hand" suffix
@@ -1065,22 +1068,11 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
         Command::CharacterSheet => {
             return narration::narrate_character_sheet(state);
         }
-        Command::Help(_) => {
-            return vec![
-                "Combat commands:".to_string(),
-                "  attack <target>   - Attack an enemy".to_string(),
-                "  approach <target> - Move toward an enemy".to_string(),
-                "  retreat           - Move away from all enemies".to_string(),
-                "  dodge             - Dodge (grants disadvantage on incoming attacks)".to_string(),
-                "  disengage         - Disengage (no opportunity attacks this turn)".to_string(),
-                "  dash              - Dash (double movement this turn)".to_string(),
-                "  end turn          - End your turn and let enemies act".to_string(),
-                "  equip <item>      - Equip a weapon/armor".to_string(),
-                "  unequip <item>    - Unequip gear".to_string(),
-                "  look              - View combat status".to_string(),
-                "  inventory         - Check inventory".to_string(),
-                "  character         - View character sheet".to_string(),
-            ];
+        Command::Help(topic) => {
+            return narration::templates::render_help(
+                topic.as_deref(),
+                narration::templates::HelpPhase::Combat,
+            );
         }
         // Block exploration commands
         Command::Go(_) | Command::Talk(_) | Command::Take(_) | Command::Drop(_) => {
