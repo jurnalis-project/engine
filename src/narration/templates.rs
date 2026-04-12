@@ -106,3 +106,219 @@ Combat commands (available during combat):
   dash              - Take Dash action (double movement)
                       (also: run, sprint)
   end turn          - End your turn (also: end, pass, wait)";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HelpPhase {
+    Exploration,
+    Combat,
+}
+
+const EXPLORATION_HELP_TOPICS: &[&str] = &[
+    "movement",
+    "interaction",
+    "inventory",
+    "equipment",
+    "checks",
+    "system",
+    "combat",
+];
+
+const COMBAT_HELP_TOPICS: &[&str] = &[
+    "movement",
+    "inventory",
+    "equipment",
+    "system",
+    "combat",
+];
+
+pub fn render_help(topic: Option<&str>, phase: HelpPhase) -> Vec<String> {
+    let topic = topic.map(str::trim).filter(|value| !value.is_empty());
+
+    match topic {
+        None => overview_help(phase),
+        Some(raw_topic) => {
+            let Some(canonical_topic) = normalize_help_topic(raw_topic) else {
+                return unknown_topic_help(raw_topic, phase);
+            };
+
+            if !phase.valid_topics().contains(&canonical_topic) {
+                return unavailable_topic_help(canonical_topic, phase);
+            }
+
+            topic_help(canonical_topic, phase)
+        }
+    }
+}
+
+impl HelpPhase {
+    fn valid_topics(self) -> &'static [&'static str] {
+        match self {
+            HelpPhase::Exploration => EXPLORATION_HELP_TOPICS,
+            HelpPhase::Combat => COMBAT_HELP_TOPICS,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            HelpPhase::Exploration => "exploration",
+            HelpPhase::Combat => "combat",
+        }
+    }
+}
+
+fn normalize_help_topic(raw_topic: &str) -> Option<&'static str> {
+    let normalized = raw_topic.trim().to_lowercase().replace('-', " ");
+
+    match normalized.as_str() {
+        "movement" | "move" | "travel" | "navigation" | "directions" => Some("movement"),
+        "interaction" | "interact" | "look" | "talk" | "social" => Some("interaction"),
+        "inventory" | "inv" | "items" | "bag" => Some("inventory"),
+        "equipment" | "equip" | "gear" => Some("equipment"),
+        "checks" | "check" | "skill" | "skills" | "roll" => Some("checks"),
+        "system" | "save" | "load" | "help" | "commands" => Some("system"),
+        "combat" | "battle" | "fight" | "attack" => Some("combat"),
+        _ => None,
+    }
+}
+
+fn overview_help(phase: HelpPhase) -> Vec<String> {
+    match phase {
+        HelpPhase::Exploration => vec![
+            "Commands overview (exploration):".to_string(),
+            format!("Topics: {}.", phase.valid_topics().join(", ")),
+            "Type 'help <topic>' for focused guidance.".to_string(),
+            "Quick start: look, go <direction>, talk <npc>, take <item>, inventory, character.".to_string(),
+            "Use 'help combat' to preview commands that unlock during battles.".to_string(),
+        ],
+        HelpPhase::Combat => vec![
+            "Commands overview (combat):".to_string(),
+            format!("Topics: {}.", phase.valid_topics().join(", ")),
+            "Type 'help <topic>' for focused guidance.".to_string(),
+            "Quick start: attack <target>, approach <target>, retreat, dodge, dash, end turn.".to_string(),
+            "Utility commands still available: look, inventory, character, equip, unequip, help.".to_string(),
+        ],
+    }
+}
+
+fn topic_help(topic: &str, phase: HelpPhase) -> Vec<String> {
+    match (topic, phase) {
+        ("movement", HelpPhase::Exploration) => vec![
+            "Help: movement (exploration)".to_string(),
+            "  go <direction> - Move to an adjacent location.".to_string(),
+            "  Direction shortcuts: n, s, e, w, u, d.".to_string(),
+            "  Aliases: walk, move, head.".to_string(),
+        ],
+        ("movement", HelpPhase::Combat) => vec![
+            "Help: movement (combat)".to_string(),
+            "  approach <target> - Move toward an enemy.".to_string(),
+            "  retreat - Move away from all enemies.".to_string(),
+            "  dash - Double your movement for this turn.".to_string(),
+            "  Note: go <direction> is disabled during combat.".to_string(),
+        ],
+        ("interaction", HelpPhase::Exploration) => vec![
+            "Help: interaction".to_string(),
+            "  look [target] - Examine the area or a specific target.".to_string(),
+            "  talk <npc> - Start dialogue with someone nearby.".to_string(),
+            "  take <item> / drop <item> - Move items between room and inventory.".to_string(),
+            "  use <item> - Activate consumables or usable items.".to_string(),
+        ],
+        ("inventory", _) => vec![
+            "Help: inventory".to_string(),
+            "  inventory (i) - List carried items and equipped tags.".to_string(),
+            "  take <item> - Pick up an item into inventory.".to_string(),
+            "  drop <item> - Remove an item from inventory.".to_string(),
+        ],
+        ("equipment", _) => vec![
+            "Help: equipment".to_string(),
+            "  equip <item> - Equip a weapon or armor piece.".to_string(),
+            "  unequip <item> - Remove equipped gear.".to_string(),
+            "  Optional suffix: 'off hand' (for light one-handed weapons).".to_string(),
+            "  Example: equip dagger off hand".to_string(),
+        ],
+        ("checks", HelpPhase::Exploration) => vec![
+            "Help: checks".to_string(),
+            "  check <skill> - Roll a skill check against the default DC.".to_string(),
+            "  Aliases: roll, try.".to_string(),
+            "  Example: check perception".to_string(),
+        ],
+        ("system", _) => vec![
+            "Help: system".to_string(),
+            "  save [name] - Prepare game state for saving (frontend writes file).".to_string(),
+            "  load [name] - Load a saved state (frontend reads file).".to_string(),
+            "  help / ? / commands - Show overview or topic help.".to_string(),
+            "  character (char) - View your character sheet.".to_string(),
+        ],
+        ("combat", HelpPhase::Exploration) => vec![
+            "Help: combat".to_string(),
+            "Combat starts automatically when hostile NPCs are present.".to_string(),
+            "When combat starts, these commands unlock: attack, approach, retreat, dodge, disengage, dash, end turn.".to_string(),
+            "Use 'help combat' again during battle for in-combat details.".to_string(),
+        ],
+        ("combat", HelpPhase::Combat) => vec![
+            "Help: combat".to_string(),
+            "  attack <target> - Attack an enemy in range.".to_string(),
+            "  approach <target> - Move toward an enemy.".to_string(),
+            "  retreat - Move away from all enemies.".to_string(),
+            "  dodge / disengage / dash - Tactical actions for your turn.".to_string(),
+            "  end turn - End your turn and advance initiative.".to_string(),
+        ],
+        _ => unreachable!("Topic '{topic}' should be resolved before rendering"),
+    }
+}
+
+fn unknown_topic_help(raw_topic: &str, phase: HelpPhase) -> Vec<String> {
+    vec![
+        format!("Unknown help topic: '{}'.", raw_topic.trim()),
+        format!(
+            "Valid topics during {}: {}.",
+            phase.name(),
+            phase.valid_topics().join(", ")
+        ),
+        "Type 'help' for an overview.".to_string(),
+    ]
+}
+
+fn unavailable_topic_help(topic: &str, phase: HelpPhase) -> Vec<String> {
+    vec![
+        format!(
+            "The '{}' topic is not available during {}.",
+            topic,
+            phase.name()
+        ),
+        format!("Valid topics right now: {}.", phase.valid_topics().join(", ")),
+        "Type 'help' for an overview.".to_string(),
+    ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{render_help, HelpPhase};
+
+    #[test]
+    fn help_overview_lists_topics_for_exploration() {
+        let lines = render_help(None, HelpPhase::Exploration);
+
+        assert!(lines.iter().any(|line| line.contains("Commands overview (exploration)")));
+        assert!(lines.iter().any(|line| line.contains("movement")));
+        assert!(lines.iter().any(|line| line.contains("combat")));
+    }
+
+    #[test]
+    fn help_topic_is_phase_aware() {
+        let exploration_lines = render_help(Some("movement"), HelpPhase::Exploration);
+        let combat_lines = render_help(Some("movement"), HelpPhase::Combat);
+
+        assert!(exploration_lines.iter().any(|line| line.contains("go <direction>")));
+        assert!(combat_lines.iter().any(|line| line.contains("approach <target>")));
+    }
+
+    #[test]
+    fn help_unknown_topic_lists_valid_topics_for_phase() {
+        let lines = render_help(Some("mystery"), HelpPhase::Combat);
+
+        assert!(lines.iter().any(|line| line.contains("Unknown help topic")));
+        assert!(lines.iter().any(|line| line.contains("Valid topics during combat")));
+        assert!(lines.iter().any(|line| line.contains("movement, inventory, equipment, system, combat")));
+    }
+}
+
