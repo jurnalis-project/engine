@@ -77,6 +77,15 @@ pub fn process_input(state_json: &str, input: &str) -> GameOutput {
 
     let old_state_json = state_json.to_string();
 
+    if state.character.current_hp <= 0 {
+        let text = vec![
+            "=== GAME OVER ===".to_string(),
+            "You have been defeated.".to_string(),
+            "Load a previous save or return to the main menu.".to_string(),
+        ];
+        return GameOutput::new(text, old_state_json, false);
+    }
+
     let result = if state.active_combat.is_some() {
         handle_combat(&mut state, input)
     } else {
@@ -993,7 +1002,7 @@ fn end_combat(state: &mut GameState, victory: bool) -> Vec<String> {
             String::new(),
             "=== DEFEAT ===".to_string(),
             "You have fallen in battle...".to_string(),
-            "Your adventure ends here.".to_string(),
+            "Load a previous save or return to the main menu.".to_string(),
         ]
     }
 }
@@ -2123,6 +2132,30 @@ mod tests {
         let output = process_input(&state_json, "attack goblin");
         assert!(output.text.iter().any(|t| t.contains("not in combat")),
             "Should say not in combat. Got: {:?}", output.text);
+    }
+
+    #[test]
+    fn test_defeat_state_blocks_regular_commands() {
+        let mut state = create_test_combat_state();
+        state.character.current_hp = 0;
+        state.active_combat = None;
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "go north");
+
+        assert!(output.text.iter().any(|t| t.contains("GAME OVER")),
+            "Expected GAME OVER status. Got: {:?}", output.text);
+        assert!(output.text.iter().any(|t| t.contains("Load a previous save")),
+            "Expected recovery options in output. Got: {:?}", output.text);
+        assert_eq!(output.state_json, state_json);
+        assert!(!output.state_changed);
+    }
+
+    #[test]
+    fn test_end_combat_defeat_mentions_recovery_options() {
+        let mut state = create_test_exploration_state();
+        let lines = end_combat(&mut state, false);
+        assert!(lines.iter().any(|line| line.contains("Load a previous save")));
     }
 
     #[test]
