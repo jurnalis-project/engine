@@ -19,6 +19,7 @@ pub enum Command {
     Save(Option<String>),
     Load(Option<String>),
     Help(Option<String>),
+    EndTurn,
     // Combat commands
     Attack(String),
     Approach(String),
@@ -108,6 +109,9 @@ pub fn parse(input: &str) -> Command {
             "move away" | "fall back" | "back up" => {
                 return Command::Retreat;
             }
+            "end turn" => {
+                return Command::EndTurn;
+            }
             _ => {}
         }
     }
@@ -163,6 +167,7 @@ pub fn parse(input: &str) -> Command {
         "dodge" => Command::Dodge,
         "disengage" | "withdraw" => Command::Disengage,
         "dash" | "run" | "sprint" => Command::Dash,
+        "end" | "pass" | "wait" => Command::EndTurn,
         "inventory" | "i" | "inv" | "items" | "bag" => Command::Inventory,
         "character" | "char" | "sheet" | "stats" | "status" => Command::CharacterSheet,
         "check" | "roll" | "try" => {
@@ -516,6 +521,14 @@ mod tests {
         assert_eq!(parse("dash"), Command::Dash);
         assert_eq!(parse("run"), Command::Dash);
         assert_eq!(parse("sprint"), Command::Dash);
+    }
+
+    #[test]
+    fn test_end_turn_command() {
+        assert_eq!(parse("end turn"), Command::EndTurn);
+        assert_eq!(parse("end"), Command::EndTurn);
+        assert_eq!(parse("pass"), Command::EndTurn);
+        assert_eq!(parse("wait"), Command::EndTurn);
     }
 
     #[test]

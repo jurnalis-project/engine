@@ -933,7 +933,7 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
                 ResolveResult::NotFound => vec![narration::templates::UNEQUIP_NOT_EQUIPPED.replace("{name}", &target_str)],
             }
         }
-        Command::Attack(_) | Command::Approach(_) | Command::Retreat | Command::Dodge | Command::Disengage | Command::Dash => {
+        Command::Attack(_) | Command::Approach(_) | Command::Retreat | Command::Dodge | Command::Disengage | Command::Dash | Command::EndTurn => {
             vec!["You're not in combat.".to_string()]
         }
         Command::Unknown(s) => {
