@@ -18,6 +18,8 @@ pub struct GameState {
     pub rng_counter: u64,
     pub game_phase: GamePhase,
     pub active_combat: Option<crate::combat::CombatState>,
+    #[serde(default)]
+    pub ironman_mode: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -223,6 +225,7 @@ mod tests {
             rng_counter: 0,
             game_phase: GamePhase::Exploration,
             active_combat: None,
+            ironman_mode: false,
         }
     }
 

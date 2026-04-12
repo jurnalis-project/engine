@@ -4,7 +4,7 @@ use jurnalis_engine::{new_game, process_input};
 /// Run the REPL loop with injectable I/O for testability.
 /// Returns when the user types "quit" or "exit", or when input is exhausted.
 fn run_repl<R: BufRead, W: Write>(reader: &mut R, writer: &mut W, seed: u64) -> io::Result<()> {
-    let output = new_game(seed);
+    let output = new_game(seed, false);
     for line in &output.text {
         writeln!(writer, "{}", line)?;
     }

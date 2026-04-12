@@ -22,7 +22,7 @@ use character::{race::Race, class::Class, STANDARD_ARRAY, generate_random_scores
 use character::create_character;
 use types::{Ability, Skill};
 
-pub fn new_game(seed: u64) -> GameOutput {
+pub fn new_game(seed: u64, ironman_mode: bool) -> GameOutput {
     let state = GameState {
         version: SAVE_VERSION.to_string(),
         character: character::create_character(
@@ -46,6 +46,7 @@ pub fn new_game(seed: u64) -> GameOutput {
         rng_counter: 0,
         game_phase: GamePhase::CharacterCreation(CreationStep::ChooseRace),
         active_combat: None,
+        ironman_mode,
     };
 
     let state_json = serde_json::to_string(&state).unwrap();
@@ -1525,7 +1526,7 @@ mod tests {
 
     #[test]
     fn test_new_game_returns_creation_prompt() {
-        let output = new_game(42);
+        let output = new_game(42, false);
         assert!(output.text.iter().any(|t| t.contains("Choose your race")));
     }
 
@@ -1545,7 +1546,7 @@ mod tests {
 
     #[test]
     fn test_full_character_creation_flow() {
-        let output = new_game(42);
+        let output = new_game(42, false);
         let state = &output.state_json;
 
         // Choose race
@@ -2131,6 +2132,7 @@ mod tests {
             rng_counter: 100,
             game_phase: GamePhase::Exploration,
             active_combat: None,
+            ironman_mode: false,
         }
     }
 }

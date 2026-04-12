@@ -766,6 +766,7 @@ mod tests {
             rng_counter: 0,
             game_phase: GamePhase::Exploration,
             active_combat: None,
+            ironman_mode: false,
         }
     }
 
