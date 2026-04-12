@@ -182,6 +182,21 @@ pub fn start_combat(
     }
 }
 
+/// Returns true if any living hostile NPC is within the specified distance.
+pub fn has_living_hostile_within(state: &GameState, combat: &CombatState, feet: u32) -> bool {
+    combat.initiative_order.iter().any(|(combatant, _)| match combatant {
+        Combatant::Player => false,
+        Combatant::Npc(id) => {
+            let alive = state.world.npcs.get(id)
+                .and_then(|npc| npc.combat_stats.as_ref())
+                .map(|stats| stats.current_hp > 0)
+                .unwrap_or(false);
+            let dist = combat.distances.get(id).copied().unwrap_or(u32::MAX);
+            alive && dist <= feet
+        }
+    })
+}
+
 // ---- Attack Resolution ----
 
 /// Result of an attack roll.
@@ -232,6 +247,7 @@ pub fn resolve_player_attack(
     items: &HashMap<ItemId, crate::state::Item>,
     distance: u32,
     off_hand_free: bool,
+    hostile_within_5ft: bool,
 ) -> AttackResult {
     let (weapon_name, damage_dice, damage_die, damage_type, properties, versatile_die, range_normal, range_long) =
         match weapon_id.and_then(|id| items.get(&id)) {
@@ -301,8 +317,9 @@ pub fn resolve_player_attack(
         disadvantage = true;
     }
     if ranged {
-        // Disadvantage if hostile within 5 ft (simplified: if any NPC within 5 ft, checked by caller)
-        // This is handled at the caller level for now
+        if hostile_within_5ft {
+            disadvantage = true;
+        }
         if distance > range_normal as u32 && distance <= range_long as u32 {
             disadvantage = true; // Long range
         }
@@ -413,8 +430,9 @@ pub fn resolve_opportunity_attack(
     let stats = npc.combat_stats.as_ref()?;
     if stats.current_hp <= 0 { return None; }
 
-    // Find a melee attack
-    let melee_attack = stats.attacks.iter().find(|a| a.reach > 0)?;
+    // Find a melee attack that can reach the player at current distance
+    let melee_attack = stats.attacks.iter()
+        .find(|a| a.reach > 0 && distance <= a.reach as u32)?;
     let result = resolve_npc_attack(rng, melee_attack, player_ac, false, distance);
     Some((npc.name.clone(), result))
 }
@@ -562,17 +580,38 @@ pub fn retreat(
         return vec!["You have no movement remaining this turn.".to_string()];
     }
 
-    // Check for opportunity attacks from NPCs in melee range (if not disengaging)
+    let move_amount = movement as u32;
+
+    // Check for opportunity attacks from NPCs only when retreat leaves their reach (if not disengaging)
     if !combat.player_disengaging {
         let player_ac = crate::equipment::calculate_ac(&state.character, &state.world.items);
-        let melee_npc_ids: Vec<NpcId> = combat.distances.iter()
-            .filter(|(_, &dist)| dist <= 5)
-            .map(|(&id, _)| id)
+        let potential_attackers: Vec<(NpcId, u32, u32)> = combat.distances.iter()
+            .map(|(&id, &old_distance)| {
+                let new_distance = old_distance.saturating_add(move_amount);
+                (id, old_distance, new_distance)
+            })
             .collect();
 
-        for npc_id in melee_npc_ids {
-            // Check if NPC is alive and has a melee attack
-            if let Some((npc_name, result)) = resolve_opportunity_attack(rng, npc_id, state, player_ac, 5) {
+        for (npc_id, old_distance, new_distance) in potential_attackers {
+            let leaves_reach = state.world.npcs.get(&npc_id)
+                .and_then(|npc| npc.combat_stats.as_ref())
+                .and_then(|stats| {
+                    if stats.current_hp <= 0 {
+                        return None;
+                    }
+                    let max_melee_reach = stats.attacks.iter()
+                        .filter(|a| a.reach > 0)
+                        .map(|a| a.reach as u32)
+                        .max()?;
+                    Some(old_distance <= max_melee_reach && new_distance > max_melee_reach)
+                })
+                .unwrap_or(false);
+
+            if !leaves_reach {
+                continue;
+            }
+
+            if let Some((npc_name, result)) = resolve_opportunity_attack(rng, npc_id, state, player_ac, old_distance) {
                 if result.hit {
                     state.character.current_hp -= result.damage;
                     lines.push(format!("{} makes an opportunity attack with {} -- hit for {} {} damage!",
@@ -586,7 +625,6 @@ pub fn retreat(
     }
 
     // Move all distances by movement amount
-    let move_amount = movement as u32;
     for (_, dist) in combat.distances.iter_mut() {
         *dist += move_amount;
     }
@@ -802,6 +840,24 @@ mod tests {
     }
 
     #[test]
+    fn test_has_living_hostile_within() {
+        let mut state = test_state_with_goblin();
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+
+        combat.distances.insert(0, 5);
+        assert!(has_living_hostile_within(&state, &combat, 5));
+
+        combat.distances.insert(0, 10);
+        assert!(!has_living_hostile_within(&state, &combat, 5));
+
+        // dead enemy should not count
+        state.world.npcs.get_mut(&0).unwrap().combat_stats.as_mut().unwrap().current_hp = 0;
+        combat.distances.insert(0, 5);
+        assert!(!has_living_hostile_within(&state, &combat, 5));
+    }
+
+    #[test]
     fn test_resolve_npc_attack_hit_or_miss() {
         let attack = NpcAttack {
             name: "Scimitar".to_string(), hit_bonus: 4,
@@ -911,7 +967,7 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(42);
         let player = test_character();
         let items = HashMap::new();
-        let result = resolve_player_attack(&mut rng, &player, 15, false, None, &items, 5, true);
+        let result = resolve_player_attack(&mut rng, &player, 15, false, None, &items, 5, true, false);
         assert!(result.hit, "Unarmed always hits");
         // STR 16+1(human)=17, mod +3, damage = 1+3 = 4
         assert_eq!(result.damage, 4);
@@ -956,6 +1012,60 @@ mod tests {
         let lines = retreat(&mut rng, &mut state, &mut combat);
         assert_eq!(*combat.distances.get(&0).unwrap(), 50);
         assert!(lines.iter().any(|l| l.contains("retreat")));
+    }
+
+    #[test]
+    fn test_retreat_triggers_opportunity_attack_with_reach_10() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut state = test_state_with_goblin();
+        state.world.npcs.get_mut(&0).unwrap()
+            .combat_stats.as_mut().unwrap()
+            .attacks[0].reach = 10;
+
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        combat.distances.insert(0, 10);
+        combat.player_movement_remaining = 30;
+        combat.player_disengaging = false;
+
+        let lines = retreat(&mut rng, &mut state, &mut combat);
+        assert!(lines.iter().any(|l| l.contains("opportunity attack")),
+            "Expected opportunity attack narration, got {:?}", lines);
+    }
+
+    #[test]
+    fn test_retreat_no_opportunity_attack_outside_reach_5() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut state = test_state_with_goblin();
+        state.world.npcs.get_mut(&0).unwrap()
+            .combat_stats.as_mut().unwrap()
+            .attacks[0].reach = 5;
+
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        combat.distances.insert(0, 10);
+        combat.player_movement_remaining = 30;
+        combat.player_disengaging = false;
+
+        let lines = retreat(&mut rng, &mut state, &mut combat);
+        assert!(!lines.iter().any(|l| l.contains("opportunity attack")),
+            "Did not expect opportunity attack narration, got {:?}", lines);
+    }
+
+    #[test]
+    fn test_retreat_no_opportunity_attack_when_still_within_reach_10() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut state = test_state_with_goblin();
+        state.world.npcs.get_mut(&0).unwrap()
+            .combat_stats.as_mut().unwrap()
+            .attacks[0].reach = 10;
+
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        combat.distances.insert(0, 5);
+        combat.player_movement_remaining = 5; // Move to 10ft, still within reach 10
+        combat.player_disengaging = false;
+
+        let lines = retreat(&mut rng, &mut state, &mut combat);
+        assert!(!lines.iter().any(|l| l.contains("opportunity attack")),
+            "Should not trigger OA when still within reach, got {:?}", lines);
     }
 
     #[test]

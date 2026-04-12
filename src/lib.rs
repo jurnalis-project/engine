@@ -934,7 +934,7 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
                 ResolveResult::NotFound => vec![narration::templates::UNEQUIP_NOT_EQUIPPED.replace("{name}", &target_str)],
             }
         }
-        Command::Attack(_) | Command::Approach(_) | Command::Retreat | Command::Dodge | Command::Disengage | Command::Dash => {
+        Command::Attack(_) | Command::Approach(_) | Command::Retreat | Command::Dodge | Command::Disengage | Command::Dash | Command::EndTurn => {
             vec!["You're not in combat.".to_string()]
         }
         Command::Unknown(s) => {
@@ -998,6 +998,24 @@ fn end_combat(state: &mut GameState, victory: bool) -> Vec<String> {
     }
 }
 
+fn append_player_turn_prompt(lines: &mut Vec<String>, state: &GameState, combat: &combat::CombatState) {
+    lines.push(String::new());
+    lines.push(format!(
+        "Your turn! (Round {}, HP: {}/{})",
+        combat.round,
+        state.character.current_hp,
+        state.character.max_hp
+    ));
+    let action_status = if combat.player_action_used { "used" } else { "available" };
+    lines.push(format!(
+        "Movement remaining: {} ft | Action: {}",
+        combat.player_movement_remaining,
+        action_status
+    ));
+    lines.extend(combat::format_enemy_summary(state, combat));
+    lines.push("Commands: attack <target>, approach <target>, retreat, dodge, disengage, dash, end turn".to_string());
+}
+
 fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
     let command = parser::parse(input);
     let mut rng = StdRng::seed_from_u64(state.rng_seed + state.rng_counter);
@@ -1047,6 +1065,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                 "  dodge             - Dodge (grants disadvantage on incoming attacks)".to_string(),
                 "  disengage         - Disengage (no opportunity attacks this turn)".to_string(),
                 "  dash              - Dash (double movement this turn)".to_string(),
+                "  end turn          - End your turn and let enemies act".to_string(),
                 "  equip <item>      - Equip a weapon/armor".to_string(),
                 "  unequip <item>    - Unequip gear".to_string(),
                 "  look              - View combat status".to_string(),
@@ -1073,6 +1092,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
     }
 
     let mut lines = Vec::new();
+    let mut should_end_turn = false;
 
     match command {
         Command::Attack(target_name) => {
@@ -1141,9 +1161,11 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                         return vec!["You're too far away for an unarmed strike. Move closer first (approach <target>).".to_string()];
                     }
 
+                    let hostile_within_5ft = combat::has_living_hostile_within(state, &combat, 5);
+
                     let result = combat::resolve_player_attack(
                         &mut rng, &state.character, target_ac, target_dodging,
-                        weapon_id, &state.world.items, distance, off_hand_free,
+                        weapon_id, &state.world.items, distance, off_hand_free, hostile_within_5ft,
                     );
 
                     let npc_name = state.world.npcs.get(&npc_id)
@@ -1189,6 +1211,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                     }
 
                     combat.player_action_used = true;
+                    should_end_turn = combat.player_movement_remaining <= 0;
                 }
                 ResolveResult::Ambiguous(matches) => {
                     state.active_combat = Some(combat);
@@ -1241,6 +1264,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
             }
             combat.player_dodging = true;
             combat.player_action_used = true;
+            should_end_turn = combat.player_movement_remaining <= 0;
             lines.push("You take the Dodge action. Attacks against you have disadvantage until your next turn.".to_string());
         }
         Command::Disengage => {
@@ -1250,6 +1274,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
             }
             combat.player_disengaging = true;
             combat.player_action_used = true;
+            should_end_turn = combat.player_movement_remaining <= 0;
             lines.push("You take the Disengage action. You can retreat without provoking opportunity attacks.".to_string());
         }
         Command::Dash => {
@@ -1259,6 +1284,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
             }
             combat.player_movement_remaining += state.character.speed;
             combat.player_action_used = true;
+            should_end_turn = false;
             lines.push(format!("You take the Dash action. Movement this turn: {} ft.", combat.player_movement_remaining));
         }
         Command::Equip(target_str) => {
@@ -1266,20 +1292,22 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                 state.active_combat = Some(combat);
                 return vec!["You've already used your action this turn.".to_string()];
             }
-            state.active_combat = Some(combat);
-            let result = handle_equip_command(state, &target_str);
-            state.active_combat.as_mut().unwrap().player_action_used = true;
-            return result;
+            lines.extend(handle_equip_command(state, &target_str));
+            combat.player_action_used = true;
+            should_end_turn = combat.player_movement_remaining <= 0;
         }
         Command::Unequip(target_str) => {
             if combat.player_action_used {
                 state.active_combat = Some(combat);
                 return vec!["You've already used your action this turn.".to_string()];
             }
-            state.active_combat = Some(combat);
-            let result = handle_unequip_command(state, &target_str);
-            state.active_combat.as_mut().unwrap().player_action_used = true;
-            return result;
+            lines.extend(handle_unequip_command(state, &target_str));
+            combat.player_action_used = true;
+            should_end_turn = combat.player_movement_remaining <= 0;
+        }
+        Command::EndTurn => {
+            lines.push("You end your turn.".to_string());
+            should_end_turn = true;
         }
         Command::Unknown(s) => {
             state.active_combat = Some(combat);
@@ -1294,14 +1322,21 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
         }
     }
 
-    // After player action, check if combat ended
+    // After player command, check if combat ended
     if let Some(victory) = combat.check_end(state) {
         state.active_combat = Some(combat);
         lines.extend(end_combat(state, victory));
         return lines;
     }
 
-    // Advance past player turn and process NPC turns
+    // Keep player's turn open unless explicitly ending turn (or no meaningful options remain)
+    if !should_end_turn {
+        append_player_turn_prompt(&mut lines, state, &combat);
+        state.active_combat = Some(combat);
+        return lines;
+    }
+
+    // End player's turn: advance and process NPC turns
     combat.advance_turn(state);
     state.active_combat = Some(combat);
 
@@ -1314,12 +1349,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
             lines.extend(end_combat(state, victory));
             return lines;
         }
-        // Show turn prompt with enemy summary
-        lines.push(String::new());
-        lines.push(format!("Your turn! (Round {}, HP: {}/{})",
-            combat.round, state.character.current_hp, state.character.max_hp));
-        lines.extend(combat::format_enemy_summary(state, combat));
-        lines.push("Commands: attack <target>, approach <target>, retreat, dodge, disengage, dash".to_string());
+        append_player_turn_prompt(&mut lines, state, combat);
     }
 
     lines
@@ -1854,6 +1884,19 @@ mod tests {
         state
     }
 
+    fn force_player_turn(state: &mut GameState) {
+        if let Some(ref mut combat) = state.active_combat {
+            for (i, (c, _)) in combat.initiative_order.iter().enumerate() {
+                if *c == combat::Combatant::Player {
+                    combat.current_turn = i;
+                    break;
+                }
+            }
+            combat.player_action_used = false;
+            combat.player_movement_remaining = state.character.speed;
+        }
+    }
+
     #[test]
     fn test_combat_blocks_exploration_commands() {
         let state = create_test_combat_state();
@@ -1952,6 +1995,125 @@ mod tests {
         let output = process_input(&state_json, "dash");
         assert!(output.text.iter().any(|t| t.contains("Dash")),
             "Should confirm dash. Got: {:?}", output.text);
+    }
+
+    #[test]
+    fn test_combat_approach_keeps_player_turn_open() {
+        let mut state = create_test_combat_state();
+        force_player_turn(&mut state);
+        if let Some(ref mut combat) = state.active_combat {
+            combat.distances.insert(100, 30);
+        }
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "approach test goblin");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        let combat = new_state.active_combat.as_ref().unwrap();
+
+        assert!(combat.is_player_turn(), "Approach should not auto-end turn");
+        assert!(combat.player_movement_remaining < state.character.speed,
+            "Movement should stay partially spent on same turn, got {}",
+            combat.player_movement_remaining);
+        assert!(output.text.iter().any(|t| t.contains("Your turn!")),
+            "Expected turn prompt, got: {:?}", output.text);
+    }
+
+    #[test]
+    fn test_combat_attack_keeps_turn_open_when_movement_remaining() {
+        let mut state = create_test_combat_state();
+        force_player_turn(&mut state);
+        if let Some(ref mut combat) = state.active_combat {
+            combat.distances.insert(100, 5);
+            combat.player_movement_remaining = 30;
+        }
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "attack test goblin");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        let combat = new_state.active_combat.as_ref().unwrap();
+
+        assert!(combat.is_player_turn(), "Attack should not auto-end turn when movement remains");
+        assert!(combat.player_action_used, "Attack should consume action");
+    }
+
+    #[test]
+    fn test_combat_end_turn_advances_to_npc_and_back() {
+        let mut state = create_test_combat_state();
+        force_player_turn(&mut state);
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "end turn");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+
+        let combat = new_state.active_combat.as_ref().unwrap();
+        assert!(combat.is_player_turn(), "After NPC cycle, control should return to player");
+        assert!(output.text.iter().any(|t| t.contains("You end your turn.")),
+            "Expected end-turn confirmation, got: {:?}", output.text);
+        assert!(output.text.iter().any(|t| t.contains("Your turn!")),
+            "Expected player turn prompt after NPC turns, got: {:?}", output.text);
+    }
+
+    #[test]
+    fn test_invalid_combat_command_does_not_consume_action_or_turn() {
+        let mut state = create_test_combat_state();
+        force_player_turn(&mut state);
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "dance wildly");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        let combat = new_state.active_combat.as_ref().unwrap();
+
+        assert!(combat.is_player_turn());
+        assert!(!combat.player_action_used);
+    }
+
+    #[test]
+    fn test_combat_ranged_attack_in_melee_has_disadvantage() {
+        let mut state = create_test_combat_state();
+
+        // Force player turn
+        if let Some(ref mut combat) = state.active_combat {
+            for (i, (c, _)) in combat.initiative_order.iter().enumerate() {
+                if *c == combat::Combatant::Player {
+                    combat.current_turn = i;
+                    break;
+                }
+            }
+            combat.player_action_used = false;
+            combat.player_movement_remaining = 30;
+            combat.distances.insert(100, 5); // target in melee range
+        }
+
+        // Equip a ranged weapon (shortbow)
+        let bow_id = 201u32;
+        state.world.items.insert(bow_id, state::Item {
+            id: bow_id,
+            name: "Shortbow".to_string(),
+            description: "A shortbow.".to_string(),
+            item_type: state::ItemType::Weapon {
+                damage_dice: 1,
+                damage_die: 6,
+                damage_type: state::DamageType::Piercing,
+                properties: crate::equipment::AMMUNITION,
+                category: state::WeaponCategory::Simple,
+                versatile_die: 0,
+                range_normal: 80,
+                range_long: 320,
+            },
+            location: None,
+            carried_by_player: true,
+        });
+        state.character.inventory.push(bow_id);
+        state.character.equipped.main_hand = Some(bow_id);
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "attack test goblin");
+
+        assert!(
+            output.text.iter().any(|t| t.to_lowercase().contains("disadvantage")),
+            "Expected disadvantage text for ranged attack in melee. Got: {:?}",
+            output.text
+        );
     }
 
     #[test]
