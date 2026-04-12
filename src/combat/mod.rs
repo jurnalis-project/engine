@@ -430,8 +430,9 @@ pub fn resolve_opportunity_attack(
     let stats = npc.combat_stats.as_ref()?;
     if stats.current_hp <= 0 { return None; }
 
-    // Find a melee attack
-    let melee_attack = stats.attacks.iter().find(|a| a.reach > 0)?;
+    // Find a melee attack that can reach the player at current distance
+    let melee_attack = stats.attacks.iter()
+        .find(|a| a.reach > 0 && distance <= a.reach as u32)?;
     let result = resolve_npc_attack(rng, melee_attack, player_ac, false, distance);
     Some((npc.name.clone(), result))
 }
@@ -579,17 +580,16 @@ pub fn retreat(
         return vec!["You have no movement remaining this turn.".to_string()];
     }
 
-    // Check for opportunity attacks from NPCs in melee range (if not disengaging)
+    // Check for opportunity attacks from NPCs that can currently reach the player (if not disengaging)
     if !combat.player_disengaging {
         let player_ac = crate::equipment::calculate_ac(&state.character, &state.world.items);
-        let melee_npc_ids: Vec<NpcId> = combat.distances.iter()
-            .filter(|(_, &dist)| dist <= 5)
-            .map(|(&id, _)| id)
+        let potential_attackers: Vec<(NpcId, u32)> = combat.distances.iter()
+            .map(|(&id, &dist)| (id, dist))
             .collect();
 
-        for npc_id in melee_npc_ids {
-            // Check if NPC is alive and has a melee attack
-            if let Some((npc_name, result)) = resolve_opportunity_attack(rng, npc_id, state, player_ac, 5) {
+        for (npc_id, distance) in potential_attackers {
+            // Check if NPC is alive and has a melee attack within reach at current distance
+            if let Some((npc_name, result)) = resolve_opportunity_attack(rng, npc_id, state, player_ac, distance) {
                 if result.hit {
                     state.character.current_hp -= result.damage;
                     lines.push(format!("{} makes an opportunity attack with {} -- hit for {} {} damage!",
@@ -990,6 +990,39 @@ mod tests {
         let lines = retreat(&mut rng, &mut state, &mut combat);
         assert_eq!(*combat.distances.get(&0).unwrap(), 50);
         assert!(lines.iter().any(|l| l.contains("retreat")));
+    }
+
+    #[test]
+    fn test_retreat_triggers_opportunity_attack_with_reach_10() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut state = test_state_with_goblin();
+        state.world.npcs.get_mut(&0).unwrap()
+            .combat_stats.as_mut().unwrap()
+            .attacks[0].reach = 10;
+
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        combat.distances.insert(0, 10);
+        combat.player_movement_remaining = 30;
+        combat.player_disengaging = false;
+
+        let lines = retreat(&mut rng, &mut state, &mut combat);
+        assert!(lines.iter().any(|l| l.contains("opportunity attack")),
+            "Expected opportunity attack narration, got {:?}", lines);
+    }
+
+    #[test]
+    fn test_retreat_no_opportunity_attack_outside_reach_5() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut state = test_state_with_goblin();
+
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        combat.distances.insert(0, 10);
+        combat.player_movement_remaining = 30;
+        combat.player_disengaging = false;
+
+        let lines = retreat(&mut rng, &mut state, &mut combat);
+        assert!(!lines.iter().any(|l| l.contains("opportunity attack")),
+            "Did not expect opportunity attack narration, got {:?}", lines);
     }
 
     #[test]
