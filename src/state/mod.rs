@@ -253,6 +253,16 @@ mod tests {
     }
 
     #[test]
+    fn test_load_game_missing_ironman_mode_defaults_false() {
+        let state = test_state();
+        let mut json: serde_json::Value = serde_json::from_str(&save_game(&state).unwrap()).unwrap();
+        json.as_object_mut().unwrap().remove("ironman_mode");
+
+        let loaded = load_game(&json.to_string()).unwrap();
+        assert!(!loaded.ironman_mode);
+    }
+
+    #[test]
     fn test_weapon_item_type_has_srd_fields() {
         let weapon = ItemType::Weapon {
             damage_dice: 1,

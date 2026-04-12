@@ -1530,6 +1530,20 @@ mod tests {
     }
 
     #[test]
+    fn test_new_game_sets_ironman_mode_false_when_disabled() {
+        let output = new_game(42, false);
+        let state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert!(!state.ironman_mode);
+    }
+
+    #[test]
+    fn test_new_game_sets_ironman_mode_true_when_enabled() {
+        let output = new_game(42, true);
+        let state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert!(state.ironman_mode);
+    }
+
+    #[test]
     fn test_full_character_creation_flow() {
         let output = new_game(42);
         let state = &output.state_json;
