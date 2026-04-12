@@ -104,4 +104,5 @@ Combat commands (available during combat):
   disengage         - Take Disengage action (no opportunity attacks)
                       (also: withdraw)
   dash              - Take Dash action (double movement)
-                      (also: run, sprint)";
+                      (also: run, sprint)
+  end turn          - End your turn (also: end, pass, wait)";
