@@ -1140,9 +1140,11 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                         return vec!["You're too far away for an unarmed strike. Move closer first (approach <target>).".to_string()];
                     }
 
+                    let hostile_within_5ft = combat::has_living_hostile_within(state, &combat, 5);
+
                     let result = combat::resolve_player_attack(
                         &mut rng, &state.character, target_ac, target_dodging,
-                        weapon_id, &state.world.items, distance, off_hand_free,
+                        weapon_id, &state.world.items, distance, off_hand_free, hostile_within_5ft,
                     );
 
                     let npc_name = state.world.npcs.get(&npc_id)
@@ -1937,6 +1939,55 @@ mod tests {
         let output = process_input(&state_json, "dash");
         assert!(output.text.iter().any(|t| t.contains("Dash")),
             "Should confirm dash. Got: {:?}", output.text);
+    }
+
+    #[test]
+    fn test_combat_ranged_attack_in_melee_has_disadvantage() {
+        let mut state = create_test_combat_state();
+
+        // Force player turn
+        if let Some(ref mut combat) = state.active_combat {
+            for (i, (c, _)) in combat.initiative_order.iter().enumerate() {
+                if *c == combat::Combatant::Player {
+                    combat.current_turn = i;
+                    break;
+                }
+            }
+            combat.player_action_used = false;
+            combat.player_movement_remaining = 30;
+            combat.distances.insert(100, 5); // target in melee range
+        }
+
+        // Equip a ranged weapon (shortbow)
+        let bow_id = 201u32;
+        state.world.items.insert(bow_id, state::Item {
+            id: bow_id,
+            name: "Shortbow".to_string(),
+            description: "A shortbow.".to_string(),
+            item_type: state::ItemType::Weapon {
+                damage_dice: 1,
+                damage_die: 6,
+                damage_type: state::DamageType::Piercing,
+                properties: crate::equipment::AMMUNITION,
+                category: state::WeaponCategory::Simple,
+                versatile_die: 0,
+                range_normal: 80,
+                range_long: 320,
+            },
+            location: None,
+            carried_by_player: true,
+        });
+        state.character.inventory.push(bow_id);
+        state.character.equipped.main_hand = Some(bow_id);
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "attack test goblin");
+
+        assert!(
+            output.text.iter().any(|t| t.to_lowercase().contains("disadvantage")),
+            "Expected disadvantage text for ranged attack in melee. Got: {:?}",
+            output.text
+        );
     }
 
     #[test]
