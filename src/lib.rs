@@ -9,6 +9,7 @@ pub mod equipment;
 pub mod output;
 pub mod combat;
 pub mod conditions;
+pub mod spells;
 
 use std::collections::{HashMap, HashSet};
 use rand::SeedableRng;
