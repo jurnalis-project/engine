@@ -60,7 +60,7 @@ impl CombatState {
                 state.world.npcs.get(id)
                     .and_then(|npc| npc.combat_stats.as_ref())
                     .map(|cs| cs.current_hp <= 0)
-                    .unwrap_or(true)
+                    .unwrap_or(false)
             }
         });
         if all_dead { Some(true) } else { None }
@@ -163,6 +163,14 @@ pub fn start_combat(
                 .map(|cs| (id, cs))
         })
         .collect();
+
+    // Every hostile NPC should have combat_stats assigned by world generation.
+    // If any are dropped, it means a bug upstream -- catch it in debug builds.
+    debug_assert_eq!(
+        npc_stats.len(), hostile_npc_ids.len(),
+        "start_combat: {} hostile NPCs provided but only {} have combat_stats",
+        hostile_npc_ids.len(), npc_stats.len()
+    );
 
     let initiative_order = roll_initiative(rng, player, &npc_stats);
 
@@ -1178,6 +1186,123 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(42);
         let combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
         assert_eq!(combat.check_end(&state), None);
+    }
+
+    // Hypothesis: The bug occurs because check_end uses unwrap_or(true) which treats
+    // any NPC with missing combat_stats as dead, triggering premature VICTORY when
+    // only one of multiple hostile NPCs has been killed.
+
+    fn test_state_with_two_goblins() -> GameState {
+        let character = test_character();
+        let mut npcs = HashMap::new();
+        npcs.insert(0, Npc {
+            id: 0,
+            name: "Goblin".to_string(),
+            role: NpcRole::Guard,
+            disposition: Disposition::Hostile,
+            dialogue_tags: vec![],
+            location: 0,
+            combat_stats: Some(goblin_stats()),
+            conditions: Vec::new(),
+        });
+        npcs.insert(1, Npc {
+            id: 1,
+            name: "Goblin".to_string(),
+            role: NpcRole::Guard,
+            disposition: Disposition::Hostile,
+            dialogue_tags: vec![],
+            location: 0,
+            combat_stats: Some(goblin_stats()),
+            conditions: Vec::new(),
+        });
+
+        GameState {
+            version: SAVE_VERSION.to_string(),
+            character,
+            current_location: 0,
+            discovered_locations: HashSet::new(),
+            world: WorldState {
+                locations: HashMap::new(), npcs, items: HashMap::new(),
+                triggers: HashMap::new(), triggered: HashSet::new(),
+            },
+            log: Vec::new(),
+            rng_seed: 42,
+            rng_counter: 0,
+            game_phase: GamePhase::Exploration,
+            active_combat: None,
+            ironman_mode: false,
+            progress: crate::state::ProgressState::default(),
+        }
+    }
+
+    #[test]
+    fn test_two_hostiles_kill_one_combat_continues() {
+        let mut state = test_state_with_two_goblins();
+        let mut rng = StdRng::seed_from_u64(42);
+        let combat = start_combat(&mut rng, &state.character, &[0, 1], &state.world.npcs);
+
+        // Kill only the first goblin
+        state.world.npcs.get_mut(&0).unwrap().combat_stats.as_mut().unwrap().current_hp = 0;
+
+        // Combat should NOT be over -- second goblin still alive
+        assert_eq!(combat.check_end(&state), None,
+            "Combat should continue when one of two hostile NPCs is still alive");
+    }
+
+    #[test]
+    fn test_two_hostiles_kill_both_victory() {
+        let mut state = test_state_with_two_goblins();
+        let mut rng = StdRng::seed_from_u64(42);
+        let combat = start_combat(&mut rng, &state.character, &[0, 1], &state.world.npcs);
+
+        // Kill both goblins
+        state.world.npcs.get_mut(&0).unwrap().combat_stats.as_mut().unwrap().current_hp = 0;
+        state.world.npcs.get_mut(&1).unwrap().combat_stats.as_mut().unwrap().current_hp = 0;
+
+        // Now combat should end in victory
+        assert_eq!(combat.check_end(&state), Some(true),
+            "Combat should end in VICTORY when all hostile NPCs are dead");
+    }
+
+    #[test]
+    fn test_missing_combat_stats_treated_as_alive_not_dead() {
+        // Regression test: NPC with combat_stats: None should be treated as alive,
+        // not dead by check_end. This prevents premature VICTORY from ghost NPCs.
+        let mut state = test_state_with_two_goblins();
+        // Remove combat_stats from second goblin to simulate the bug scenario
+        state.world.npcs.get_mut(&1).unwrap().combat_stats = None;
+
+        // Construct CombatState directly (bypassing start_combat's debug_assert)
+        // because this test specifically targets check_end's handling of missing stats.
+        let combat = CombatState {
+            initiative_order: vec![
+                (Combatant::Player, 15),
+                (Combatant::Npc(0), 12),
+                (Combatant::Npc(1), 10),
+            ],
+            current_turn: 0,
+            round: 1,
+            distances: {
+                let mut d = HashMap::new();
+                d.insert(0, 25);
+                d.insert(1, 25);
+                d
+            },
+            player_movement_remaining: 30,
+            player_dodging: false,
+            player_disengaging: false,
+            player_action_used: false,
+            npc_dodging: HashMap::new(),
+            npc_disengaging: HashMap::new(),
+            player_shield_ac_bonus: 0,
+        };
+
+        // Kill the first goblin (the one with stats)
+        state.world.npcs.get_mut(&0).unwrap().combat_stats.as_mut().unwrap().current_hp = 0;
+
+        // Combat should NOT end -- the ghost NPC (no stats) should be treated as alive
+        assert_eq!(combat.check_end(&state), None,
+            "NPC with missing combat_stats should be treated as alive, not dead");
     }
 
     #[test]

@@ -17,14 +17,13 @@ pub fn generate_world(rng: &mut impl Rng, location_count: usize) -> WorldState {
     let npc_count = location_count / 3 + 1;
     let mut npcs = npc::generate_npcs(rng, &location_refs, npc_count);
 
-    // Assign combat stats to hostile NPCs from SRD monster table
-    let monster_names: Vec<&str> = monsters::SRD_MONSTERS.iter().map(|m| m.name).collect();
+    // Assign combat stats to hostile NPCs from SRD monster table.
+    // Index directly into SRD_MONSTERS to guarantee every hostile NPC gets a stat block.
     for npc in npcs.values_mut() {
         if npc.disposition == Disposition::Hostile {
-            let idx = rng.gen_range(0..monster_names.len());
-            if let Some(def) = monsters::find_monster(monster_names[idx]) {
-                npc.combat_stats = Some(monsters::monster_to_combat_stats(def));
-            }
+            let idx = rng.gen_range(0..monsters::SRD_MONSTERS.len());
+            let def = &monsters::SRD_MONSTERS[idx];
+            npc.combat_stats = Some(monsters::monster_to_combat_stats(def));
         }
     }
 
@@ -96,6 +95,21 @@ mod tests {
             if let Some(loc_id) = item.location {
                 let loc = &world.locations[&loc_id];
                 assert!(loc.items.contains(&item.id));
+            }
+        }
+    }
+
+    #[test]
+    fn test_all_hostile_npcs_have_combat_stats() {
+        // Regression test: every hostile NPC must have combat_stats assigned.
+        // Previously find_monster() could silently return None, leaving
+        // hostile NPCs without stats ("ghost NPCs").
+        let mut rng = StdRng::seed_from_u64(42);
+        let world = generate_world(&mut rng, 15);
+        for npc in world.npcs.values() {
+            if npc.disposition == crate::state::Disposition::Hostile {
+                assert!(npc.combat_stats.is_some(),
+                    "Hostile NPC '{}' (id={}) must have combat_stats", npc.name, npc.id);
             }
         }
     }
