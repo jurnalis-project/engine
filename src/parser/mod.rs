@@ -23,6 +23,8 @@ pub enum Command {
     // Meta commands
     Objective,
     Map,
+    // Spell commands
+    Cast { spell: String, target: Option<String> },
     // Combat commands
     Attack(String),
     Approach(String),
@@ -159,6 +161,22 @@ pub fn parse(input: &str) -> Command {
         }
         "unequip" | "doff" => {
             if args.is_empty() { Command::Unknown("Unequip what?".to_string()) } else { Command::Unequip(args) }
+        }
+        "cast" => {
+            if args.is_empty() {
+                Command::Unknown("Cast what spell?".to_string())
+            } else {
+                // Split on " at " or " on " to separate spell name from target
+                let (spell, target) = if let Some(pos) = args.find(" at ") {
+                    (args[..pos].to_string(), Some(args[pos + 4..].to_string()))
+                } else if let Some(pos) = args.find(" on ") {
+                    (args[..pos].to_string(), Some(args[pos + 4..].to_string()))
+                } else {
+                    (args.clone(), None)
+                };
+                let target = target.filter(|t| !t.is_empty());
+                Command::Cast { spell, target }
+            }
         }
         "attack" | "hit" | "strike" | "shoot" => {
             if args.is_empty() { Command::Unknown("Attack what?".to_string()) } else { Command::Attack(args) }
@@ -553,6 +571,62 @@ mod tests {
         // "put on" -> Equip, "put down" -> Drop
         assert_eq!(parse("put on chain mail"), Command::Equip("chain mail".to_string()));
         assert_eq!(parse("put down sword"), Command::Drop("sword".to_string()));
+    }
+
+    #[test]
+    fn test_cast_spell_at_target() {
+        assert_eq!(
+            parse("cast fire bolt at goblin"),
+            Command::Cast { spell: "fire bolt".to_string(), target: Some("goblin".to_string()) }
+        );
+    }
+
+    #[test]
+    fn test_cast_spell_no_target() {
+        assert_eq!(
+            parse("cast burning hands"),
+            Command::Cast { spell: "burning hands".to_string(), target: None }
+        );
+    }
+
+    #[test]
+    fn test_cast_spell_on_target() {
+        assert_eq!(
+            parse("cast magic missile on skeleton"),
+            Command::Cast { spell: "magic missile".to_string(), target: Some("skeleton".to_string()) }
+        );
+    }
+
+    #[test]
+    fn test_cast_bare_verb_error() {
+        match parse("cast") {
+            Command::Unknown(s) => assert!(s.contains("what"), "Got: {}", s),
+            other => panic!("Expected Unknown, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_cast_prestidigitation() {
+        assert_eq!(
+            parse("cast prestidigitation"),
+            Command::Cast { spell: "prestidigitation".to_string(), target: None }
+        );
+    }
+
+    #[test]
+    fn test_cast_shield() {
+        assert_eq!(
+            parse("cast shield"),
+            Command::Cast { spell: "shield".to_string(), target: None }
+        );
+    }
+
+    #[test]
+    fn test_cast_sleep() {
+        assert_eq!(
+            parse("cast sleep"),
+            Command::Cast { spell: "sleep".to_string(), target: None }
+        );
     }
 
     #[test]

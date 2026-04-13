@@ -873,6 +873,9 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
                 ResolveResult::NotFound => vec![narration::templates::UNEQUIP_NOT_EQUIPPED.replace("{name}", &target_str)],
             }
         }
+        Command::Cast { .. } => {
+            vec!["Spell casting is not yet available.".to_string()]
+        }
         Command::Attack(_) | Command::Approach(_) | Command::Retreat | Command::Dodge | Command::Disengage | Command::Dash | Command::EndTurn => {
             vec!["You're not in combat.".to_string()]
         }
@@ -1261,6 +1264,11 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
         Command::EndTurn => {
             lines.push("You end your turn.".to_string());
             should_end_turn = true;
+        }
+        Command::Cast { .. } => {
+            // Placeholder -- full implementation in upcoming unit
+            state.active_combat = Some(combat);
+            return vec!["Spell casting is not yet available.".to_string()];
         }
         Command::Unknown(s) => {
             state.active_combat = Some(combat);
