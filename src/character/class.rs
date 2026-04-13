@@ -32,6 +32,40 @@ impl Class {
     }
 }
 
+/// Describes the starting equipment loadout for a class.
+/// Contains item names (matching SRD const table entries) categorized by slot.
+pub struct StartingLoadout {
+    pub main_hand: Option<&'static str>,
+    pub off_hand: Option<&'static str>,
+    pub body: Option<&'static str>,
+    pub extra_inventory: &'static [&'static str],
+}
+
+impl Class {
+    pub fn starting_loadout(&self) -> StartingLoadout {
+        match self {
+            Class::Fighter => StartingLoadout {
+                main_hand: Some("Longsword"),
+                off_hand: Some("Shield"),
+                body: Some("Chain Mail"),
+                extra_inventory: &[],
+            },
+            Class::Rogue => StartingLoadout {
+                main_hand: Some("Shortsword"),
+                off_hand: None,
+                body: Some("Leather"),
+                extra_inventory: &["Dagger"],
+            },
+            Class::Wizard => StartingLoadout {
+                main_hand: Some("Quarterstaff"),
+                off_hand: None,
+                body: None,
+                extra_inventory: &["Dagger"],
+            },
+        }
+    }
+}
+
 impl std::fmt::Display for Class {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self { Class::Fighter => write!(f, "Fighter"), Class::Rogue => write!(f, "Rogue"), Class::Wizard => write!(f, "Wizard") }
@@ -57,5 +91,32 @@ mod tests {
         let saves = Class::Wizard.saving_throw_proficiencies();
         assert!(saves.contains(&Ability::Intelligence));
         assert!(saves.contains(&Ability::Wisdom));
+    }
+
+    #[test]
+    fn test_fighter_starting_loadout() {
+        let loadout = Class::Fighter.starting_loadout();
+        assert_eq!(loadout.main_hand, Some("Longsword"));
+        assert_eq!(loadout.off_hand, Some("Shield"));
+        assert_eq!(loadout.body, Some("Chain Mail"));
+        assert!(loadout.extra_inventory.is_empty());
+    }
+
+    #[test]
+    fn test_rogue_starting_loadout() {
+        let loadout = Class::Rogue.starting_loadout();
+        assert_eq!(loadout.main_hand, Some("Shortsword"));
+        assert_eq!(loadout.off_hand, None);
+        assert_eq!(loadout.body, Some("Leather"));
+        assert_eq!(loadout.extra_inventory, &["Dagger"]);
+    }
+
+    #[test]
+    fn test_wizard_starting_loadout() {
+        let loadout = Class::Wizard.starting_loadout();
+        assert_eq!(loadout.main_hand, Some("Quarterstaff"));
+        assert_eq!(loadout.off_hand, None);
+        assert_eq!(loadout.body, None);
+        assert_eq!(loadout.extra_inventory, &["Dagger"]);
     }
 }
