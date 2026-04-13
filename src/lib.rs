@@ -361,6 +361,9 @@ fn handle_creation(state: &mut GameState, input: &str, step: CreationStep) -> Ve
             state.current_location = 0;
             state.discovered_locations.insert(0);
 
+            // Grant starting equipment based on class
+            grant_starting_equipment(state);
+
             // Seed objectives from generated world
             seed_objectives(state);
 
@@ -379,6 +382,105 @@ fn handle_creation(state: &mut GameState, input: &str, step: CreationStep) -> Ve
             }
 
             lines
+        }
+    }
+}
+
+/// Grant starting equipment to the character based on class loadout.
+/// Creates items from SRD const tables, adds them to WorldState and character inventory,
+/// and equips them to the correct slots.
+fn grant_starting_equipment(state: &mut GameState) {
+    use state::{Item, ItemType};
+
+    let loadout = state.character.class.starting_loadout();
+
+    // Compute next available item ID from existing world items
+    let mut next_id = state.world.items.keys().max().map_or(0, |&id| id + 1);
+
+    // Helper: create a weapon item from SRD table by name
+    let create_weapon = |name: &str, id: u32| -> Option<Item> {
+        equipment::SRD_WEAPONS.iter().find(|w| w.name == name).map(|w| Item {
+            id,
+            name: w.name.to_string(),
+            description: format!("A {}.", w.name.to_lowercase()),
+            item_type: ItemType::Weapon {
+                damage_dice: w.damage_dice,
+                damage_die: w.damage_die,
+                damage_type: w.damage_type,
+                properties: w.properties,
+                category: w.category,
+                versatile_die: w.versatile_die,
+                range_normal: w.range_normal,
+                range_long: w.range_long,
+            },
+            location: None,
+            carried_by_player: true,
+        })
+    };
+
+    // Helper: create an armor item from SRD table by name
+    let create_armor = |name: &str, id: u32| -> Option<Item> {
+        equipment::SRD_ARMOR.iter().find(|a| a.name == name).map(|a| Item {
+            id,
+            name: a.name.to_string(),
+            description: format!("A set of {} armor.", a.name.to_lowercase()),
+            item_type: ItemType::Armor {
+                category: a.category,
+                base_ac: a.base_ac,
+                max_dex_bonus: a.max_dex_bonus,
+                str_requirement: a.str_requirement,
+                stealth_disadvantage: a.stealth_disadvantage,
+            },
+            location: None,
+            carried_by_player: true,
+        })
+    };
+
+    // Helper: find an SRD item by name (weapon or armor) and create it
+    let find_and_create = |name: &str, id: u32| -> Option<Item> {
+        create_weapon(name, id).or_else(|| create_armor(name, id))
+    };
+
+    // Equip main hand
+    if let Some(name) = loadout.main_hand {
+        if let Some(item) = find_and_create(name, next_id) {
+            let id = item.id;
+            state.world.items.insert(id, item);
+            state.character.inventory.push(id);
+            state.character.equipped.main_hand = Some(id);
+            next_id += 1;
+        }
+    }
+
+    // Equip off hand (shield or weapon)
+    if let Some(name) = loadout.off_hand {
+        if let Some(item) = find_and_create(name, next_id) {
+            let id = item.id;
+            state.world.items.insert(id, item);
+            state.character.inventory.push(id);
+            state.character.equipped.off_hand = Some(id);
+            next_id += 1;
+        }
+    }
+
+    // Equip body armor
+    if let Some(name) = loadout.body {
+        if let Some(item) = find_and_create(name, next_id) {
+            let id = item.id;
+            state.world.items.insert(id, item);
+            state.character.inventory.push(id);
+            state.character.equipped.body = Some(id);
+            next_id += 1;
+        }
+    }
+
+    // Add extra inventory items (not equipped)
+    for &name in loadout.extra_inventory {
+        if let Some(item) = find_and_create(name, next_id) {
+            let id = item.id;
+            state.world.items.insert(id, item);
+            state.character.inventory.push(id);
+            next_id += 1;
         }
     }
 }
@@ -2252,6 +2354,154 @@ mod tests {
         let state: GameState = serde_json::from_str(&output.state_json).unwrap();
         assert!(matches!(state.game_phase, GamePhase::Exploration));
         assert!(!state.world.locations.is_empty());
+    }
+
+    #[test]
+    fn test_fighter_gets_starting_equipment() {
+        // Run full character creation as Fighter
+        let output = new_game(42, false);
+        let output = process_input(&output.state_json, "1"); // Human
+        let output = process_input(&output.state_json, "1"); // Fighter
+        let output = process_input(&output.state_json, "1"); // Standard array
+        let output = process_input(&output.state_json, "15 14 13 12 10 8");
+        let output = process_input(&output.state_json, "1 2"); // 2 skills
+        let output = process_input(&output.state_json, "Aldric");
+
+        let state: GameState = serde_json::from_str(&output.state_json).unwrap();
+
+        // Fighter should have 3 items: Chain Mail, Longsword, Shield
+        assert_eq!(state.character.inventory.len(), 3,
+            "Fighter should have 3 starting items in inventory");
+
+        // Verify all 3 slots are filled
+        assert!(state.character.equipped.main_hand.is_some(), "main_hand should be equipped");
+        assert!(state.character.equipped.off_hand.is_some(), "off_hand should be equipped");
+        assert!(state.character.equipped.body.is_some(), "body should be equipped");
+
+        // Verify item names
+        let main_hand_id = state.character.equipped.main_hand.unwrap();
+        let off_hand_id = state.character.equipped.off_hand.unwrap();
+        let body_id = state.character.equipped.body.unwrap();
+
+        assert_eq!(state.world.items[&main_hand_id].name, "Longsword");
+        assert_eq!(state.world.items[&off_hand_id].name, "Shield");
+        assert_eq!(state.world.items[&body_id].name, "Chain Mail");
+
+        // Verify items are carried by player
+        assert!(state.world.items[&main_hand_id].carried_by_player);
+        assert!(state.world.items[&off_hand_id].carried_by_player);
+        assert!(state.world.items[&body_id].carried_by_player);
+
+        // Verify items have no location (carried, not on ground)
+        assert!(state.world.items[&main_hand_id].location.is_none());
+        assert!(state.world.items[&off_hand_id].location.is_none());
+        assert!(state.world.items[&body_id].location.is_none());
+    }
+
+    #[test]
+    fn test_rogue_gets_starting_equipment() {
+        let output = new_game(42, false);
+        let output = process_input(&output.state_json, "1"); // Human
+        let output = process_input(&output.state_json, "2"); // Rogue
+        let output = process_input(&output.state_json, "1"); // Standard array
+        let output = process_input(&output.state_json, "15 14 13 12 10 8");
+        let output = process_input(&output.state_json, "1 2 3 4"); // 4 skills
+        let output = process_input(&output.state_json, "Shadow");
+
+        let state: GameState = serde_json::from_str(&output.state_json).unwrap();
+
+        // Rogue should have 3 items: Leather, Shortsword, Dagger
+        assert_eq!(state.character.inventory.len(), 3,
+            "Rogue should have 3 starting items in inventory");
+
+        // Main hand and body equipped, off hand empty
+        assert!(state.character.equipped.main_hand.is_some(), "main_hand should be equipped");
+        assert!(state.character.equipped.off_hand.is_none(), "off_hand should be empty");
+        assert!(state.character.equipped.body.is_some(), "body should be equipped");
+
+        let main_hand_id = state.character.equipped.main_hand.unwrap();
+        let body_id = state.character.equipped.body.unwrap();
+
+        assert_eq!(state.world.items[&main_hand_id].name, "Shortsword");
+        assert_eq!(state.world.items[&body_id].name, "Leather");
+
+        // Dagger should be in inventory but not equipped
+        let dagger = state.character.inventory.iter()
+            .find(|&&id| state.world.items[&id].name == "Dagger");
+        assert!(dagger.is_some(), "Dagger should be in inventory");
+    }
+
+    #[test]
+    fn test_wizard_gets_starting_equipment() {
+        let output = new_game(42, false);
+        let output = process_input(&output.state_json, "1"); // Human
+        let output = process_input(&output.state_json, "3"); // Wizard
+        let output = process_input(&output.state_json, "1"); // Standard array
+        let output = process_input(&output.state_json, "15 14 13 12 10 8");
+        let output = process_input(&output.state_json, "1 2"); // 2 skills
+        let output = process_input(&output.state_json, "Gandalf");
+
+        let state: GameState = serde_json::from_str(&output.state_json).unwrap();
+
+        // Wizard should have 2 items: Quarterstaff, Dagger
+        assert_eq!(state.character.inventory.len(), 2,
+            "Wizard should have 2 starting items in inventory");
+
+        // Only main hand equipped, no off hand or body
+        assert!(state.character.equipped.main_hand.is_some(), "main_hand should be equipped");
+        assert!(state.character.equipped.off_hand.is_none(), "off_hand should be empty");
+        assert!(state.character.equipped.body.is_none(), "body should be empty");
+
+        let main_hand_id = state.character.equipped.main_hand.unwrap();
+        assert_eq!(state.world.items[&main_hand_id].name, "Quarterstaff");
+
+        // Dagger should be in inventory but not equipped
+        let dagger = state.character.inventory.iter()
+            .find(|&&id| state.world.items[&id].name == "Dagger");
+        assert!(dagger.is_some(), "Dagger should be in inventory");
+    }
+
+    #[test]
+    fn test_starting_equipment_ids_dont_collide_with_world_items() {
+        let output = new_game(42, false);
+        let output = process_input(&output.state_json, "1"); // Human
+        let output = process_input(&output.state_json, "1"); // Fighter
+        let output = process_input(&output.state_json, "1"); // Standard array
+        let output = process_input(&output.state_json, "15 14 13 12 10 8");
+        let output = process_input(&output.state_json, "1 2"); // 2 skills
+        let output = process_input(&output.state_json, "Aldric");
+
+        let state: GameState = serde_json::from_str(&output.state_json).unwrap();
+
+        // All item IDs in the world should be unique
+        let mut all_ids: Vec<_> = state.world.items.keys().collect();
+        let original_len = all_ids.len();
+        all_ids.sort();
+        all_ids.dedup();
+        assert_eq!(all_ids.len(), original_len, "All item IDs should be unique");
+
+        // Starting equipment should be in the world items map
+        for &inv_id in &state.character.inventory {
+            assert!(state.world.items.contains_key(&inv_id),
+                "Inventory item {} should exist in world items", inv_id);
+        }
+    }
+
+    #[test]
+    fn test_fighter_starting_ac() {
+        let output = new_game(42, false);
+        let output = process_input(&output.state_json, "1"); // Human
+        let output = process_input(&output.state_json, "1"); // Fighter
+        let output = process_input(&output.state_json, "1"); // Standard array
+        let output = process_input(&output.state_json, "15 14 13 12 10 8");
+        let output = process_input(&output.state_json, "1 2"); // 2 skills
+        let output = process_input(&output.state_json, "Aldric");
+
+        let state: GameState = serde_json::from_str(&output.state_json).unwrap();
+
+        // Fighter with Chain Mail (AC 16, heavy) + Shield (+2) = AC 18
+        let ac = equipment::calculate_ac(&state.character, &state.world.items);
+        assert_eq!(ac, 18, "Fighter AC should be 18 (Chain Mail 16 + Shield 2)");
     }
 
     #[test]
