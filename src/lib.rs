@@ -769,6 +769,13 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
         }
         Command::Objective => render_objective(state),
         Command::Map => render_map(state),
+        Command::Spells => {
+            spells::format_known_spells(
+                &state.character.known_spells,
+                &state.character.spell_slots_remaining,
+                &state.character.spell_slots_max,
+            )
+        }
         Command::Equip(target_str) => {
             // Check for "off hand" suffix
             let words: Vec<&str> = target_str.split_whitespace().collect();
@@ -1113,6 +1120,13 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
         }
         Command::Objective => return render_objective(state),
         Command::Map => return render_map(state),
+        Command::Spells => {
+            return spells::format_known_spells(
+                &state.character.known_spells,
+                &state.character.spell_slots_remaining,
+                &state.character.spell_slots_max,
+            );
+        }
         // Block exploration commands
         Command::Go(_) | Command::Talk(_) | Command::Take(_) | Command::Drop(_) => {
             return vec!["You can't do that during combat!".to_string()];
@@ -3050,5 +3064,106 @@ mod tests {
             "Dead NPC should not appear in look output. Got: {}", all_text);
         assert!(all_text.contains("Friendly Merchant"),
             "Living friendly NPC should appear in look output. Got: {}", all_text);
+    }
+
+    fn create_test_wizard_state() -> GameState {
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut scores = HashMap::new();
+        scores.insert(Ability::Strength, 8);
+        scores.insert(Ability::Dexterity, 14);
+        scores.insert(Ability::Constitution, 13);
+        scores.insert(Ability::Intelligence, 15);
+        scores.insert(Ability::Wisdom, 12);
+        scores.insert(Ability::Charisma, 10);
+
+        let character = create_character(
+            "Gandalf".to_string(),
+            character::race::Race::Human,
+            character::class::Class::Wizard,
+            scores,
+            vec![Skill::Arcana, Skill::Investigation],
+        );
+
+        let world = world::generate_world(&mut rng, 15);
+
+        GameState {
+            version: SAVE_VERSION.to_string(),
+            character,
+            current_location: 0,
+            discovered_locations: [0].into_iter().collect(),
+            world,
+            log: Vec::new(),
+            rng_seed: 42,
+            rng_counter: 100,
+            game_phase: GamePhase::Exploration,
+            active_combat: None,
+            ironman_mode: false,
+            progress: state::ProgressState::default(),
+        }
+    }
+
+    #[test]
+    fn test_spells_command_wizard_shows_known_spells() {
+        let state = create_test_wizard_state();
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "spells");
+        let all_text = output.text.join("\n");
+
+        assert!(all_text.contains("Known Spells"), "Should have header. Got: {}", all_text);
+        assert!(all_text.contains("Cantrips (at will)"), "Should list cantrips. Got: {}", all_text);
+        assert!(all_text.contains("Fire Bolt"), "Should list Fire Bolt. Got: {}", all_text);
+        assert!(all_text.contains("Prestidigitation"), "Should list Prestidigitation. Got: {}", all_text);
+        assert!(all_text.contains("Level 1 Spells"), "Should list level 1 spells. Got: {}", all_text);
+        assert!(all_text.contains("Magic Missile"), "Should list Magic Missile. Got: {}", all_text);
+        assert!(all_text.contains("Burning Hands"), "Should list Burning Hands. Got: {}", all_text);
+        assert!(all_text.contains("Sleep"), "Should list Sleep. Got: {}", all_text);
+        assert!(all_text.contains("Shield"), "Should list Shield. Got: {}", all_text);
+    }
+
+    #[test]
+    fn test_spells_command_wizard_shows_spell_slots() {
+        let state = create_test_wizard_state();
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "spells");
+        let all_text = output.text.join("\n");
+
+        assert!(all_text.contains("Spell Slots"), "Should show spell slots section. Got: {}", all_text);
+        assert!(all_text.contains("Level 1: 2/2"), "Should show 2/2 level 1 slots. Got: {}", all_text);
+    }
+
+    #[test]
+    fn test_spells_command_non_wizard_no_spells() {
+        let state = create_test_exploration_state(); // Fighter
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "spells");
+        let all_text = output.text.join("\n");
+
+        assert!(all_text.contains("You don't know any spells"), "Non-wizard should get no-spells message. Got: {}", all_text);
+    }
+
+    #[test]
+    fn test_spells_command_aliases_integration() {
+        let state = create_test_wizard_state();
+        let state_json = serde_json::to_string(&state).unwrap();
+
+        for alias in &["spells", "spell list", "known spells", "my spells"] {
+            let output = process_input(&state_json, alias);
+            let all_text = output.text.join("\n");
+            assert!(all_text.contains("Known Spells"),
+                "'{}' should show known spells. Got: {}", alias, all_text);
+        }
+    }
+
+    #[test]
+    fn test_spells_command_does_not_mutate_state() {
+        let state = create_test_wizard_state();
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "spells");
+
+        // The spells command is read-only, state should not be marked as changed
+        // (except for the rng_counter increment which is standard)
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(new_state.character.spell_slots_remaining, state.character.spell_slots_remaining);
+        assert_eq!(new_state.character.known_spells, state.character.known_spells);
     }
 }

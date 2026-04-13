@@ -25,6 +25,7 @@ pub enum Command {
     Objective,
     Map,
     // Spell commands
+    Spells,
     Cast { spell: String, target: Option<String> },
     // Combat commands
     Attack(String),
@@ -118,6 +119,9 @@ pub fn parse(input: &str) -> Command {
             "end turn" => {
                 return Command::EndTurn;
             }
+            "spell list" | "known spells" | "my spells" => {
+                return Command::Spells;
+            }
             "new game" => {
                 return Command::NewGame;
             }
@@ -166,6 +170,7 @@ pub fn parse(input: &str) -> Command {
         "unequip" | "doff" => {
             if args.is_empty() { Command::Unknown("Unequip what?".to_string()) } else { Command::Unequip(args) }
         }
+        "spells" => Command::Spells,
         "cast" => {
             if args.is_empty() {
                 Command::Unknown("Cast what spell?".to_string())
@@ -576,6 +581,25 @@ mod tests {
         // "put on" -> Equip, "put down" -> Drop
         assert_eq!(parse("put on chain mail"), Command::Equip("chain mail".to_string()));
         assert_eq!(parse("put down sword"), Command::Drop("sword".to_string()));
+    }
+
+    #[test]
+    fn test_spells_command() {
+        assert_eq!(parse("spells"), Command::Spells);
+    }
+
+    #[test]
+    fn test_spells_command_aliases() {
+        assert_eq!(parse("spell list"), Command::Spells);
+        assert_eq!(parse("known spells"), Command::Spells);
+        assert_eq!(parse("my spells"), Command::Spells);
+    }
+
+    #[test]
+    fn test_spells_command_case_insensitive() {
+        assert_eq!(parse("SPELLS"), Command::Spells);
+        assert_eq!(parse("Spell List"), Command::Spells);
+        assert_eq!(parse("Known Spells"), Command::Spells);
     }
 
     #[test]

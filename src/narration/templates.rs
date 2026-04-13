@@ -290,12 +290,14 @@ fn topic_help(topic: &str, phase: HelpPhase) -> Vec<String> {
         ],
         ("spells", _) => vec![
             "Help: spells".to_string(),
+            "  spells            - View your known spells and remaining spell slots.".to_string(),
+            "                      (also: spell list, known spells, my spells)".to_string(),
             "  cast <spell> [at <target>] - Cast a spell.".to_string(),
             "  Cantrips (free): Fire Bolt (ranged attack, 1d10 fire), Prestidigitation (flavor).".to_string(),
             "  Level 1 spells (use spell slots): Magic Missile, Burning Hands, Sleep, Shield.".to_string(),
             "  Spell attack: d20 + INT mod + proficiency vs AC.".to_string(),
             "  Spell save DC: 8 + INT mod + proficiency.".to_string(),
-            "  Only Wizards can cast spells. View slots with 'character'.".to_string(),
+            "  Only Wizards can cast spells.".to_string(),
         ],
         _ => unreachable!("Topic '{topic}' should be resolved before rendering"),
     }

@@ -277,6 +277,64 @@ pub fn resolve_shield() -> CastOutcome {
     CastOutcome::ShieldCast { ac_bonus: 5 }
 }
 
+/// Format the player's known spells and remaining spell slots for display.
+/// Returns lines suitable for the `spells` command output.
+pub fn format_known_spells(
+    known_spells: &[String],
+    spell_slots_remaining: &[i32],
+    spell_slots_max: &[i32],
+) -> Vec<String> {
+    if known_spells.is_empty() {
+        return vec!["You don't know any spells.".to_string()];
+    }
+
+    let mut lines = Vec::new();
+    lines.push("=== Known Spells ===".to_string());
+
+    // Cantrips
+    let cantrips: Vec<&String> = known_spells
+        .iter()
+        .filter(|name| {
+            find_spell(name).map_or(false, |def| def.level == 0)
+        })
+        .collect();
+
+    if !cantrips.is_empty() {
+        lines.push(String::new());
+        lines.push("Cantrips (at will):".to_string());
+        for name in &cantrips {
+            lines.push(format!("  - {}", name));
+        }
+    }
+
+    // Level 1 spells
+    let level1: Vec<&String> = known_spells
+        .iter()
+        .filter(|name| {
+            find_spell(name).map_or(false, |def| def.level == 1)
+        })
+        .collect();
+
+    if !level1.is_empty() {
+        lines.push(String::new());
+        lines.push("Level 1 Spells:".to_string());
+        for name in &level1 {
+            lines.push(format!("  - {}", name));
+        }
+    }
+
+    // Spell slots
+    if !spell_slots_max.is_empty() {
+        lines.push(String::new());
+        lines.push("Spell Slots:".to_string());
+        for (i, (remaining, max)) in spell_slots_remaining.iter().zip(spell_slots_max.iter()).enumerate() {
+            lines.push(format!("  Level {}: {}/{}", i + 1, remaining, max));
+        }
+    }
+
+    lines
+}
+
 /// Check if a character can cast and consume a slot. Returns true if the slot was consumed.
 /// For cantrips (level 0), always returns true without consuming slots.
 pub fn consume_spell_slot(
@@ -486,5 +544,52 @@ mod tests {
         let spell = find_spell("Prestidigitation").unwrap();
         assert_eq!(spell.level, 0);
         assert_eq!(spell.casting, CastingMode::Flavor);
+    }
+
+    #[test]
+    fn test_format_known_spells_wizard() {
+        let known = vec![
+            "Fire Bolt".to_string(),
+            "Prestidigitation".to_string(),
+            "Magic Missile".to_string(),
+            "Burning Hands".to_string(),
+            "Sleep".to_string(),
+            "Shield".to_string(),
+        ];
+        let slots_remaining = vec![2];
+        let slots_max = vec![2];
+
+        let lines = format_known_spells(&known, &slots_remaining, &slots_max);
+        let text = lines.join("\n");
+
+        assert!(text.contains("Known Spells"));
+        assert!(text.contains("Cantrips (at will)"));
+        assert!(text.contains("Fire Bolt"));
+        assert!(text.contains("Prestidigitation"));
+        assert!(text.contains("Level 1 Spells"));
+        assert!(text.contains("Magic Missile"));
+        assert!(text.contains("Spell Slots"));
+        assert!(text.contains("Level 1: 2/2"));
+    }
+
+    #[test]
+    fn test_format_known_spells_empty() {
+        let lines = format_known_spells(&[], &[], &[]);
+        assert_eq!(lines, vec!["You don't know any spells."]);
+    }
+
+    #[test]
+    fn test_format_known_spells_after_slot_use() {
+        let known = vec![
+            "Fire Bolt".to_string(),
+            "Magic Missile".to_string(),
+        ];
+        let slots_remaining = vec![1];
+        let slots_max = vec![2];
+
+        let lines = format_known_spells(&known, &slots_remaining, &slots_max);
+        let text = lines.join("\n");
+
+        assert!(text.contains("Level 1: 1/2"));
     }
 }
