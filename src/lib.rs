@@ -672,7 +672,23 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
                     if let Some(loc) = state.world.locations.get_mut(&state.current_location) {
                         loc.items.retain(|&id| id != item_id);
                     }
-                    vec![narration::templates::TAKE_ITEM.replace("{item}", &name)]
+                    let mut lines = vec![narration::templates::TAKE_ITEM.replace("{item}", &name)];
+
+                    // Check FindItem objectives
+                    lines.extend(check_find_item_objectives(state, item_id));
+
+                    // Check if all objectives are now complete
+                    if !state.progress.objectives.is_empty()
+                        && state.progress.objectives.iter().all(|o| o.completed)
+                    {
+                        state.game_phase = GamePhase::Victory;
+                        lines.push(String::new());
+                        lines.push("=== CONGRATULATIONS ===".to_string());
+                        lines.push("You have completed all objectives and won the game!".to_string());
+                        lines.push("Type 'new game' to start a new adventure.".to_string());
+                    }
+
+                    lines
                 }
                 ResolveResult::Ambiguous(matches) => resolver::format_disambiguation(&matches),
                 ResolveResult::NotFound => vec![narration::templates::ITEM_NOT_FOUND.replace("{item}", &item_name)],
@@ -1088,6 +1104,22 @@ fn check_defeat_npc_objectives(state: &mut GameState) -> Vec<String> {
                 .map(|cs| cs.current_hp <= 0)
                 .unwrap_or(false);
             if npc_dead {
+                state.progress.objectives[i].completed = true;
+                lines.push(format!("Objective complete: {}", state.progress.objectives[i].title));
+            }
+        }
+    }
+    lines
+}
+
+fn check_find_item_objectives(state: &mut GameState, item_id: u32) -> Vec<String> {
+    let mut lines = Vec::new();
+    for i in 0..state.progress.objectives.len() {
+        if state.progress.objectives[i].completed {
+            continue;
+        }
+        if let state::ObjectiveType::FindItem(target_id) = &state.progress.objective_triggers[i] {
+            if *target_id == item_id {
                 state.progress.objectives[i].completed = true;
                 lines.push(format!("Objective complete: {}", state.progress.objectives[i].title));
             }
@@ -3068,6 +3100,43 @@ mod tests {
             "DefeatNpc objective should be marked complete after combat victory");
         assert!(lines.iter().any(|l| l.contains("Objective complete") && l.contains("Defeat Boss Enemy")),
             "Should announce objective completion: {:?}", lines);
+    }
+
+    #[test]
+    fn test_take_artifact_completes_find_item_objective() {
+        let mut state = create_test_exploration_state();
+
+        // Place an artifact item in the current room
+        let artifact_id: u32 = 998;
+        state.world.items.insert(artifact_id, state::Item {
+            id: artifact_id,
+            name: "Ancient Gem".to_string(),
+            description: "A glowing gem of power.".to_string(),
+            item_type: state::ItemType::Misc,
+            location: Some(state.current_location),
+            carried_by_player: false,
+        });
+        if let Some(loc) = state.world.locations.get_mut(&state.current_location) {
+            loc.items.push(artifact_id);
+        }
+
+        // Add FindItem objective for this artifact
+        state.progress.objectives.push(state::Objective {
+            id: "find_artifact".to_string(),
+            title: "Find the Ancient Gem".to_string(),
+            description: "Locate the gem hidden in the ruins.".to_string(),
+            completed: false,
+        });
+        state.progress.objective_triggers.push(state::ObjectiveType::FindItem(artifact_id));
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "take ancient gem");
+
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert!(new_state.progress.objectives[0].completed,
+            "FindItem objective should be marked complete after picking up the artifact");
+        assert!(output.text.iter().any(|l| l.contains("Objective complete") && l.contains("Ancient Gem")),
+            "Should announce objective completion: {:?}", output.text);
     }
 
     #[test]
