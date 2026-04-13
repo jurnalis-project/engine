@@ -198,6 +198,7 @@ pub enum TriggerType {
 pub enum GamePhase {
     CharacterCreation(CreationStep),
     Exploration,
+    Victory,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -426,6 +427,16 @@ mod tests {
         assert_eq!(loaded.progress.objectives.len(), 1);
         assert_eq!(loaded.progress.objectives[0].title, "Defeat Theron");
         assert_eq!(loaded.progress.objective_triggers.len(), 1);
+    }
+
+    #[test]
+    fn test_game_phase_victory_variant_exists() {
+        let phase = GamePhase::Victory;
+        assert_eq!(phase, GamePhase::Victory);
+        // Verify it serializes/deserializes
+        let json = serde_json::to_string(&phase).unwrap();
+        let loaded: GamePhase = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded, GamePhase::Victory);
     }
 
     #[test]

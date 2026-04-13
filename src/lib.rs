@@ -100,6 +100,7 @@ pub fn process_input(state_json: &str, input: &str) -> GameOutput {
         match state.game_phase {
             GamePhase::CharacterCreation(step) => handle_creation(&mut state, input, step),
             GamePhase::Exploration => handle_exploration(&mut state, input),
+            GamePhase::Victory => handle_victory(&mut state, input),
         }
     };
 
@@ -1851,6 +1852,37 @@ fn render_map(state: &GameState) -> Vec<String> {
         }
     }
     lines
+}
+
+fn handle_victory(state: &mut GameState, input: &str) -> Vec<String> {
+    let command = parser::parse(input);
+    match command {
+        Command::NewGame => {
+            let new_seed = state.rng_seed.wrapping_add(state.rng_counter);
+            // Return a signal that will be handled by the caller
+            // For now, return the victory message with new game hint
+            let output = new_game(new_seed, state.ironman_mode);
+            // We need to propagate the new game state, so we use a workaround:
+            // set state to a freshly created game state
+            let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+            *state = new_state;
+            return output.text;
+        }
+        Command::Help(topic) => {
+            narration::templates::render_help(
+                topic.as_deref(),
+                narration::templates::HelpPhase::Exploration,
+            )
+        }
+        Command::Objective => render_objective(state),
+        _ => {
+            vec![
+                "=== VICTORY ===".to_string(),
+                "You have completed all objectives and won the game!".to_string(),
+                "Type 'new game' to start a new adventure, or 'objective' to review your quest log.".to_string(),
+            ]
+        }
+    }
 }
 
 fn handle_equip_command(state: &mut GameState, target_str: &str) -> Vec<String> {
