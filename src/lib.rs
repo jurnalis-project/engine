@@ -3140,6 +3140,91 @@ mod tests {
     }
 
     #[test]
+    fn test_victory_phase_blocks_exploration_commands() {
+        let mut state = create_test_exploration_state();
+        state.game_phase = GamePhase::Victory;
+        state.progress.objectives.push(state::Objective {
+            id: "defeat_boss".to_string(),
+            title: "Defeat the Boss".to_string(),
+            description: "Done.".to_string(),
+            completed: true,
+        });
+        state.progress.objective_triggers.push(state::ObjectiveType::DefeatNpc(0));
+
+        let state_json = serde_json::to_string(&state).unwrap();
+
+        // Regular commands should show victory message
+        let output = process_input(&state_json, "go north");
+        assert!(output.text.iter().any(|t| t.contains("VICTORY")),
+            "Should show victory message, got: {:?}", output.text);
+
+        // Help should still work
+        let output = process_input(&state_json, "help");
+        assert!(output.text.iter().any(|t| t.contains("Commands")),
+            "Help should still work in victory phase: {:?}", output.text);
+
+        // Objective should still work
+        let output = process_input(&state_json, "quest");
+        assert!(output.text.iter().any(|t| t.contains("QUEST LOG")),
+            "Quest log should still work in victory phase: {:?}", output.text);
+    }
+
+    #[test]
+    fn test_victory_phase_allows_new_game() {
+        let mut state = create_test_exploration_state();
+        state.game_phase = GamePhase::Victory;
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "new game");
+
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(new_state.game_phase,
+            GamePhase::CharacterCreation(CreationStep::ChooseRace),
+            "new game from victory should start character creation");
+    }
+
+    #[test]
+    fn test_all_objectives_complete_triggers_victory_phase() {
+        let mut state = create_test_exploration_state();
+
+        // Set up a single boss objective
+        let boss_id: u32 = 997;
+        state.world.npcs.insert(boss_id, state::Npc {
+            id: boss_id,
+            name: "Final Boss".to_string(),
+            role: state::NpcRole::Guard,
+            disposition: state::Disposition::Hostile,
+            dialogue_tags: vec![],
+            location: state.current_location,
+            combat_stats: Some(state::CombatStats {
+                max_hp: 20,
+                current_hp: 0, // Dead
+                ac: 12,
+                speed: 30,
+                ability_scores: HashMap::new(),
+                attacks: vec![],
+                proficiency_bonus: 2,
+            }),
+            conditions: vec![],
+        });
+
+        state.progress.objectives.push(state::Objective {
+            id: "defeat_boss".to_string(),
+            title: "Defeat Final Boss".to_string(),
+            description: "Slay the final boss.".to_string(),
+            completed: false,
+        });
+        state.progress.objective_triggers.push(state::ObjectiveType::DefeatNpc(boss_id));
+
+        let lines = end_combat(&mut state, true);
+
+        assert_eq!(state.game_phase, GamePhase::Victory,
+            "Game should transition to Victory when all objectives complete");
+        assert!(lines.iter().any(|l| l.contains("CONGRATULATIONS")),
+            "Should show congratulations message: {:?}", lines);
+    }
+
+    #[test]
     fn test_objective_command_fallback_for_old_saves() {
         // Old saves without objectives should still show something
         let state = create_test_exploration_state();
