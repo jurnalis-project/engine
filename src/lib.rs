@@ -2127,6 +2127,42 @@ mod tests {
     }
 
     #[test]
+    fn test_combat_use_healing_potion_heals_and_consumes_action() {
+        let mut state = create_test_combat_state();
+        force_player_turn(&mut state);
+        state.character.current_hp = state.character.max_hp - 4;
+        give_consumable_to_player(&mut state, "Healing Potion", "A potion.", "heal_1d8");
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "use healing potion");
+
+        assert!(output.text.iter().any(|t| t.contains("HP") || t.contains("recover")), "{:?}", output.text);
+
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        let combat = new_state.active_combat.as_ref().unwrap();
+        assert!(combat.player_action_used, "Using potion should consume action in combat");
+        assert!(new_state.character.current_hp > state.character.current_hp);
+    }
+
+    #[test]
+    fn test_combat_use_after_action_is_blocked_without_consuming_item() {
+        let mut state = create_test_combat_state();
+        force_player_turn(&mut state);
+        give_consumable_to_player(&mut state, "Healing Potion", "A potion.", "heal_1d8");
+
+        let first_json = serde_json::to_string(&state).unwrap();
+        let after_attack = process_input(&first_json, "attack test goblin");
+        let after_use = process_input(&after_attack.state_json, "use healing potion");
+
+        assert!(after_use.text.iter().any(|t| t.contains("already used your action")));
+
+        let post: GameState = serde_json::from_str(&after_use.state_json).unwrap();
+        assert!(post.character.inventory.iter().any(|id| {
+            post.world.items.get(id).map(|i| i.name == "Healing Potion").unwrap_or(false)
+        }));
+    }
+
+    #[test]
     fn test_defeat_state_blocks_regular_commands() {
         let mut state = create_test_combat_state();
         state.character.current_hp = 0;
