@@ -131,6 +131,26 @@ fn handle_creation(state: &mut GameState, input: &str, step: CreationStep) -> Ve
             };
             state.character.class = class;
             state.character.save_proficiencies = class.saving_throw_proficiencies();
+            // Set spell fields based on class
+            match class {
+                Class::Wizard => {
+                    state.character.spell_slots_max = vec![2];
+                    state.character.spell_slots_remaining = vec![2];
+                    state.character.known_spells = vec![
+                        "Fire Bolt".to_string(),
+                        "Prestidigitation".to_string(),
+                        "Magic Missile".to_string(),
+                        "Burning Hands".to_string(),
+                        "Sleep".to_string(),
+                        "Shield".to_string(),
+                    ];
+                }
+                _ => {
+                    state.character.spell_slots_max = Vec::new();
+                    state.character.spell_slots_remaining = Vec::new();
+                    state.character.known_spells = Vec::new();
+                }
+            }
             state.game_phase = GamePhase::CharacterCreation(CreationStep::ChooseAbilityMethod);
             vec![
                 format!("Class: {}. Choose ability score method:", class),
@@ -381,6 +401,51 @@ fn room_item_candidates(state: &GameState) -> Vec<(usize, String)> {
 fn inventory_item_candidates(state: &GameState) -> Vec<(usize, String)> {
     state.character.inventory.iter()
         .filter_map(|&id| state.world.items.get(&id).map(|item| (id as usize, item.name.clone())))
+        .collect()
+}
+
+fn build_combat_npc_candidates(combat: &combat::CombatState, state: &GameState) -> Vec<(usize, String)> {
+    combat.initiative_order.iter()
+        .filter_map(|(c, _)| {
+            if let combat::Combatant::Npc(id) = c {
+                let npc = state.world.npcs.get(id)?;
+                let stats = npc.combat_stats.as_ref()?;
+                if stats.current_hp > 0 {
+                    Some((*id as usize, npc.name.clone()))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn build_spell_targets(combat: &combat::CombatState, state: &GameState) -> Vec<spells::SpellTarget> {
+    combat.initiative_order.iter()
+        .filter_map(|(c, _)| {
+            if let combat::Combatant::Npc(id) = c {
+                let npc = state.world.npcs.get(id)?;
+                let stats = npc.combat_stats.as_ref()?;
+                if stats.current_hp <= 0 {
+                    return None;
+                }
+                let distance = combat.distances.get(id).copied().unwrap_or(30);
+                Some(spells::SpellTarget {
+                    id: *id,
+                    name: npc.name.clone(),
+                    ac: stats.ac,
+                    current_hp: stats.current_hp,
+                    ability_scores: stats.ability_scores.clone(),
+                    proficiency_bonus: stats.proficiency_bonus,
+                    save_proficiencies: Vec::new(), // NPCs don't have save proficiency tracking in MVP
+                    distance,
+                })
+            } else {
+                None
+            }
+        })
         .collect()
 }
 
@@ -874,8 +939,28 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
                 ResolveResult::NotFound => vec![narration::templates::UNEQUIP_NOT_EQUIPPED.replace("{name}", &target_str)],
             }
         }
-        Command::Cast { .. } => {
-            vec!["Spell casting is not yet available.".to_string()]
+        Command::Cast { spell, target: _ } => {
+            // Check if caster
+            if state.character.known_spells.is_empty() {
+                return vec![narration::templates::CAST_NOT_A_CASTER.to_string()];
+            }
+            // Check if spell is known
+            let spell_def = match spells::find_spell(&spell) {
+                Some(def) if state.character.known_spells.iter().any(|s| s.to_lowercase() == def.name.to_lowercase()) => def,
+                _ => return vec![narration::templates::CAST_UNKNOWN_SPELL.to_string()],
+            };
+            // In exploration, only Prestidigitation and Fire Bolt work
+            match spell_def.name {
+                "Prestidigitation" => {
+                    vec![narration::templates::CAST_PRESTIDIGITATION.to_string()]
+                }
+                "Fire Bolt" => {
+                    vec![narration::templates::CAST_FIRE_BOLT_EXPLORE.to_string()]
+                }
+                _ => {
+                    vec![narration::templates::CAST_NOT_IN_COMBAT.to_string()]
+                }
+            }
         }
         Command::Attack(_) | Command::Approach(_) | Command::Retreat | Command::Dodge | Command::Disengage | Command::Dash | Command::EndTurn => {
             vec!["You're not in combat.".to_string()]
@@ -1266,10 +1351,311 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
             lines.push("You end your turn.".to_string());
             should_end_turn = true;
         }
-        Command::Cast { .. } => {
-            // Placeholder -- full implementation in upcoming unit
-            state.active_combat = Some(combat);
-            return vec!["Spell casting is not yet available.".to_string()];
+        Command::Cast { spell, target } => {
+            // Check if caster
+            if state.character.known_spells.is_empty() {
+                state.active_combat = Some(combat);
+                return vec![narration::templates::CAST_NOT_A_CASTER.to_string()];
+            }
+            // Check if spell is known
+            let spell_def = match spells::find_spell(&spell) {
+                Some(def) if state.character.known_spells.iter().any(|s| s.to_lowercase() == def.name.to_lowercase()) => def,
+                _ => {
+                    state.active_combat = Some(combat);
+                    return vec![narration::templates::CAST_UNKNOWN_SPELL.to_string()];
+                }
+            };
+
+            if combat.player_action_used {
+                state.active_combat = Some(combat);
+                return vec!["You've already used your action this turn.".to_string()];
+            }
+
+            // Check spell slots
+            if !spells::consume_spell_slot(spell_def.level, &mut state.character.spell_slots_remaining) {
+                state.active_combat = Some(combat);
+                return vec![narration::templates::CAST_NO_SLOTS.to_string()];
+            }
+
+            let int_score = state.character.ability_scores.get(&Ability::Intelligence).copied().unwrap_or(10);
+            let prof_bonus = state.character.proficiency_bonus();
+
+            match spell_def.name {
+                "Fire Bolt" => {
+                    // Needs a target
+                    let target_name = match target {
+                        Some(t) => t,
+                        None => {
+                            // Undo slot consumption (cantrip so no slot was consumed anyway)
+                            state.active_combat = Some(combat);
+                            return vec![narration::templates::CAST_NEED_TARGET.replace("{spell}", "Fire Bolt")];
+                        }
+                    };
+
+                    let owned_candidates = build_combat_npc_candidates(&combat, state);
+                    let candidates: Vec<(usize, &str)> = owned_candidates.iter()
+                        .map(|(id, name)| (*id, name.as_str()))
+                        .collect();
+
+                    match resolver::resolve_target(&target_name, &candidates) {
+                        ResolveResult::Found(id) => {
+                            let npc_id = id as u32;
+                            let target_ac = state.world.npcs.get(&npc_id)
+                                .and_then(|n| n.combat_stats.as_ref())
+                                .map(|s| s.ac)
+                                .unwrap_or(10);
+                            let npc_name = state.world.npcs.get(&npc_id)
+                                .map(|n| n.name.clone())
+                                .unwrap_or_else(|| "the enemy".to_string());
+
+                            let outcome = spells::resolve_fire_bolt(&mut rng, int_score, prof_bonus, target_ac);
+                            if let spells::CastOutcome::FireBolt { attack, damage } = outcome {
+                                if attack.hit {
+                                    if attack.natural_20 {
+                                        lines.push(narration::templates::CAST_FIRE_BOLT_CRIT
+                                            .replace("{target}", &npc_name)
+                                            .replace("{damage}", &damage.to_string()));
+                                    } else {
+                                        lines.push(narration::templates::CAST_FIRE_BOLT_HIT
+                                            .replace("{target}", &npc_name)
+                                            .replace("{roll}", &attack.roll.to_string())
+                                            .replace("{mod}", &attack.modifier.to_string())
+                                            .replace("{total}", &attack.total.to_string())
+                                            .replace("{ac}", &target_ac.to_string())
+                                            .replace("{damage}", &damage.to_string()));
+                                    }
+                                    // Apply damage
+                                    if let Some(npc) = state.world.npcs.get_mut(&npc_id) {
+                                        if let Some(stats) = npc.combat_stats.as_mut() {
+                                            stats.current_hp -= damage;
+                                            if stats.current_hp <= 0 {
+                                                stats.current_hp = 0;
+                                                lines.push(format!("{} is slain!", npc_name));
+                                            }
+                                        }
+                                    }
+                                } else if attack.natural_1 {
+                                    lines.push(narration::templates::CAST_FIRE_BOLT_MISS_NAT1
+                                        .replace("{target}", &npc_name));
+                                } else {
+                                    lines.push(narration::templates::CAST_FIRE_BOLT_MISS
+                                        .replace("{target}", &npc_name)
+                                        .replace("{roll}", &attack.roll.to_string())
+                                        .replace("{mod}", &attack.modifier.to_string())
+                                        .replace("{total}", &attack.total.to_string())
+                                        .replace("{ac}", &target_ac.to_string()));
+                                }
+                            }
+                            combat.player_action_used = true;
+                            should_end_turn = combat.player_movement_remaining <= 0;
+                        }
+                        ResolveResult::Ambiguous(matches) => {
+                            state.active_combat = Some(combat);
+                            return resolver::format_disambiguation(&matches);
+                        }
+                        ResolveResult::NotFound => {
+                            state.active_combat = Some(combat);
+                            return vec![format!("There's no \"{}\" to target.", target_name)];
+                        }
+                    }
+                }
+                "Prestidigitation" => {
+                    lines.push(narration::templates::CAST_PRESTIDIGITATION.to_string());
+                    combat.player_action_used = true;
+                    should_end_turn = combat.player_movement_remaining <= 0;
+                }
+                "Magic Missile" => {
+                    // Needs a target
+                    let target_name = match target {
+                        Some(t) => t,
+                        None => {
+                            // Undo slot consumption
+                            state.character.spell_slots_remaining[0] += 1;
+                            state.active_combat = Some(combat);
+                            return vec![narration::templates::CAST_NEED_TARGET.replace("{spell}", "Magic Missile")];
+                        }
+                    };
+
+                    let owned_candidates = build_combat_npc_candidates(&combat, state);
+                    let candidates: Vec<(usize, &str)> = owned_candidates.iter()
+                        .map(|(id, name)| (*id, name.as_str()))
+                        .collect();
+
+                    match resolver::resolve_target(&target_name, &candidates) {
+                        ResolveResult::Found(id) => {
+                            let npc_id = id as u32;
+                            let npc_name = state.world.npcs.get(&npc_id)
+                                .map(|n| n.name.clone())
+                                .unwrap_or_else(|| "the enemy".to_string());
+
+                            let outcome = spells::resolve_magic_missile(&mut rng);
+                            if let spells::CastOutcome::MagicMissile { darts, total_damage } = outcome {
+                                lines.push(narration::templates::CAST_MAGIC_MISSILE
+                                    .replace("{target}", &npc_name)
+                                    .replace("{d1}", &darts[0].to_string())
+                                    .replace("{d2}", &darts[1].to_string())
+                                    .replace("{d3}", &darts[2].to_string())
+                                    .replace("{total}", &total_damage.to_string()));
+
+                                // Slot usage message
+                                let remaining = state.character.spell_slots_remaining[0];
+                                let max = state.character.spell_slots_max[0];
+                                lines.push(narration::templates::CAST_SLOT_USED
+                                    .replace("{remaining}", &remaining.to_string())
+                                    .replace("{max}", &max.to_string())
+                                    .replace("{level}", "1"));
+
+                                // Apply damage
+                                if let Some(npc) = state.world.npcs.get_mut(&npc_id) {
+                                    if let Some(stats) = npc.combat_stats.as_mut() {
+                                        stats.current_hp -= total_damage;
+                                        if stats.current_hp <= 0 {
+                                            stats.current_hp = 0;
+                                            lines.push(format!("{} is slain!", npc_name));
+                                        }
+                                    }
+                                }
+                            }
+                            combat.player_action_used = true;
+                            should_end_turn = combat.player_movement_remaining <= 0;
+                        }
+                        ResolveResult::Ambiguous(matches) => {
+                            state.character.spell_slots_remaining[0] += 1; // refund
+                            state.active_combat = Some(combat);
+                            return resolver::format_disambiguation(&matches);
+                        }
+                        ResolveResult::NotFound => {
+                            state.character.spell_slots_remaining[0] += 1; // refund
+                            state.active_combat = Some(combat);
+                            return vec![format!("There's no \"{}\" to target.", target_name)];
+                        }
+                    }
+                }
+                "Burning Hands" => {
+                    // AoE -- hits all enemies within 5 ft, no target needed
+                    let targets: Vec<spells::SpellTarget> = build_spell_targets(&combat, state);
+
+                    let melee_count = targets.iter().filter(|t| t.distance <= 5).count();
+                    if melee_count == 0 {
+                        state.character.spell_slots_remaining[0] += 1; // refund
+                        lines.push(narration::templates::CAST_BURNING_HANDS_NO_TARGETS.to_string());
+                        state.active_combat = Some(combat);
+                        return lines;
+                    }
+
+                    let outcome = spells::resolve_burning_hands(&mut rng, int_score, prof_bonus, &targets);
+                    if let spells::CastOutcome::BurningHands { total_rolled, half_damage: _, dc, results } = outcome {
+                        lines.push(narration::templates::CAST_BURNING_HANDS_INTRO
+                            .replace("{damage}", &total_rolled.to_string())
+                            .replace("{dc}", &dc.to_string()));
+
+                        for result in &results {
+                            let save_str = format!("{}+{}={} vs DC {}",
+                                result.save_result.roll, result.save_result.modifier,
+                                result.save_result.total, result.save_result.dc);
+                            if result.save_result.saved {
+                                lines.push(narration::templates::CAST_BURNING_HANDS_SAVE
+                                    .replace("{target}", &result.name)
+                                    .replace("{save_result}", &save_str)
+                                    .replace("{damage}", &result.damage_taken.to_string()));
+                            } else {
+                                lines.push(narration::templates::CAST_BURNING_HANDS_FAIL
+                                    .replace("{target}", &result.name)
+                                    .replace("{save_result}", &save_str)
+                                    .replace("{damage}", &result.damage_taken.to_string()));
+                            }
+                        }
+
+                        // Slot usage message
+                        let remaining = state.character.spell_slots_remaining[0];
+                        let max = state.character.spell_slots_max[0];
+                        lines.push(narration::templates::CAST_SLOT_USED
+                            .replace("{remaining}", &remaining.to_string())
+                            .replace("{max}", &max.to_string())
+                            .replace("{level}", "1"));
+
+                        // Apply damage to NPCs
+                        for result in &results {
+                            // Find NPC by name
+                            for (_, npc) in state.world.npcs.iter_mut() {
+                                if npc.name == result.name {
+                                    if let Some(stats) = npc.combat_stats.as_mut() {
+                                        stats.current_hp -= result.damage_taken;
+                                        if stats.current_hp <= 0 {
+                                            stats.current_hp = 0;
+                                            lines.push(format!("{} is slain!", result.name));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    combat.player_action_used = true;
+                    should_end_turn = combat.player_movement_remaining <= 0;
+                }
+                "Sleep" => {
+                    // AoE by HP pool, targets weakest first
+                    let targets: Vec<spells::SpellTarget> = build_spell_targets(&combat, state);
+
+                    let outcome = spells::resolve_sleep(&mut rng, &targets);
+                    if let spells::CastOutcome::SleepResult { hp_pool, affected } = outcome {
+                        lines.push(narration::templates::CAST_SLEEP_INTRO
+                            .replace("{pool}", &hp_pool.to_string()));
+
+                        if affected.is_empty() {
+                            lines.push(narration::templates::CAST_SLEEP_NONE.to_string());
+                        } else {
+                            for target in &affected {
+                                lines.push(narration::templates::CAST_SLEEP_TARGET
+                                    .replace("{target}", &target.name)
+                                    .replace("{hp}", &target.hp.to_string()));
+
+                                // Set HP to 0 (treated as defeated for combat-end purposes)
+                                for (_, npc) in state.world.npcs.iter_mut() {
+                                    if npc.name == target.name {
+                                        if let Some(stats) = npc.combat_stats.as_mut() {
+                                            stats.current_hp = 0;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Slot usage message
+                        let remaining = state.character.spell_slots_remaining[0];
+                        let max = state.character.spell_slots_max[0];
+                        lines.push(narration::templates::CAST_SLOT_USED
+                            .replace("{remaining}", &remaining.to_string())
+                            .replace("{max}", &max.to_string())
+                            .replace("{level}", "1"));
+                    }
+                    combat.player_action_used = true;
+                    should_end_turn = combat.player_movement_remaining <= 0;
+                }
+                "Shield" => {
+                    let outcome = spells::resolve_shield();
+                    if let spells::CastOutcome::ShieldCast { ac_bonus: _ } = outcome {
+                        lines.push(narration::templates::CAST_SHIELD.to_string());
+
+                        // Slot usage message
+                        let remaining = state.character.spell_slots_remaining[0];
+                        let max = state.character.spell_slots_max[0];
+                        lines.push(narration::templates::CAST_SLOT_USED
+                            .replace("{remaining}", &remaining.to_string())
+                            .replace("{max}", &max.to_string())
+                            .replace("{level}", "1"));
+
+                        // Track shield AC bonus in combat state
+                        // For MVP, we store shield bonus in a simple field
+                        combat.player_shield_ac_bonus = 5;
+                    }
+                    combat.player_action_used = true;
+                    should_end_turn = combat.player_movement_remaining <= 0;
+                }
+                _ => {
+                    lines.push("That spell is not implemented yet.".to_string());
+                }
+            }
         }
         Command::Unknown(s) => {
             state.active_combat = Some(combat);

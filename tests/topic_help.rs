@@ -34,6 +34,7 @@ fn create_combat_state_json() -> String {
         player_action_used: false,
         npc_dodging: HashMap::new(),
         npc_disengaging: HashMap::new(),
+        player_shield_ac_bonus: 0,
     });
 
     serde_json::to_string(&state).unwrap()

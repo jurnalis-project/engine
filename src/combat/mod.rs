@@ -43,6 +43,9 @@ pub struct CombatState {
     pub npc_dodging: HashMap<NpcId, bool>,
     /// NPCs that are disengaging this turn.
     pub npc_disengaging: HashMap<NpcId, bool>,
+    /// Shield spell AC bonus (resets at start of player's next turn).
+    #[serde(default)]
+    pub player_shield_ac_bonus: i32,
 }
 
 impl CombatState {
@@ -88,6 +91,7 @@ impl CombatState {
                     self.player_dodging = false;
                     self.player_disengaging = false;
                     self.player_action_used = false;
+                    self.player_shield_ac_bonus = 0;
                     return combatant;
                 }
                 Combatant::Npc(id) => {
@@ -180,6 +184,7 @@ pub fn start_combat(
         player_action_used: false,
         npc_dodging: HashMap::new(),
         npc_disengaging: HashMap::new(),
+        player_shield_ac_bonus: 0,
     }
 }
 
