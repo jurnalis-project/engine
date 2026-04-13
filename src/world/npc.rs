@@ -59,6 +59,7 @@ pub fn generate_npcs(
             dialogue_tags,
             location,
             combat_stats: None,
+            conditions: Vec::new(),
         });
     }
 

@@ -8,6 +8,7 @@ pub mod narration;
 pub mod equipment;
 pub mod output;
 pub mod combat;
+pub mod conditions;
 
 use std::collections::{HashMap, HashSet};
 use rand::SeedableRng;
@@ -1097,9 +1098,15 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
 
                     let hostile_within_5ft = combat::has_living_hostile_within(state, &combat, 5);
 
+                    // Get target conditions for attack resolution
+                    let target_conditions: &[crate::conditions::ActiveCondition] = state.world.npcs.get(&npc_id)
+                        .map(|n| n.conditions.as_slice())
+                        .unwrap_or(&[]);
+
                     let result = combat::resolve_player_attack(
                         &mut rng, &state.character, target_ac, target_dodging,
                         weapon_id, &state.world.items, distance, off_hand_free, hostile_within_5ft,
+                        target_conditions,
                     );
 
                     let npc_name = state.world.npcs.get(&npc_id)
@@ -1918,6 +1925,7 @@ mod tests {
                 }],
                 proficiency_bonus: 2,
             }),
+            conditions: Vec::new(),
         });
         if let Some(loc) = state.world.locations.get_mut(&loc_id) {
             loc.npcs.push(npc_id);

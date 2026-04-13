@@ -11,6 +11,7 @@ use crate::state::{GameState, CombatStats, NpcAttack, DamageType, ItemType};
 use crate::equipment::{FINESSE, THROWN, VERSATILE, REACH, AMMUNITION};
 use crate::rules::dice::{roll_d20, roll_dice};
 use crate::character::Character;
+use crate::conditions::{self, ConditionType, ActiveCondition};
 
 /// Identifies a combatant in initiative order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -248,6 +249,7 @@ pub fn resolve_player_attack(
     distance: u32,
     off_hand_free: bool,
     hostile_within_5ft: bool,
+    target_conditions: &[ActiveCondition],
 ) -> AttackResult {
     let (weapon_name, damage_dice, damage_die, damage_type, properties, versatile_die, range_normal, range_long) =
         match weapon_id.and_then(|id| items.get(&id)) {
@@ -325,16 +327,47 @@ pub fn resolve_player_attack(
         }
     }
 
-    // Roll attack
+    // Check player conditions that impose attack disadvantage
+    if let Some(false) = conditions::get_attack_advantage(&player.conditions) {
+        disadvantage = true;
+    }
+
+    // Check target conditions that grant advantage to attacker (within 5ft for prone)
+    let attacker_has_advantage = if let Some(true) = conditions::get_defense_advantage(&player.conditions, target_conditions) {
+        // Prone only grants advantage if within 5ft
+        if conditions::has_condition(target_conditions, ConditionType::Prone) && distance > 5 {
+            false
+        } else {
+            true
+        }
+    } else {
+        false
+    };
+
+    // Advantage cancels disadvantage (and vice versa)
+    if attacker_has_advantage && disadvantage {
+        disadvantage = false; // Neutral
+    }
+
+    // Roll attack with advantage/disadvantage/neutral
     let roll1 = roll_d20(rng);
     let roll2 = roll_d20(rng);
-    let attack_roll = if disadvantage { roll1.min(roll2) } else { roll1 };
+    let attack_roll = if disadvantage {
+        roll1.min(roll2)
+    } else if attacker_has_advantage {
+        roll1.max(roll2)
+    } else {
+        roll1
+    };
 
     let natural_20 = attack_roll == 20;
     let natural_1 = attack_roll == 1;
 
     let total_attack = attack_roll + ability_mod + prof_bonus;
     let hit = if natural_1 { false } else if natural_20 { true } else { total_attack >= target_ac };
+
+    // Check for auto-crit (paralyzed target within 5ft)
+    let auto_crit = hit && conditions::is_auto_crit_target(target_conditions) && distance <= 5;
 
     let damage = if hit {
         // Determine die to use
@@ -344,7 +377,7 @@ pub fn resolve_player_attack(
             damage_die
         };
 
-        let dice_count = if natural_20 { damage_dice * 2 } else { damage_dice };
+        let dice_count = if natural_20 || auto_crit { damage_dice * 2 } else { damage_dice };
         let dice_total: i32 = roll_dice(rng, dice_count, actual_die).iter().sum();
         (dice_total + ability_mod).max(1)
     } else {
@@ -372,8 +405,12 @@ pub fn resolve_npc_attack(
     player_ac: i32,
     player_dodging: bool,
     distance: u32,
+    npc_conditions: &[ActiveCondition],
+    player_conditions: &[ActiveCondition],
 ) -> AttackResult {
     let mut disadvantage = false;
+    let mut advantage = false;
+
     if player_dodging {
         disadvantage = true;
     }
@@ -386,9 +423,34 @@ pub fn resolve_npc_attack(
         disadvantage = true; // Long range
     }
 
+    // Check NPC conditions that impose attack disadvantage
+    if let Some(false) = conditions::get_attack_advantage(npc_conditions) {
+        disadvantage = true;
+    }
+
+    // Check player conditions that grant advantage to attacker
+    if let Some(true) = conditions::get_defense_advantage(npc_conditions, player_conditions) {
+        // Prone only grants advantage if within 5ft
+        if conditions::has_condition(player_conditions, ConditionType::Prone) && distance > 5 {
+            // No advantage
+        } else {
+            advantage = true;
+        }
+    }
+
+    // Advantage and disadvantage cancel out
+    let use_disadvantage = disadvantage && !advantage;
+    let use_advantage = advantage && !disadvantage;
+
     let roll1 = roll_d20(rng);
     let roll2 = roll_d20(rng);
-    let attack_roll = if disadvantage { roll1.min(roll2) } else { roll1 };
+    let attack_roll = if use_disadvantage {
+        roll1.min(roll2)
+    } else if use_advantage {
+        roll1.max(roll2)
+    } else {
+        roll1
+    };
 
     let natural_20 = attack_roll == 20;
     let natural_1 = attack_roll == 1;
@@ -396,8 +458,11 @@ pub fn resolve_npc_attack(
     let total_attack = attack_roll + attack.hit_bonus;
     let hit = if natural_1 { false } else if natural_20 { true } else { total_attack >= player_ac };
 
+    // Check for auto-crit (paralyzed player within 5ft)
+    let auto_crit = hit && conditions::is_auto_crit_target(player_conditions) && distance <= 5;
+
     let damage = if hit {
-        let dice_count = if natural_20 { attack.damage_dice * 2 } else { attack.damage_dice };
+        let dice_count = if natural_20 || auto_crit { attack.damage_dice * 2 } else { attack.damage_dice };
         let dice_total: i32 = roll_dice(rng, dice_count, attack.damage_die).iter().sum();
         (dice_total + attack.damage_bonus).max(1)
     } else {
@@ -414,7 +479,7 @@ pub fn resolve_npc_attack(
         damage,
         damage_type: attack.damage_type,
         weapon_name: attack.name.clone(),
-        disadvantage,
+        disadvantage: use_disadvantage,
     }
 }
 
@@ -433,7 +498,10 @@ pub fn resolve_opportunity_attack(
     // Find a melee attack that can reach the player at current distance
     let melee_attack = stats.attacks.iter()
         .find(|a| a.reach > 0 && distance <= a.reach as u32)?;
-    let result = resolve_npc_attack(rng, melee_attack, player_ac, false, distance);
+    let result = resolve_npc_attack(
+        rng, melee_attack, player_ac, false, distance,
+        &npc.conditions, &state.character.conditions
+    );
     Some((npc.name.clone(), result))
 }
 
@@ -462,6 +530,14 @@ pub fn resolve_npc_turn(
 
     let distance = *combat.distances.get(&npc_id).unwrap_or(&30);
 
+    // Get NPC and conditions reference for attack resolution
+    let npc_ref = match state.world.npcs.get(&npc_id) {
+        Some(n) => n,
+        None => return lines,
+    };
+    let npc_conditions = &npc_ref.conditions;
+    let player_conditions = &state.character.conditions;
+
     // Priority: melee if in range -> ranged if in range -> move toward player
 
     // Check for melee attack
@@ -469,7 +545,7 @@ pub fn resolve_npc_turn(
     if let Some(attack) = melee_attack {
         let player_ac = crate::equipment::calculate_ac(&state.character, &state.world.items);
         let player_dodging = combat.player_dodging;
-        let result = resolve_npc_attack(rng, attack, player_ac, player_dodging, distance);
+        let result = resolve_npc_attack(rng, attack, player_ac, player_dodging, distance, npc_conditions, player_conditions);
 
         if result.hit {
             state.character.current_hp -= result.damage;
@@ -499,7 +575,7 @@ pub fn resolve_npc_turn(
     if let Some(attack) = ranged_attack {
         let player_ac = crate::equipment::calculate_ac(&state.character, &state.world.items);
         let player_dodging = combat.player_dodging;
-        let result = resolve_npc_attack(rng, attack, player_ac, player_dodging, distance);
+        let result = resolve_npc_attack(rng, attack, player_ac, player_dodging, distance, npc_conditions, player_conditions);
 
         if result.hit {
             state.character.current_hp -= result.damage;
@@ -788,6 +864,7 @@ mod tests {
             dialogue_tags: vec![],
             location: 0,
             combat_stats: Some(goblin_stats()),
+            conditions: Vec::new(),
         });
 
         GameState {
@@ -871,7 +948,7 @@ mod tests {
         let mut misses = 0;
         for seed in 0..100 {
             let mut rng = StdRng::seed_from_u64(seed);
-            let result = resolve_npc_attack(&mut rng, &attack, 15, false, 5);
+            let result = resolve_npc_attack(&mut rng, &attack, 15, false, 5, &[], &[]);
             if result.hit { hits += 1; } else { misses += 1; }
         }
         assert!(hits > 0, "Should have some hits");
@@ -889,7 +966,7 @@ mod tests {
         // Find a seed that gives nat 20
         for seed in 0..1000 {
             let mut rng = StdRng::seed_from_u64(seed);
-            let result = resolve_npc_attack(&mut rng, &attack, 30, false, 5);
+            let result = resolve_npc_attack(&mut rng, &attack, 30, false, 5, &[], &[]);
             if result.natural_20 {
                 assert!(result.hit, "Natural 20 should always hit");
                 return;
@@ -908,7 +985,7 @@ mod tests {
         };
         for seed in 0..1000 {
             let mut rng = StdRng::seed_from_u64(seed);
-            let result = resolve_npc_attack(&mut rng, &attack, 1, false, 5);
+            let result = resolve_npc_attack(&mut rng, &attack, 1, false, 5, &[], &[]);
             if result.natural_1 {
                 assert!(!result.hit, "Natural 1 should always miss");
                 return;
@@ -929,7 +1006,7 @@ mod tests {
         let mut crit_damages = Vec::new();
         for seed in 0..1000 {
             let mut rng = StdRng::seed_from_u64(seed);
-            let result = resolve_npc_attack(&mut rng, &attack, 10, false, 5);
+            let result = resolve_npc_attack(&mut rng, &attack, 10, false, 5, &[], &[]);
             if result.natural_20 {
                 crit_damages.push(result.damage);
             }
@@ -955,8 +1032,8 @@ mod tests {
         for seed in 0..1000 {
             let mut rng1 = StdRng::seed_from_u64(seed);
             let mut rng2 = StdRng::seed_from_u64(seed);
-            let dodge = resolve_npc_attack(&mut rng1, &attack, 15, true, 5);
-            let normal = resolve_npc_attack(&mut rng2, &attack, 15, false, 5);
+            let dodge = resolve_npc_attack(&mut rng1, &attack, 15, true, 5, &[], &[]);
+            let normal = resolve_npc_attack(&mut rng2, &attack, 15, false, 5, &[], &[]);
             if dodge.hit { dodge_hits += 1; }
             if normal.hit { normal_hits += 1; }
         }
@@ -968,7 +1045,7 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(42);
         let player = test_character();
         let items = HashMap::new();
-        let result = resolve_player_attack(&mut rng, &player, 15, false, None, &items, 5, true, false);
+        let result = resolve_player_attack(&mut rng, &player, 15, false, None, &items, 5, true, false, &[]);
         assert!(result.hit, "Unarmed always hits");
         // STR 16+1(human)=17, mod +3, damage = 1+3 = 4
         assert_eq!(result.damage, 4);
@@ -1113,6 +1190,7 @@ mod tests {
                 attacks: vec![],
                 proficiency_bonus: 2,
             }),
+            conditions: Vec::new(),
         });
 
         let mut rng = StdRng::seed_from_u64(42);
@@ -1175,5 +1253,162 @@ mod tests {
         let new_dist = *combat.distances.get(&0).unwrap();
         assert!(new_dist < 60, "NPC should have moved closer");
         assert!(lines[0].contains("moves toward"), "Should narrate movement: {}", lines[0]);
+    }
+
+    // ---- Condition Integration Tests ----
+
+    #[test]
+    fn test_poisoned_player_attacks_with_disadvantage() {
+        use crate::conditions::{self, ActiveCondition, ConditionType, ConditionDuration};
+
+        // Direct test: verify that poisoned condition returns disadvantage from get_attack_advantage
+        let poisoned = vec![
+            ActiveCondition::new(ConditionType::Poisoned, ConditionDuration::Rounds(3)),
+        ];
+
+        assert_eq!(conditions::get_attack_advantage(&poisoned), Some(false),
+            "Poisoned should impose disadvantage on attacks");
+    }
+
+    #[test]
+    fn test_attacking_stunned_target_grants_advantage() {
+        use crate::conditions::{self, ActiveCondition, ConditionType, ConditionDuration};
+
+        // Direct test: verify that stunned target grants advantage to attacker
+        let attacker: Vec<ActiveCondition> = vec![];
+        let stunned = vec![
+            ActiveCondition::new(ConditionType::Stunned, ConditionDuration::Rounds(1)),
+        ];
+
+        assert_eq!(conditions::get_defense_advantage(&attacker, &stunned), Some(true),
+            "Attacking stunned target should grant advantage");
+    }
+
+    #[test]
+    fn test_paralyzed_target_is_auto_crit() {
+        use crate::conditions::{self, ActiveCondition, ConditionType, ConditionDuration};
+
+        // Direct test: verify paralyzed condition marks target as auto-crit
+        let paralyzed = vec![
+            ActiveCondition::new(ConditionType::Paralyzed, ConditionDuration::Rounds(1)),
+        ];
+
+        assert!(conditions::is_auto_crit_target(&paralyzed),
+            "Paralyzed target should be subject to auto-crits");
+
+        // Stunned should NOT be auto-crit
+        let stunned = vec![
+            ActiveCondition::new(ConditionType::Stunned, ConditionDuration::Rounds(1)),
+        ];
+        assert!(!conditions::is_auto_crit_target(&stunned),
+            "Stunned target should not be auto-crit");
+    }
+
+    #[test]
+    fn test_prone_grants_advantage_within_5ft() {
+        use crate::conditions::{self, ActiveCondition, ConditionType, ConditionDuration};
+
+        // Direct test: prone target grants advantage to attackers
+        let attacker: Vec<ActiveCondition> = vec![];
+        let prone = vec![
+            ActiveCondition::new(ConditionType::Prone, ConditionDuration::Permanent),
+        ];
+
+        assert_eq!(conditions::get_defense_advantage(&attacker, &prone), Some(true),
+            "Attacking prone target should grant advantage");
+    }
+
+    #[test]
+    fn test_blinded_target_grants_advantage() {
+        use crate::conditions::{self, ActiveCondition, ConditionType, ConditionDuration};
+
+        // Direct test: blinded target grants advantage to attackers
+        let attacker: Vec<ActiveCondition> = vec![];
+        let blinded = vec![
+            ActiveCondition::new(ConditionType::Blinded, ConditionDuration::Rounds(2)),
+        ];
+
+        assert_eq!(conditions::get_defense_advantage(&attacker, &blinded), Some(true),
+            "Attacking blinded target should grant advantage");
+    }
+
+    #[test]
+    fn test_blinded_and_poisoned_impose_attack_disadvantage() {
+        use crate::conditions::{self, ActiveCondition, ConditionType, ConditionDuration};
+
+        // Blinded imposes disadvantage
+        let blinded = vec![
+            ActiveCondition::new(ConditionType::Blinded, ConditionDuration::Rounds(1)),
+        ];
+        assert_eq!(conditions::get_attack_advantage(&blinded), Some(false));
+
+        // Prone imposes disadvantage
+        let prone = vec![
+            ActiveCondition::new(ConditionType::Prone, ConditionDuration::Permanent),
+        ];
+        assert_eq!(conditions::get_attack_advantage(&prone), Some(false));
+    }
+
+    #[test]
+    fn test_stunned_and_paralyzed_prevent_actions() {
+        use crate::conditions::{self, ActiveCondition, ConditionType, ConditionDuration};
+
+        // Stunned prevents actions
+        let stunned = vec![
+            ActiveCondition::new(ConditionType::Stunned, ConditionDuration::Rounds(1)),
+        ];
+        assert!(!conditions::can_take_actions(&stunned));
+        assert!(!conditions::can_take_reactions(&stunned));
+
+        // Paralyzed prevents actions
+        let paralyzed = vec![
+            ActiveCondition::new(ConditionType::Paralyzed, ConditionDuration::Rounds(1)),
+        ];
+        assert!(!conditions::can_take_actions(&paralyzed));
+        assert!(!conditions::can_take_reactions(&paralyzed));
+
+        // Poisoned allows actions
+        let poisoned = vec![
+            ActiveCondition::new(ConditionType::Poisoned, ConditionDuration::Rounds(2)),
+        ];
+        assert!(conditions::can_take_actions(&poisoned));
+        assert!(conditions::can_take_reactions(&poisoned));
+    }
+
+    #[test]
+    fn test_stunned_and_paralyzed_auto_fail_str_dex_saves() {
+        use crate::conditions::{self, ActiveCondition, ConditionType, ConditionDuration};
+        use crate::types::Ability;
+
+        // Stunned auto-fails STR and DEX saves
+        let stunned = vec![
+            ActiveCondition::new(ConditionType::Stunned, ConditionDuration::Rounds(1)),
+        ];
+        assert!(conditions::get_save_auto_fail(&stunned, Ability::Strength));
+        assert!(conditions::get_save_auto_fail(&stunned, Ability::Dexterity));
+        assert!(!conditions::get_save_auto_fail(&stunned, Ability::Constitution));
+
+        // Paralyzed auto-fails STR and DEX saves
+        let paralyzed = vec![
+            ActiveCondition::new(ConditionType::Paralyzed, ConditionDuration::Rounds(1)),
+        ];
+        assert!(conditions::get_save_auto_fail(&paralyzed, Ability::Strength));
+        assert!(conditions::get_save_auto_fail(&paralyzed, Ability::Dexterity));
+        assert!(!conditions::get_save_auto_fail(&paralyzed, Ability::Wisdom));
+    }
+
+    #[test]
+    fn test_prone_reduces_speed() {
+        use crate::conditions::{self, ActiveCondition, ConditionType, ConditionDuration};
+
+        let prone = vec![
+            ActiveCondition::new(ConditionType::Prone, ConditionDuration::Permanent),
+        ];
+        assert_eq!(conditions::get_speed_multiplier(&prone), 0.5,
+            "Prone should reduce speed multiplier to 0.5");
+
+        let normal: Vec<ActiveCondition> = vec![];
+        assert_eq!(conditions::get_speed_multiplier(&normal), 1.0,
+            "No conditions should have normal speed");
     }
 }

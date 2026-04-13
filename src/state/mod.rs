@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use crate::types::{LocationId, NpcId, ItemId, TriggerId, Direction};
 use crate::character::Character;
+use crate::conditions::ActiveCondition;
 
 pub const SAVE_VERSION: &str = "0.1.0";
 
@@ -66,6 +67,8 @@ pub struct Npc {
     pub dialogue_tags: Vec<String>,
     pub location: LocationId,
     pub combat_stats: Option<CombatStats>,
+    #[serde(default)]
+    pub conditions: Vec<ActiveCondition>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

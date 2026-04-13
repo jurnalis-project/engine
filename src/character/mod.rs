@@ -10,6 +10,7 @@ use self::race::Race;
 use self::class::Class;
 use crate::rules::dice::roll_4d6_drop_lowest;
 use crate::equipment::Equipment;
+use crate::conditions::ActiveCondition;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Character {
@@ -26,6 +27,8 @@ pub struct Character {
     pub speed: i32,
     pub traits: Vec<String>,
     pub equipped: Equipment,
+    #[serde(default)]
+    pub conditions: Vec<ActiveCondition>,
 }
 
 impl Character {
@@ -99,6 +102,7 @@ pub fn create_character(
         save_proficiencies: save_profs, max_hp: hp, current_hp: hp,
         inventory: Vec::new(), speed: race.speed(), traits,
         equipped: Equipment::default(),
+        conditions: Vec::new(),
     }
 }
 
