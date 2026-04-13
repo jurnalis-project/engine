@@ -1,9 +1,63 @@
 use std::io::{self, BufRead, Write};
 use jurnalis_engine::{new_game, process_input};
 
+fn sanitize_save_name(raw: Option<&str>) -> String {
+    let name = raw.unwrap_or("autosave").trim();
+    let valid = !name.is_empty()
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    if valid { name.to_string() } else { "autosave".to_string() }
+}
+
+fn handle_cli_persistence_command(
+    input: &str,
+    state_json: &mut String,
+    save_dir: &std::path::Path,
+) -> io::Result<Option<Vec<String>>> {
+    let trimmed = input.trim();
+    let parts: Vec<&str> = trimmed.split_whitespace().collect();
+    if parts.is_empty() {
+        return Ok(None);
+    }
+
+    let verb = parts[0].to_ascii_lowercase();
+    let arg = parts.get(1).copied();
+
+    match verb.as_str() {
+        "save" => {
+            std::fs::create_dir_all(save_dir)?;
+            let slot = sanitize_save_name(arg);
+            let path = save_dir.join(format!("{}.json", slot));
+            std::fs::write(&path, state_json.as_bytes())?;
+            Ok(Some(vec![format!("Saved game to {}.", path.file_name().unwrap().to_string_lossy())]))
+        }
+        "load" | "restore" => {
+            let slot = sanitize_save_name(arg);
+            let path = save_dir.join(format!("{}.json", slot));
+            let loaded = std::fs::read_to_string(&path)?;
+            // Validate shape/version through engine state loader.
+            jurnalis_engine::state::load_game(&loaded)
+                .map_err(|msg| io::Error::new(io::ErrorKind::InvalidData, msg))?;
+            *state_json = loaded;
+            Ok(Some(vec![format!("Loaded game from {}.", path.file_name().unwrap().to_string_lossy())]))
+        }
+        _ => Ok(None),
+    }
+}
+
 /// Run the REPL loop with injectable I/O for testability.
 /// Returns when the user types "quit" or "exit", or when input is exhausted.
 fn run_repl<R: BufRead, W: Write>(reader: &mut R, writer: &mut W, seed: u64) -> io::Result<()> {
+    let save_dir = std::path::PathBuf::from("saves");
+    run_repl_with_save_dir(reader, writer, seed, &save_dir)
+}
+
+/// Run the REPL with a specified save directory for persistence.
+fn run_repl_with_save_dir<R: BufRead, W: Write>(
+    reader: &mut R,
+    writer: &mut W,
+    seed: u64,
+    save_dir: &std::path::Path,
+) -> io::Result<()> {
     let output = new_game(seed, false);
     for line in &output.text {
         writeln!(writer, "{}", line)?;
@@ -26,6 +80,32 @@ fn run_repl<R: BufRead, W: Write>(reader: &mut R, writer: &mut W, seed: u64) -> 
         if trimmed.eq_ignore_ascii_case("quit") || trimmed.eq_ignore_ascii_case("exit") {
             writeln!(writer, "Farewell, adventurer.")?;
             break;
+        }
+
+        // Check for CLI persistence commands first
+        match handle_cli_persistence_command(trimmed, &mut state_json, save_dir) {
+            Ok(Some(lines)) => {
+                for line in &lines {
+                    writeln!(writer, "{}", line)?;
+                }
+                // Show context immediately after load
+                let lower = trimmed.to_ascii_lowercase();
+                if lower == "load" || lower.starts_with("load ")
+                    || lower == "restore" || lower.starts_with("restore ")
+                {
+                    let look = process_input(&state_json, "look");
+                    for line in &look.text {
+                        writeln!(writer, "{}", line)?;
+                    }
+                    state_json = look.state_json;
+                }
+                continue;
+            }
+            Ok(None) => {}
+            Err(e) => {
+                writeln!(writer, "Error: {}", e)?;
+                continue;
+            }
         }
 
         let output = process_input(&state_json, trimmed);
@@ -59,7 +139,6 @@ fn main() {
 mod tests {
     use super::*;
     use std::io::Cursor;
-    use std::path::Path;
 
     #[test]
     fn save_and_load_commands_round_trip_state_in_repl() {
