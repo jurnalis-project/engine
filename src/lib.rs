@@ -629,85 +629,8 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
             }
         }
         Command::Use(item_name) => {
-            let owned_candidates = inventory_item_candidates(state);
-            let candidates: Vec<(usize, &str)> = owned_candidates.iter()
-                .map(|(id, name)| (*id, name.as_str()))
-                .collect();
-
-            match resolver::resolve_target(&item_name, &candidates) {
-                ResolveResult::Found(id) => {
-                    let item_id = id as u32;
-                    let name = state.world.items.get(&item_id).map(|i| i.name.clone()).unwrap_or_else(|| item_name.clone());
-                    let item_type = state.world.items.get(&item_id).map(|i| i.item_type.clone());
-                    match item_type {
-                        Some(state::ItemType::Consumable { ref effect }) => {
-                            let result = match effect.as_str() {
-                                "heal_1d8" => {
-                                    let rolls = rules::dice::roll_dice(&mut rng, 1, 8);
-                                    let roll_total: i32 = rolls.iter().sum();
-                                    let old_hp = state.character.current_hp;
-                                    state.character.current_hp = (state.character.current_hp + roll_total).min(state.character.max_hp);
-                                    let healed = state.character.current_hp - old_hp;
-                                    if healed > 0 {
-                                        vec![narration::templates::USE_HEAL
-                                            .replace("{item}", &name)
-                                            .replace("{roll}", &healed.to_string())
-                                            .replace("{current}", &state.character.current_hp.to_string())
-                                            .replace("{max}", &state.character.max_hp.to_string())]
-                                    } else {
-                                        vec![narration::templates::USE_HEAL_FULL
-                                            .replace("{item}", &name)
-                                            .replace("{current}", &state.character.current_hp.to_string())
-                                            .replace("{max}", &state.character.max_hp.to_string())]
-                                    }
-                                }
-                                "light" => {
-                                    let loc_id = state.current_location;
-                                    if let Some(loc) = state.world.locations.get_mut(&loc_id) {
-                                        match loc.light_level {
-                                            state::LightLevel::Dark => {
-                                                loc.light_level = state::LightLevel::Dim;
-                                                vec![narration::templates::USE_LIGHT_UPGRADE
-                                                    .replace("{item}", &name)
-                                                    .replace("{old_level}", "dark")
-                                                    .replace("{new_level}", "dim")]
-                                            }
-                                            state::LightLevel::Dim => {
-                                                loc.light_level = state::LightLevel::Bright;
-                                                vec![narration::templates::USE_LIGHT_UPGRADE
-                                                    .replace("{item}", &name)
-                                                    .replace("{old_level}", "dim")
-                                                    .replace("{new_level}", "bright")]
-                                            }
-                                            state::LightLevel::Bright => {
-                                                vec![narration::templates::USE_LIGHT_ALREADY_BRIGHT
-                                                    .replace("{item}", &name)]
-                                            }
-                                        }
-                                    } else {
-                                        vec![narration::templates::USE_UNKNOWN_EFFECT.replace("{item}", &name)]
-                                    }
-                                }
-                                "nourish" => {
-                                    vec![narration::templates::USE_NOURISH.replace("{item}", &name)]
-                                }
-                                _ => {
-                                    vec![narration::templates::USE_UNKNOWN_EFFECT.replace("{item}", &name)]
-                                }
-                            };
-                            // Consume the item: remove from inventory and world
-                            state.character.inventory.retain(|&id| id != item_id);
-                            state.world.items.remove(&item_id);
-                            result
-                        }
-                        _ => {
-                            vec![narration::templates::USE_NOT_CONSUMABLE.replace("{item}", &name)]
-                        }
-                    }
-                }
-                ResolveResult::Ambiguous(matches) => resolver::format_disambiguation(&matches),
-                ResolveResult::NotFound => vec![format!("You don't have any \"{}\".", item_name)],
-            }
+            let (lines, _consumed) = resolve_use_item(state, &mut rng, &item_name);
+            lines
         }
         Command::Inventory => {
             if state.character.inventory.is_empty() {
@@ -1078,7 +1001,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
         Command::Go(_) | Command::Talk(_) | Command::Take(_) | Command::Drop(_) => {
             return vec!["You can't do that during combat!".to_string()];
         }
-        Command::Save(_) | Command::Load(_) | Command::Check(_) | Command::Use(_) => {
+        Command::Save(_) | Command::Load(_) | Command::Check(_) => {
             return vec!["You can't do that during combat!".to_string()];
         }
         _ => {}
@@ -1306,6 +1229,18 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
             combat.player_action_used = true;
             should_end_turn = combat.player_movement_remaining <= 0;
         }
+        Command::Use(item_name) => {
+            if combat.player_action_used {
+                state.active_combat = Some(combat);
+                return vec!["You've already used your action this turn. You can still move (approach/retreat).".to_string()];
+            }
+            let (mut use_lines, consumed_action) = resolve_use_item(state, &mut rng, &item_name);
+            lines.append(&mut use_lines);
+            if consumed_action {
+                combat.player_action_used = true;
+            }
+            should_end_turn = combat.player_movement_remaining <= 0;
+        }
         Command::EndTurn => {
             lines.push("You end your turn.".to_string());
             should_end_turn = true;
@@ -1354,6 +1289,92 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
     }
 
     lines
+}
+
+fn resolve_use_item(
+    state: &mut GameState,
+    rng: &mut StdRng,
+    item_name: &str,
+) -> (Vec<String>, bool) {
+    let owned_candidates = inventory_item_candidates(state);
+    let candidates: Vec<(usize, &str)> = owned_candidates.iter()
+        .map(|(id, name)| (*id, name.as_str()))
+        .collect();
+
+    match resolver::resolve_target(&item_name, &candidates) {
+        ResolveResult::Found(id) => {
+            let item_id = id as u32;
+            let name = state.world.items.get(&item_id).map(|i| i.name.clone()).unwrap_or_else(|| item_name.to_string());
+            let item_type = state.world.items.get(&item_id).map(|i| i.item_type.clone());
+            match item_type {
+                Some(state::ItemType::Consumable { ref effect }) => {
+                    let result = match effect.as_str() {
+                        "heal_1d8" => {
+                            let rolls = rules::dice::roll_dice(rng, 1, 8);
+                            let roll_total: i32 = rolls.iter().sum();
+                            let old_hp = state.character.current_hp;
+                            state.character.current_hp = (state.character.current_hp + roll_total).min(state.character.max_hp);
+                            let healed = state.character.current_hp - old_hp;
+                            if healed > 0 {
+                                vec![narration::templates::USE_HEAL
+                                    .replace("{item}", &name)
+                                    .replace("{roll}", &healed.to_string())
+                                    .replace("{current}", &state.character.current_hp.to_string())
+                                    .replace("{max}", &state.character.max_hp.to_string())]
+                            } else {
+                                vec![narration::templates::USE_HEAL_FULL
+                                    .replace("{item}", &name)
+                                    .replace("{current}", &state.character.current_hp.to_string())
+                                    .replace("{max}", &state.character.max_hp.to_string())]
+                            }
+                        }
+                        "light" => {
+                            let loc_id = state.current_location;
+                            if let Some(loc) = state.world.locations.get_mut(&loc_id) {
+                                match loc.light_level {
+                                    state::LightLevel::Dark => {
+                                        loc.light_level = state::LightLevel::Dim;
+                                        vec![narration::templates::USE_LIGHT_UPGRADE
+                                            .replace("{item}", &name)
+                                            .replace("{old_level}", "dark")
+                                            .replace("{new_level}", "dim")]
+                                    }
+                                    state::LightLevel::Dim => {
+                                        loc.light_level = state::LightLevel::Bright;
+                                        vec![narration::templates::USE_LIGHT_UPGRADE
+                                            .replace("{item}", &name)
+                                            .replace("{old_level}", "dim")
+                                            .replace("{new_level}", "bright")]
+                                    }
+                                    state::LightLevel::Bright => {
+                                        vec![narration::templates::USE_LIGHT_ALREADY_BRIGHT
+                                            .replace("{item}", &name)]
+                                    }
+                                }
+                            } else {
+                                vec![narration::templates::USE_UNKNOWN_EFFECT.replace("{item}", &name)]
+                            }
+                        }
+                        "nourish" => {
+                            vec![narration::templates::USE_NOURISH.replace("{item}", &name)]
+                        }
+                        _ => {
+                            vec![narration::templates::USE_UNKNOWN_EFFECT.replace("{item}", &name)]
+                        }
+                    };
+                    // Consume the item: remove from inventory and world
+                    state.character.inventory.retain(|&id| id != item_id);
+                    state.world.items.remove(&item_id);
+                    (result, true) // action consumed
+                }
+                _ => {
+                    (vec![narration::templates::USE_NOT_CONSUMABLE.replace("{item}", &name)], false)
+                }
+            }
+        }
+        ResolveResult::Ambiguous(matches) => (resolver::format_disambiguation(&matches), false),
+        ResolveResult::NotFound => (vec![format!("You don't have any \"{}\".", item_name)], false),
+    }
 }
 
 fn handle_equip_command(state: &mut GameState, target_str: &str) -> Vec<String> {
@@ -2151,8 +2172,10 @@ mod tests {
         give_consumable_to_player(&mut state, "Healing Potion", "A potion.", "heal_1d8");
 
         let first_json = serde_json::to_string(&state).unwrap();
-        let after_attack = process_input(&first_json, "attack test goblin");
-        let after_use = process_input(&after_attack.state_json, "use healing potion");
+        // Use dodge to consume action without ending combat (no damage dealt)
+        let after_dodge = process_input(&first_json, "dodge");
+        // Now try to use potion - should be blocked
+        let after_use = process_input(&after_dodge.state_json, "use healing potion");
 
         assert!(after_use.text.iter().any(|t| t.contains("already used your action")));
 
