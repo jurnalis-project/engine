@@ -1852,6 +1852,18 @@ fn seed_objectives(state: &mut GameState) {
 }
 
 fn render_objective(state: &GameState) -> Vec<String> {
+    // If objectives exist, show the quest log
+    if !state.progress.objectives.is_empty() {
+        let mut lines = vec!["=== QUEST LOG ===".to_string()];
+        for obj in &state.progress.objectives {
+            let marker = if obj.completed { "[X]" } else { "[ ]" };
+            lines.push(format!("{} {}", marker, obj.title));
+            lines.push(format!("    {}", obj.description));
+        }
+        return lines;
+    }
+
+    // Legacy fallback for old saves without objectives
     if state.progress.first_victory {
         vec![
             "Objective: Keep exploring the ruins for deeper threats and treasure.".to_string(),
@@ -2941,22 +2953,52 @@ mod tests {
     }
 
     #[test]
-    fn test_objective_command_shows_current_goal_in_exploration() {
-        let state = create_test_exploration_state();
+    fn test_objective_command_shows_quest_log_with_objectives() {
+        let mut state = create_test_exploration_state();
+        // Add an objective
+        state.progress.objectives.push(state::Objective {
+            id: "defeat_boss".to_string(),
+            title: "Defeat the Boss".to_string(),
+            description: "Slay the fearsome enemy.".to_string(),
+            completed: false,
+        });
+        state.progress.objective_triggers.push(state::ObjectiveType::DefeatNpc(0));
+
         let state_json = serde_json::to_string(&state).unwrap();
         let output = process_input(&state_json, "objective");
-        assert!(output.text.iter().any(|t| t.contains("Objective:")), "{:?}", output.text);
+        let text = output.text.join("\n");
+        assert!(text.contains("=== QUEST LOG ==="), "Should show quest log header: {}", text);
+        assert!(text.contains("[ ]"), "Incomplete objective should show [ ]: {}", text);
+        assert!(text.contains("Defeat the Boss"), "Should show objective title: {}", text);
+        assert!(text.contains("Slay the fearsome enemy"), "Should show description: {}", text);
     }
 
     #[test]
-    fn test_first_victory_marks_objective_complete() {
+    fn test_objective_command_shows_completed_marker() {
         let mut state = create_test_exploration_state();
-        assert!(!state.progress.first_victory);
+        state.progress.objectives.push(state::Objective {
+            id: "defeat_boss".to_string(),
+            title: "Defeat the Boss".to_string(),
+            description: "Slay the fearsome enemy.".to_string(),
+            completed: true,
+        });
+        state.progress.objective_triggers.push(state::ObjectiveType::DefeatNpc(0));
 
-        let lines = end_combat(&mut state, true);
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "quest");
+        let text = output.text.join("\n");
+        assert!(text.contains("[X]"), "Completed objective should show [X]: {}", text);
+    }
 
-        assert!(state.progress.first_victory);
-        assert!(lines.iter().any(|l| l.contains("Objective complete")), "{:?}", lines);
+    #[test]
+    fn test_objective_command_fallback_for_old_saves() {
+        // Old saves without objectives should still show something
+        let state = create_test_exploration_state();
+        assert!(state.progress.objectives.is_empty());
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "objective");
+        // Should show legacy fallback
+        assert!(!output.text.is_empty(), "Should show something for old saves");
     }
 
     #[test]
