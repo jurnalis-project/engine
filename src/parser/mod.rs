@@ -20,6 +20,9 @@ pub enum Command {
     Load(Option<String>),
     Help(Option<String>),
     EndTurn,
+    // Meta commands
+    Objective,
+    Map,
     // Combat commands
     Attack(String),
     Approach(String),
@@ -176,6 +179,8 @@ pub fn parse(input: &str) -> Command {
         "save" => { if args.is_empty() { Command::Save(None) } else { Command::Save(Some(args)) } }
         "load" | "restore" => { if args.is_empty() { Command::Load(None) } else { Command::Load(Some(args)) } }
         "help" | "?" | "commands" => { if args.is_empty() { Command::Help(None) } else { Command::Help(Some(args)) } }
+        "objective" | "goal" | "quest" => Command::Objective,
+        "map" => Command::Map,
         _ => Command::Unknown(input.to_string()),
     }
 }
@@ -562,5 +567,10 @@ mod tests {
         assert_eq!(parse("objective"), Command::Objective);
         assert_eq!(parse("goal"), Command::Objective);
         assert_eq!(parse("quest"), Command::Objective);
+    }
+
+    #[test]
+    fn test_map_aliases() {
+        assert_eq!(parse("map"), Command::Map);
     }
 }

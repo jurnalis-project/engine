@@ -47,6 +47,7 @@ pub fn new_game(seed: u64, ironman_mode: bool) -> GameOutput {
         game_phase: GamePhase::CharacterCreation(CreationStep::ChooseRace),
         active_combat: None,
         ironman_mode,
+        progress: state::ProgressState::default(),
     };
 
     let state_json = serde_json::to_string(&state).unwrap();
@@ -686,6 +687,8 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
                 narration::templates::HelpPhase::Exploration,
             )
         }
+        Command::Objective => render_objective(state),
+        Command::Map => render_map(state),
         Command::Equip(target_str) => {
             // Check for "off hand" suffix
             let words: Vec<&str> = target_str.split_whitespace().collect();
@@ -918,11 +921,16 @@ fn process_npc_turns(state: &mut GameState, rng: &mut StdRng) -> Vec<String> {
 fn end_combat(state: &mut GameState, victory: bool) -> Vec<String> {
     state.active_combat = None;
     if victory {
-        vec![
+        let mut lines = vec![
             String::new(),
             "=== VICTORY ===".to_string(),
             "All enemies have been defeated!".to_string(),
-        ]
+        ];
+        if !state.progress.first_victory {
+            state.progress.first_victory = true;
+            lines.push("Objective complete: You survived your first battle.".to_string());
+        }
+        lines
     } else {
         vec![
             String::new(),
@@ -997,6 +1005,8 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                 narration::templates::HelpPhase::Combat,
             );
         }
+        Command::Objective => return render_objective(state),
+        Command::Map => return render_map(state),
         // Block exploration commands
         Command::Go(_) | Command::Talk(_) | Command::Take(_) | Command::Drop(_) => {
             return vec!["You can't do that during combat!".to_string()];
@@ -1375,6 +1385,40 @@ fn resolve_use_item(
         ResolveResult::Ambiguous(matches) => (resolver::format_disambiguation(&matches), false),
         ResolveResult::NotFound => (vec![format!("You don't have any \"{}\".", item_name)], false),
     }
+}
+
+fn render_objective(state: &GameState) -> Vec<String> {
+    if state.progress.first_victory {
+        vec![
+            "Objective: Keep exploring the ruins for deeper threats and treasure.".to_string(),
+            "Progress: First battle survived.".to_string(),
+        ]
+    } else {
+        vec![
+            "Objective: Defeat a hostile foe.".to_string(),
+            "Tip: Enter rooms with hostile NPCs to trigger combat.".to_string(),
+        ]
+    }
+}
+
+fn render_map(state: &GameState) -> Vec<String> {
+    let mut ids: Vec<_> = state.discovered_locations.iter().copied().collect();
+    ids.sort_unstable();
+
+    if ids.is_empty() {
+        return vec!["=== MAP ===".to_string(), "No locations discovered yet.".to_string()];
+    }
+
+    let mut lines = vec!["=== MAP ===".to_string()];
+    for id in ids {
+        if let Some(loc) = state.world.locations.get(&id) {
+            let marker = if id == state.current_location { "*" } else { " " };
+            let mut exits: Vec<String> = loc.exits.keys().map(|d| d.to_string()).collect();
+            exits.sort();
+            lines.push(format!("{} {} [{}] -> {}", marker, loc.name, id, exits.join(", ")));
+        }
+    }
+    lines
 }
 
 fn handle_equip_command(state: &mut GameState, target_str: &str) -> Vec<String> {
@@ -2366,6 +2410,17 @@ mod tests {
         assert!(lines.iter().any(|l| l.contains("Objective complete")), "{:?}", lines);
     }
 
+    #[test]
+    fn test_map_command_lists_discovered_locations_with_current_marker() {
+        let state = create_test_exploration_state();
+        let state_json = serde_json::to_string(&state).unwrap();
+
+        let output = process_input(&state_json, "map");
+
+        assert!(output.text.iter().any(|t| t.contains("=== MAP ===")), "{:?}", output.text);
+        assert!(output.text.iter().any(|t| t.contains("*")), "{:?}", output.text);
+    }
+
     fn create_test_exploration_state() -> GameState {
         let mut rng = StdRng::seed_from_u64(42);
         let mut scores = HashMap::new();
@@ -2398,6 +2453,7 @@ mod tests {
             game_phase: GamePhase::Exploration,
             active_combat: None,
             ironman_mode: false,
+            progress: state::ProgressState::default(),
         }
     }
 }

@@ -187,7 +187,7 @@ fn overview_help(phase: HelpPhase) -> Vec<String> {
             "Commands overview (exploration):".to_string(),
             format!("Topics: {}.", phase.valid_topics().join(", ")),
             "Type 'help <topic>' for focused guidance.".to_string(),
-            "Quick start: look, go <direction>, talk <npc>, take <item>, inventory, character.".to_string(),
+            "Quick start: look, go <direction>, talk <npc>, take <item>, inventory, character, objective, map.".to_string(),
             "Use 'help combat' to preview commands that unlock during battles.".to_string(),
         ],
         HelpPhase::Combat => vec![
@@ -195,7 +195,7 @@ fn overview_help(phase: HelpPhase) -> Vec<String> {
             format!("Topics: {}.", phase.valid_topics().join(", ")),
             "Type 'help <topic>' for focused guidance.".to_string(),
             "Quick start: attack <target>, approach <target>, retreat, dodge, dash, end turn.".to_string(),
-            "Utility commands still available: look, inventory, character, equip, unequip, help.".to_string(),
+            "Utility commands still available: look, inventory, character, equip, unequip, help, objective, map.".to_string(),
         ],
     }
 }

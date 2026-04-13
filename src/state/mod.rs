@@ -6,6 +6,11 @@ use crate::character::Character;
 
 pub const SAVE_VERSION: &str = "0.1.0";
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ProgressState {
+    pub first_victory: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GameState {
     pub version: String,
@@ -20,6 +25,8 @@ pub struct GameState {
     pub active_combat: Option<crate::combat::CombatState>,
     #[serde(default)]
     pub ironman_mode: bool,
+    #[serde(default)]
+    pub progress: ProgressState,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -226,6 +233,7 @@ mod tests {
             game_phase: GamePhase::Exploration,
             active_combat: None,
             ironman_mode: false,
+            progress: ProgressState::default(),
         }
     }
 

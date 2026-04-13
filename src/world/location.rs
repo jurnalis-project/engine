@@ -1,5 +1,6 @@
 // jurnalis-engine/src/world/location.rs
 use rand::Rng;
+use rand::seq::SliceRandom;
 use std::collections::HashMap;
 use crate::types::{LocationId, Direction};
 use crate::state::{Location, LocationType, LightLevel};
@@ -47,10 +48,18 @@ pub fn generate_locations(rng: &mut impl Rng, count: usize) -> HashMap<LocationI
     let count = count.max(2).min(30);
     let mut locations: HashMap<LocationId, Location> = HashMap::new();
 
+    // Pre-shuffle room names for uniqueness when count <= pool size
+    let mut room_name_pool: Vec<&str> = ROOM_NAMES.to_vec();
+    room_name_pool.shuffle(rng);
+
     // Create locations
     for i in 0..count {
         let id = i as LocationId;
-        let name_idx = rng.gen_range(0..ROOM_NAMES.len());
+        let name = if i < room_name_pool.len() {
+            room_name_pool[i]
+        } else {
+            ROOM_NAMES[rng.gen_range(0..ROOM_NAMES.len())]
+        };
         let desc_idx = rng.gen_range(0..ROOM_DESCRIPTIONS.len());
         let type_idx = rng.gen_range(0..LOCATION_TYPES.len());
         let light = match rng.gen_range(0..3) {
@@ -61,7 +70,7 @@ pub fn generate_locations(rng: &mut impl Rng, count: usize) -> HashMap<LocationI
 
         locations.insert(id, Location {
             id,
-            name: format!("{}", ROOM_NAMES[name_idx]),
+            name: format!("{}", name),
             description: ROOM_DESCRIPTIONS[desc_idx].to_string(),
             location_type: LOCATION_TYPES[type_idx],
             exits: HashMap::new(),
@@ -180,5 +189,17 @@ mod tests {
             assert_eq!(locs1[&id].name, locs2[&id].name);
             assert_eq!(locs1[&id].exits.len(), locs2[&id].exits.len());
         }
+    }
+
+    #[test]
+    fn test_generate_locations_uses_unique_names_when_count_within_pool() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let locs = generate_locations(&mut rng, 12);
+
+        let mut names: Vec<String> = locs.values().map(|l| l.name.clone()).collect();
+        names.sort();
+        names.dedup();
+
+        assert_eq!(names.len(), locs.len(), "Location names should be unique at this size");
     }
 }

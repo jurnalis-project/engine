@@ -805,6 +805,7 @@ mod tests {
             game_phase: GamePhase::Exploration,
             active_combat: None,
             ironman_mode: false,
+            progress: crate::state::ProgressState::default(),
         }
     }
 
