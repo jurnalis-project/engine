@@ -81,10 +81,15 @@ pub fn process_input(state_json: &str, input: &str) -> GameOutput {
     let old_state_json = state_json.to_string();
 
     if state.character.current_hp <= 0 {
+        let command = parser::parse(input);
+        if command == Command::NewGame {
+            let new_seed = state.rng_seed.wrapping_add(state.rng_counter);
+            return new_game(new_seed, state.ironman_mode);
+        }
         let text = vec![
             "=== GAME OVER ===".to_string(),
             "You have been defeated.".to_string(),
-            "Load a previous save or return to the main menu.".to_string(),
+            "Load a previous save or type `new game` to start over.".to_string(),
         ];
         return GameOutput::new(text, old_state_json, false);
     }
@@ -973,6 +978,9 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
         Command::Attack(_) | Command::Approach(_) | Command::Retreat | Command::Dodge | Command::Disengage | Command::Dash | Command::EndTurn => {
             vec!["You're not in combat.".to_string()]
         }
+        Command::NewGame => {
+            vec!["You can only start a new game after being defeated.".to_string()]
+        }
         Command::Unknown(s) => {
             if s.is_empty() {
                 vec![]
@@ -1034,7 +1042,7 @@ fn end_combat(state: &mut GameState, victory: bool) -> Vec<String> {
             String::new(),
             "=== DEFEAT ===".to_string(),
             "You have fallen in battle...".to_string(),
-            "Load a previous save or return to the main menu.".to_string(),
+            "Load a previous save or type `new game` to start over.".to_string(),
         ]
     }
 }
@@ -2662,6 +2670,59 @@ mod tests {
         let mut state = create_test_exploration_state();
         let lines = end_combat(&mut state, false);
         assert!(lines.iter().any(|line| line.contains("Load a previous save")));
+    }
+
+    // Hypothesis: When HP <= 0, process_input returns GAME OVER text without parsing
+    // input, so "new game" / "restart" do nothing. Fix: parse input before the early
+    // return and check for Command::NewGame to call new_game() with a fresh seed.
+    #[test]
+    fn test_new_game_command_on_death_screen() {
+        let mut state = create_test_combat_state();
+        state.character.current_hp = 0;
+        state.active_combat = None;
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "new game");
+
+        // Should start a fresh game (character creation), not show GAME OVER
+        assert!(!output.text.iter().any(|t| t.contains("GAME OVER")),
+            "Expected new game, not GAME OVER. Got: {:?}", output.text);
+        assert!(output.text.iter().any(|t| t.contains("Choose your race")),
+            "Expected character creation prompt. Got: {:?}", output.text);
+
+        // The returned state should be in CharacterCreation(ChooseRace)
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(new_state.game_phase,
+            GamePhase::CharacterCreation(CreationStep::ChooseRace));
+    }
+
+    #[test]
+    fn test_restart_command_on_death_screen() {
+        let mut state = create_test_combat_state();
+        state.character.current_hp = 0;
+        state.active_combat = None;
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "restart");
+
+        assert!(!output.text.iter().any(|t| t.contains("GAME OVER")),
+            "Expected new game, not GAME OVER. Got: {:?}", output.text);
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(new_state.game_phase,
+            GamePhase::CharacterCreation(CreationStep::ChooseRace));
+    }
+
+    #[test]
+    fn test_game_over_hint_mentions_new_game() {
+        let mut state = create_test_combat_state();
+        state.character.current_hp = 0;
+        state.active_combat = None;
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "go north");
+
+        assert!(output.text.iter().any(|t| t.contains("new game")),
+            "GAME OVER text should mention 'new game'. Got: {:?}", output.text);
     }
 
     #[test]

@@ -21,6 +21,7 @@ pub enum Command {
     Help(Option<String>),
     EndTurn,
     // Meta commands
+    NewGame,
     Objective,
     Map,
     // Spell commands
@@ -117,6 +118,9 @@ pub fn parse(input: &str) -> Command {
             "end turn" => {
                 return Command::EndTurn;
             }
+            "new game" => {
+                return Command::NewGame;
+            }
             _ => {}
         }
     }
@@ -197,6 +201,7 @@ pub fn parse(input: &str) -> Command {
         "save" => { if args.is_empty() { Command::Save(None) } else { Command::Save(Some(args)) } }
         "load" | "restore" => { if args.is_empty() { Command::Load(None) } else { Command::Load(Some(args)) } }
         "help" | "?" | "commands" => { if args.is_empty() { Command::Help(None) } else { Command::Help(Some(args)) } }
+        "newgame" | "restart" => Command::NewGame,
         "objective" | "goal" | "quest" => Command::Objective,
         "map" => Command::Map,
         _ => Command::Unknown(input.to_string()),
@@ -646,5 +651,13 @@ mod tests {
     #[test]
     fn test_map_aliases() {
         assert_eq!(parse("map"), Command::Map);
+    }
+
+    #[test]
+    fn test_new_game_command() {
+        assert_eq!(parse("new game"), Command::NewGame);
+        assert_eq!(parse("newgame"), Command::NewGame);
+        assert_eq!(parse("restart"), Command::NewGame);
+        assert_eq!(parse("New Game"), Command::NewGame);
     }
 }
