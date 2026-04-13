@@ -59,6 +59,51 @@ fn main() {
 mod tests {
     use super::*;
     use std::io::Cursor;
+    use std::path::Path;
+
+    #[test]
+    fn save_and_load_commands_round_trip_state_in_repl() {
+        let tmp = std::env::temp_dir().join(format!("jurnalis_cli_save_load_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let input = b"1\n1\n1\n15 14 13 12 10 8\n1 2\nAria\nsave slot1\nwest\nload slot1\nlook\nquit\n";
+        let mut reader = Cursor::new(&input[..]);
+        let mut output = Vec::new();
+
+        run_repl_with_save_dir(&mut reader, &mut output, 42, &tmp).unwrap();
+
+        let out = String::from_utf8(output).unwrap();
+        assert!(out.contains("Saved game to slot1.json"), "Output: {}", out);
+        assert!(out.contains("Loaded game from slot1.json"), "Output: {}", out);
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn load_command_can_replace_defeated_state_before_engine_rejects_input() {
+        let tmp = std::env::temp_dir().join(format!("jurnalis_cli_defeat_load_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let healthy = new_game(42, false).state_json;
+        std::fs::write(tmp.join("autosave.json"), &healthy).unwrap();
+
+        let mut defeated: jurnalis_engine::state::GameState = serde_json::from_str(&healthy).unwrap();
+        defeated.character.current_hp = 0;
+        let mut state_json = serde_json::to_string(&defeated).unwrap();
+
+        let lines = handle_cli_persistence_command("load", &mut state_json, &tmp)
+            .unwrap()
+            .expect("load should be intercepted by CLI");
+
+        assert!(lines.iter().any(|l| l.contains("Loaded game from autosave.json")));
+
+        let reloaded: jurnalis_engine::state::GameState = serde_json::from_str(&state_json).unwrap();
+        assert!(reloaded.character.current_hp > 0);
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
 
     #[test]
     fn quit_exits_repl() {
