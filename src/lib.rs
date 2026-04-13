@@ -678,15 +678,7 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
                     lines.extend(check_find_item_objectives(state, item_id));
 
                     // Check if all objectives are now complete
-                    if !state.progress.objectives.is_empty()
-                        && state.progress.objectives.iter().all(|o| o.completed)
-                    {
-                        state.game_phase = GamePhase::Victory;
-                        lines.push(String::new());
-                        lines.push("=== CONGRATULATIONS ===".to_string());
-                        lines.push("You have completed all objectives and won the game!".to_string());
-                        lines.push("Type 'new game' to start a new adventure.".to_string());
-                    }
+                    lines.extend(check_all_objectives_complete(state));
 
                     lines
                 }
@@ -1071,15 +1063,7 @@ fn end_combat(state: &mut GameState, victory: bool) -> Vec<String> {
         lines.extend(check_defeat_npc_objectives(state));
 
         // Check if all objectives are now complete
-        if !state.progress.objectives.is_empty()
-            && state.progress.objectives.iter().all(|o| o.completed)
-        {
-            state.game_phase = GamePhase::Victory;
-            lines.push(String::new());
-            lines.push("=== CONGRATULATIONS ===".to_string());
-            lines.push("You have completed all objectives and won the game!".to_string());
-            lines.push("Type 'new game' to start a new adventure.".to_string());
-        }
+        lines.extend(check_all_objectives_complete(state));
 
         lines
     } else {
@@ -1126,6 +1110,24 @@ fn check_find_item_objectives(state: &mut GameState, item_id: u32) -> Vec<String
         }
     }
     lines
+}
+
+/// Check if all objectives are complete and transition to Victory phase if so.
+/// Returns lines to append to the output.
+fn check_all_objectives_complete(state: &mut GameState) -> Vec<String> {
+    if !state.progress.objectives.is_empty()
+        && state.progress.objectives.iter().all(|o| o.completed)
+    {
+        state.game_phase = GamePhase::Victory;
+        vec![
+            String::new(),
+            "=== CONGRATULATIONS ===".to_string(),
+            "You have completed all objectives and won the game!".to_string(),
+            "Type 'new game' to start a new adventure.".to_string(),
+        ]
+    } else {
+        Vec::new()
+    }
 }
 
 fn append_player_turn_prompt(lines: &mut Vec<String>, state: &GameState, combat: &combat::CombatState) {
