@@ -29,6 +29,12 @@ pub struct Character {
     pub equipped: Equipment,
     #[serde(default)]
     pub conditions: Vec<ActiveCondition>,
+    #[serde(default)]
+    pub spell_slots_max: Vec<i32>,
+    #[serde(default)]
+    pub spell_slots_remaining: Vec<i32>,
+    #[serde(default)]
+    pub known_spells: Vec<String>,
 }
 
 impl Character {
@@ -96,6 +102,22 @@ pub fn create_character(
     let hp = calculate_hp(class, con_mod, 1);
     let save_profs = class.saving_throw_proficiencies();
     let traits = race.traits().iter().map(|s| s.to_string()).collect();
+    let (spell_slots_max, spell_slots_remaining, known_spells) = match class {
+        Class::Wizard => {
+            let slots = vec![2]; // Level 1 Wizard: 2 first-level slots
+            let known = vec![
+                "Fire Bolt".to_string(),
+                "Prestidigitation".to_string(),
+                "Magic Missile".to_string(),
+                "Burning Hands".to_string(),
+                "Sleep".to_string(),
+                "Shield".to_string(),
+            ];
+            (slots.clone(), slots, known)
+        }
+        _ => (Vec::new(), Vec::new(), Vec::new()),
+    };
+
     Character {
         name, race, class, level: 1,
         ability_scores: final_scores, skill_proficiencies,
@@ -103,6 +125,9 @@ pub fn create_character(
         inventory: Vec::new(), speed: race.speed(), traits,
         equipped: Equipment::default(),
         conditions: Vec::new(),
+        spell_slots_max,
+        spell_slots_remaining,
+        known_spells,
     }
 }
 
@@ -173,5 +198,37 @@ mod tests {
         assert_eq!(point_buy_cost(8), Some(0));
         assert_eq!(point_buy_cost(15), Some(9));
         assert_eq!(point_buy_cost(16), None);
+    }
+
+    #[test]
+    fn test_wizard_gets_spell_slots_and_spells() {
+        let c = create_character("Gandalf".to_string(), Race::Human, Class::Wizard, test_scores(), vec![]);
+        // Wizard level 1: 2 first-level slots
+        assert_eq!(c.spell_slots_max, vec![2]);
+        assert_eq!(c.spell_slots_remaining, vec![2]);
+        // Wizard knows all 6 MVP spells
+        assert_eq!(c.known_spells.len(), 6);
+        assert!(c.known_spells.contains(&"Fire Bolt".to_string()));
+        assert!(c.known_spells.contains(&"Prestidigitation".to_string()));
+        assert!(c.known_spells.contains(&"Magic Missile".to_string()));
+        assert!(c.known_spells.contains(&"Burning Hands".to_string()));
+        assert!(c.known_spells.contains(&"Sleep".to_string()));
+        assert!(c.known_spells.contains(&"Shield".to_string()));
+    }
+
+    #[test]
+    fn test_fighter_has_no_spell_slots() {
+        let c = create_character("Conan".to_string(), Race::Human, Class::Fighter, test_scores(), vec![]);
+        assert!(c.spell_slots_max.is_empty());
+        assert!(c.spell_slots_remaining.is_empty());
+        assert!(c.known_spells.is_empty());
+    }
+
+    #[test]
+    fn test_rogue_has_no_spell_slots() {
+        let c = create_character("Shadow".to_string(), Race::Human, Class::Rogue, test_scores(), vec![]);
+        assert!(c.spell_slots_max.is_empty());
+        assert!(c.spell_slots_remaining.is_empty());
+        assert!(c.known_spells.is_empty());
     }
 }
