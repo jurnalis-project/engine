@@ -112,7 +112,7 @@ pub struct Item {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum DamageType { Slashing, Piercing, Bludgeoning }
+pub enum DamageType { Slashing, Piercing, Bludgeoning, Fire, Force }
 
 impl std::fmt::Display for DamageType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -120,6 +120,8 @@ impl std::fmt::Display for DamageType {
             DamageType::Slashing => write!(f, "slashing"),
             DamageType::Piercing => write!(f, "piercing"),
             DamageType::Bludgeoning => write!(f, "bludgeoning"),
+            DamageType::Fire => write!(f, "fire"),
+            DamageType::Force => write!(f, "force"),
         }
     }
 }
@@ -315,6 +317,19 @@ mod tests {
             }
             _ => panic!("Expected Armor"),
         }
+    }
+
+    #[test]
+    fn test_fire_and_force_damage_types() {
+        assert_eq!(DamageType::Fire.to_string(), "fire");
+        assert_eq!(DamageType::Force.to_string(), "force");
+        // Verify serialization round-trip
+        let json = serde_json::to_string(&DamageType::Fire).unwrap();
+        let loaded: DamageType = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded, DamageType::Fire);
+        let json = serde_json::to_string(&DamageType::Force).unwrap();
+        let loaded: DamageType = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded, DamageType::Force);
     }
 
     #[test]
