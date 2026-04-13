@@ -1550,7 +1550,7 @@ mod tests {
     // result.disadvantage is true.
     #[test]
     fn test_dodge_disadvantage_shown_in_npc_attack_text() {
-        let mut state = test_state_with_goblin();
+        let state = test_state_with_goblin();
         let mut rng = StdRng::seed_from_u64(42);
         let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
 
@@ -1581,7 +1581,7 @@ mod tests {
 
     #[test]
     fn test_no_disadvantage_text_when_not_dodging() {
-        let mut state = test_state_with_goblin();
+        let state = test_state_with_goblin();
         let mut rng = StdRng::seed_from_u64(42);
         let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
 
