@@ -165,6 +165,8 @@ pub struct Trigger {
     pub success_text: String,
     pub failure_text: String,
     pub one_shot: bool,
+    #[serde(default)]
+    pub damage_on_failure: i32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

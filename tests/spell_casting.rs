@@ -75,6 +75,7 @@ fn create_wizard_combat_state_json() -> String {
             }],
             proficiency_bonus: 2,
         }),
+        conditions: vec![],
     };
     state.world.npcs.insert(npc_id, goblin);
 
@@ -127,6 +128,7 @@ fn create_wizard_multi_combat_state_json() -> String {
                 attacks: vec![],
                 proficiency_bonus: 2,
             }),
+            conditions: vec![],
         }
     };
 

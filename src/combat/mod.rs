@@ -551,6 +551,7 @@ pub fn resolve_npc_turn(
         let player_ac = crate::equipment::calculate_ac(&state.character, &state.world.items);
         let player_dodging = combat.player_dodging;
         let result = resolve_npc_attack(rng, attack, player_ac, player_dodging, distance, npc_conditions, player_conditions);
+        let disadv = if result.disadvantage { " (with disadvantage)" } else { "" };
 
         if result.hit {
             state.character.current_hp -= result.damage;
@@ -558,17 +559,17 @@ pub fn resolve_npc_turn(
                 lines.push(format!("{} attacks with {} -- CRITICAL HIT! {} {} damage!",
                     npc_name, result.weapon_name, result.damage, result.damage_type));
             } else {
-                lines.push(format!("{} attacks with {} ({}+{}={} vs AC {}) -- hit for {} {} damage.",
+                lines.push(format!("{} attacks with {} ({}+{}={} vs AC {}){} -- hit for {} {} damage.",
                     npc_name, result.weapon_name, result.attack_roll,
-                    attack.hit_bonus, result.total_attack, player_ac,
+                    attack.hit_bonus, result.total_attack, player_ac, disadv,
                     result.damage, result.damage_type));
             }
         } else if result.natural_1 {
             lines.push(format!("{} attacks with {} -- natural 1, miss!", npc_name, result.weapon_name));
         } else {
-            lines.push(format!("{} attacks with {} ({}+{}={} vs AC {}) -- miss.",
+            lines.push(format!("{} attacks with {} ({}+{}={} vs AC {}){} -- miss.",
                 npc_name, result.weapon_name, result.attack_roll,
-                attack.hit_bonus, result.total_attack, player_ac));
+                attack.hit_bonus, result.total_attack, player_ac, disadv));
         }
         return lines;
     }
@@ -581,6 +582,7 @@ pub fn resolve_npc_turn(
         let player_ac = crate::equipment::calculate_ac(&state.character, &state.world.items);
         let player_dodging = combat.player_dodging;
         let result = resolve_npc_attack(rng, attack, player_ac, player_dodging, distance, npc_conditions, player_conditions);
+        let disadv = if result.disadvantage { " (with disadvantage)" } else { "" };
 
         if result.hit {
             state.character.current_hp -= result.damage;
@@ -588,17 +590,17 @@ pub fn resolve_npc_turn(
                 lines.push(format!("{} fires {} -- CRITICAL HIT! {} {} damage!",
                     npc_name, result.weapon_name, result.damage, result.damage_type));
             } else {
-                lines.push(format!("{} fires {} ({}+{}={} vs AC {}) -- hit for {} {} damage.",
+                lines.push(format!("{} fires {} ({}+{}={} vs AC {}){} -- hit for {} {} damage.",
                     npc_name, result.weapon_name, result.attack_roll,
-                    attack.hit_bonus, result.total_attack, player_ac,
+                    attack.hit_bonus, result.total_attack, player_ac, disadv,
                     result.damage, result.damage_type));
             }
         } else if result.natural_1 {
             lines.push(format!("{} fires {} -- natural 1, miss!", npc_name, result.weapon_name));
         } else {
-            lines.push(format!("{} fires {} ({}+{}={} vs AC {}) -- miss.",
+            lines.push(format!("{} fires {} ({}+{}={} vs AC {}){} -- miss.",
                 npc_name, result.weapon_name, result.attack_roll,
-                attack.hit_bonus, result.total_attack, player_ac));
+                attack.hit_bonus, result.total_attack, player_ac, disadv));
         }
         return lines;
     }
@@ -1415,5 +1417,61 @@ mod tests {
         let normal: Vec<ActiveCondition> = vec![];
         assert_eq!(conditions::get_speed_multiplier(&normal), 1.0,
             "No conditions should have normal speed");
+    }
+
+    // Hypothesis (Bug 3): Dodge disadvantage is not surfaced in attack output because
+    // resolve_npc_turn format strings show only the resulting d20 roll with no label
+    // indicating two dice were rolled. Fix: append "(with disadvantage)" when
+    // result.disadvantage is true.
+    #[test]
+    fn test_dodge_disadvantage_shown_in_npc_attack_text() {
+        let mut state = test_state_with_goblin();
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+
+        // Place goblin in melee range and set player dodging
+        combat.distances.insert(0, 5);
+        combat.player_dodging = true;
+
+        // Run many seeds to get non-crit, non-nat-1 results (those show roll details)
+        let mut found_disadvantage_text = false;
+        for seed in 0..200u64 {
+            let mut test_rng = StdRng::seed_from_u64(seed);
+            let mut test_state = state.clone();
+            let mut test_combat = combat.clone();
+            let lines = resolve_npc_turn(&mut test_rng, 0, &mut test_state, &mut test_combat);
+            let all = lines.join("\n");
+            // Skip nat 20s and nat 1s since they use different format strings
+            if all.contains("CRITICAL HIT") || all.contains("natural 1") {
+                continue;
+            }
+            if all.contains("(with disadvantage)") {
+                found_disadvantage_text = true;
+                break;
+            }
+        }
+        assert!(found_disadvantage_text,
+            "NPC attack output should contain '(with disadvantage)' when player is dodging");
+    }
+
+    #[test]
+    fn test_no_disadvantage_text_when_not_dodging() {
+        let mut state = test_state_with_goblin();
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+
+        // Place goblin in melee range, player NOT dodging
+        combat.distances.insert(0, 5);
+        combat.player_dodging = false;
+
+        for seed in 0..100u64 {
+            let mut test_rng = StdRng::seed_from_u64(seed);
+            let mut test_state = state.clone();
+            let mut test_combat = combat.clone();
+            let lines = resolve_npc_turn(&mut test_rng, 0, &mut test_state, &mut test_combat);
+            let all = lines.join("\n");
+            assert!(!all.contains("(with disadvantage)"),
+                "Should not show disadvantage text when player is not dodging. Got: {}", all);
+        }
     }
 }

@@ -22,10 +22,14 @@ pub fn narrate_enter_location(rng: &mut impl Rng, location: &Location, state: &G
         lines.push(templates::EXITS.replace("{exits}", &exit_names.join(", ")));
     }
 
-    // NPCs
+    // NPCs (exclude dead NPCs — those with combat_stats where current_hp <= 0)
     if !location.npcs.is_empty() {
         let npc_names: Vec<String> = location.npcs.iter()
             .filter_map(|id| state.world.npcs.get(id))
+            .filter(|npc| match &npc.combat_stats {
+                Some(stats) => stats.current_hp > 0,
+                None => true, // Friendly/neutral NPCs without combat_stats are always shown
+            })
             .map(|npc| npc.name.clone())
             .collect();
         if !npc_names.is_empty() {
@@ -63,9 +67,14 @@ pub fn narrate_look(rng: &mut impl Rng, location: &Location, state: &GameState) 
         lines.push(templates::EXITS.replace("{exits}", &exit_names.join(", ")));
     }
 
+    // NPCs (exclude dead NPCs — those with combat_stats where current_hp <= 0)
     if !location.npcs.is_empty() {
         let npc_names: Vec<String> = location.npcs.iter()
             .filter_map(|id| state.world.npcs.get(id))
+            .filter(|npc| match &npc.combat_stats {
+                Some(stats) => stats.current_hp > 0,
+                None => true, // Friendly/neutral NPCs without combat_stats are always shown
+            })
             .map(|npc| npc.name.clone())
             .collect();
         if !npc_names.is_empty() {

@@ -561,6 +561,14 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
                                         lines.push(trigger.success_text.clone());
                                     } else {
                                         lines.push(trigger.failure_text.clone());
+                                        if trigger.damage_on_failure > 0 {
+                                            state.character.current_hp -= trigger.damage_on_failure;
+                                            lines.push(format!("You take {} damage!", trigger.damage_on_failure));
+                                            if state.character.current_hp <= 0 {
+                                                state.character.current_hp = 0;
+                                                lines.push("You have been defeated.".to_string());
+                                            }
+                                        }
                                     }
                                     if trigger.one_shot {
                                         state.world.triggered.insert(tid);
@@ -2858,5 +2866,128 @@ mod tests {
             ironman_mode: false,
             progress: state::ProgressState::default(),
         }
+    }
+
+    // Hypothesis (Bug 1): Traps deal zero damage because the Trigger struct had no
+    // damage_on_failure field, and lib.rs never subtracted HP on trigger failure.
+    // Fix: added damage_on_failure to Trigger, populated in trigger.rs, applied in lib.rs.
+    #[test]
+    fn test_trap_trigger_failure_applies_damage() {
+        use crate::types::Direction;
+
+        let mut state = create_test_exploration_state();
+        let start_hp = state.character.current_hp;
+
+        // Create a connected location with a trap trigger
+        let target_loc_id = 999;
+        let trigger_id = 888;
+        let current = state.current_location;
+
+        // Add exit from current location to target
+        if let Some(loc) = state.world.locations.get_mut(&current) {
+            loc.exits.insert(Direction::North, target_loc_id);
+        }
+
+        // Create target location with a trap trigger
+        state.world.locations.insert(target_loc_id, state::Location {
+            id: target_loc_id,
+            name: "Trapped Room".to_string(),
+            description: "A suspicious room.".to_string(),
+            location_type: state::LocationType::Room,
+            exits: {
+                let mut m = HashMap::new();
+                m.insert(Direction::South, current);
+                m
+            },
+            npcs: vec![],
+            items: vec![],
+            triggers: vec![trigger_id],
+            light_level: state::LightLevel::Bright,
+        });
+
+        // Create a trap trigger with DC 99 (guaranteed failure) and known damage
+        state.world.triggers.insert(trigger_id, state::Trigger {
+            id: trigger_id,
+            location: target_loc_id,
+            trigger_type: state::TriggerType::SavingThrow(Ability::Dexterity),
+            dc: 99, // Impossible to pass
+            success_text: "You dodge!".to_string(),
+            failure_text: "A dart hits you!".to_string(),
+            one_shot: true,
+            damage_on_failure: 4,
+        });
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "go north");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+
+        // Verify damage was applied
+        assert!(new_state.character.current_hp < start_hp,
+            "HP should decrease after trap failure: before={}, after={}",
+            start_hp, new_state.character.current_hp);
+        assert_eq!(new_state.character.current_hp, start_hp - 4,
+            "HP should decrease by exactly 4 (the trap damage)");
+
+        // Verify the output text mentions the damage
+        let all_text = output.text.join("\n");
+        assert!(all_text.contains("You take 4 damage!"),
+            "Output should mention damage taken. Got: {}", all_text);
+    }
+
+    // Hypothesis (Bug 2): Dead enemies appear in look because narrate_look does not
+    // filter out NPCs with combat_stats.current_hp <= 0.
+    // Fix: added filter in narrate_look and narrate_enter_location.
+    #[test]
+    fn test_look_excludes_dead_npcs() {
+        let mut state = create_test_exploration_state();
+        let loc_id = state.current_location;
+
+        // Add a dead hostile NPC to current location
+        let dead_npc_id = 500;
+        state.world.npcs.insert(dead_npc_id, state::Npc {
+            id: dead_npc_id,
+            name: "Dead Goblin".to_string(),
+            role: state::NpcRole::Guard,
+            disposition: state::Disposition::Hostile,
+            dialogue_tags: vec![],
+            location: loc_id,
+            combat_stats: Some(state::CombatStats {
+                max_hp: 7,
+                current_hp: 0, // Dead!
+                ac: 15,
+                speed: 30,
+                ability_scores: HashMap::new(),
+                attacks: vec![],
+                proficiency_bonus: 2,
+            }),
+            conditions: vec![],
+        });
+
+        // Add a living friendly NPC
+        let alive_npc_id = 501;
+        state.world.npcs.insert(alive_npc_id, state::Npc {
+            id: alive_npc_id,
+            name: "Friendly Merchant".to_string(),
+            role: state::NpcRole::Merchant,
+            disposition: state::Disposition::Friendly,
+            dialogue_tags: vec![],
+            location: loc_id,
+            combat_stats: None, // No combat stats (friendly)
+            conditions: vec![],
+        });
+
+        if let Some(loc) = state.world.locations.get_mut(&loc_id) {
+            loc.npcs.push(dead_npc_id);
+            loc.npcs.push(alive_npc_id);
+        }
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "look");
+        let all_text = output.text.join("\n");
+
+        assert!(!all_text.contains("Dead Goblin"),
+            "Dead NPC should not appear in look output. Got: {}", all_text);
+        assert!(all_text.contains("Friendly Merchant"),
+            "Living friendly NPC should appear in look output. Got: {}", all_text);
     }
 }
