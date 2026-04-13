@@ -1045,8 +1045,26 @@ fn end_combat(state: &mut GameState, victory: bool) -> Vec<String> {
         ];
         if !state.progress.first_victory {
             state.progress.first_victory = true;
-            lines.push("Objective complete: You survived your first battle.".to_string());
+            // Only show legacy message if no objectives are seeded
+            if state.progress.objectives.is_empty() {
+                lines.push("Objective complete: You survived your first battle.".to_string());
+            }
         }
+
+        // Check DefeatNpc objectives against dead NPCs
+        lines.extend(check_defeat_npc_objectives(state));
+
+        // Check if all objectives are now complete
+        if !state.progress.objectives.is_empty()
+            && state.progress.objectives.iter().all(|o| o.completed)
+        {
+            state.game_phase = GamePhase::Victory;
+            lines.push(String::new());
+            lines.push("=== CONGRATULATIONS ===".to_string());
+            lines.push("You have completed all objectives and won the game!".to_string());
+            lines.push("Type 'new game' to start a new adventure.".to_string());
+        }
+
         lines
     } else {
         vec![
@@ -1056,6 +1074,26 @@ fn end_combat(state: &mut GameState, victory: bool) -> Vec<String> {
             "Load a previous save or type `new game` to start over.".to_string(),
         ]
     }
+}
+
+fn check_defeat_npc_objectives(state: &mut GameState) -> Vec<String> {
+    let mut lines = Vec::new();
+    for i in 0..state.progress.objectives.len() {
+        if state.progress.objectives[i].completed {
+            continue;
+        }
+        if let state::ObjectiveType::DefeatNpc(npc_id) = &state.progress.objective_triggers[i] {
+            let npc_dead = state.world.npcs.get(npc_id)
+                .and_then(|npc| npc.combat_stats.as_ref())
+                .map(|cs| cs.current_hp <= 0)
+                .unwrap_or(false);
+            if npc_dead {
+                state.progress.objectives[i].completed = true;
+                lines.push(format!("Objective complete: {}", state.progress.objectives[i].title));
+            }
+        }
+    }
+    lines
 }
 
 fn append_player_turn_prompt(lines: &mut Vec<String>, state: &GameState, combat: &combat::CombatState) {
@@ -2988,6 +3026,48 @@ mod tests {
         let output = process_input(&state_json, "quest");
         let text = output.text.join("\n");
         assert!(text.contains("[X]"), "Completed objective should show [X]: {}", text);
+    }
+
+    #[test]
+    fn test_defeat_boss_npc_completes_objective() {
+        let mut state = create_test_exploration_state();
+
+        // Set up a boss NPC (hostile with combat stats, hp <= 0 means defeated)
+        let boss_id: u32 = 999;
+        state.world.npcs.insert(boss_id, state::Npc {
+            id: boss_id,
+            name: "Boss Enemy".to_string(),
+            role: state::NpcRole::Guard,
+            disposition: state::Disposition::Hostile,
+            dialogue_tags: vec![],
+            location: state.current_location,
+            combat_stats: Some(state::CombatStats {
+                max_hp: 20,
+                current_hp: 0, // Dead
+                ac: 12,
+                speed: 30,
+                ability_scores: HashMap::new(),
+                attacks: vec![],
+                proficiency_bonus: 2,
+            }),
+            conditions: vec![],
+        });
+
+        // Add DefeatNpc objective for this boss
+        state.progress.objectives.push(state::Objective {
+            id: "defeat_boss".to_string(),
+            title: "Defeat Boss Enemy".to_string(),
+            description: "Slay the boss.".to_string(),
+            completed: false,
+        });
+        state.progress.objective_triggers.push(state::ObjectiveType::DefeatNpc(boss_id));
+
+        let lines = end_combat(&mut state, true);
+
+        assert!(state.progress.objectives[0].completed,
+            "DefeatNpc objective should be marked complete after combat victory");
+        assert!(lines.iter().any(|l| l.contains("Objective complete") && l.contains("Defeat Boss Enemy")),
+            "Should announce objective completion: {:?}", lines);
     }
 
     #[test]
