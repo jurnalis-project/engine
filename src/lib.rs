@@ -361,6 +361,9 @@ fn handle_creation(state: &mut GameState, input: &str, step: CreationStep) -> Ve
             state.current_location = 0;
             state.discovered_locations.insert(0);
 
+            // Seed objectives from generated world
+            seed_objectives(state);
+
             state.game_phase = GamePhase::Exploration;
             state.log.clear();
 
@@ -1820,6 +1823,34 @@ fn resolve_use_item(
     }
 }
 
+fn seed_objectives(state: &mut GameState) {
+    use state::{Objective, ObjectiveType, Disposition};
+
+    // Find the first hostile NPC with combat stats to designate as boss
+    let mut hostile_npcs: Vec<_> = state.world.npcs.values()
+        .filter(|npc| npc.disposition == Disposition::Hostile && npc.combat_stats.is_some())
+        .collect();
+    // Sort by ID for deterministic selection
+    hostile_npcs.sort_by_key(|npc| npc.id);
+
+    if let Some(boss) = hostile_npcs.first() {
+        let boss_id = boss.id;
+        let boss_name = boss.name.clone();
+        let boss_location = boss.location;
+        let location_name = state.world.locations.get(&boss_location)
+            .map(|loc| loc.name.clone())
+            .unwrap_or_else(|| "an unknown place".to_string());
+
+        state.progress.objectives.push(Objective {
+            id: "defeat_boss".to_string(),
+            title: format!("Defeat {}", boss_name),
+            description: format!("A dangerous foe known as {} lurks in {}. Defeat them to prove your worth.", boss_name, location_name),
+            completed: false,
+        });
+        state.progress.objective_triggers.push(ObjectiveType::DefeatNpc(boss_id));
+    }
+}
+
 fn render_objective(state: &GameState) -> Vec<String> {
     if state.progress.first_victory {
         vec![
@@ -2937,6 +2968,45 @@ mod tests {
 
         assert!(output.text.iter().any(|t| t.contains("=== MAP ===")), "{:?}", output.text);
         assert!(output.text.iter().any(|t| t.contains("*")), "{:?}", output.text);
+    }
+
+    #[test]
+    fn test_world_generation_seeds_objectives() {
+        // Complete a full character creation flow and verify objectives are seeded
+        let output = new_game(42, false);
+        let output = process_input(&output.state_json, "1"); // race
+        let output = process_input(&output.state_json, "1"); // class
+        let output = process_input(&output.state_json, "1"); // standard array
+        let output = process_input(&output.state_json, "15 14 13 12 10 8"); // scores
+        let output = process_input(&output.state_json, "1 2"); // skills
+        let output = process_input(&output.state_json, "TestHero"); // name
+
+        let state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert!(matches!(state.game_phase, GamePhase::Exploration));
+        assert!(!state.progress.objectives.is_empty(),
+            "Should have at least one objective after world generation");
+        assert_eq!(state.progress.objectives.len(), state.progress.objective_triggers.len(),
+            "objectives and objective_triggers should have same length");
+
+        // Verify the objective references a real entity
+        let obj = &state.progress.objectives[0];
+        assert!(!obj.title.is_empty());
+        assert!(!obj.description.is_empty());
+        assert!(!obj.completed);
+
+        match &state.progress.objective_triggers[0] {
+            state::ObjectiveType::DefeatNpc(npc_id) => {
+                assert!(state.world.npcs.contains_key(npc_id),
+                    "DefeatNpc objective should reference an existing NPC");
+                let npc = &state.world.npcs[npc_id];
+                assert!(obj.title.contains(&npc.name),
+                    "Objective title should contain NPC name: {} not in {}", npc.name, obj.title);
+            }
+            state::ObjectiveType::FindItem(item_id) => {
+                assert!(state.world.items.contains_key(item_id),
+                    "FindItem objective should reference an existing item");
+            }
+        }
     }
 
     fn create_test_exploration_state() -> GameState {
