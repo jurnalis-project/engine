@@ -65,6 +65,29 @@ pub const USE_NOURISH: &str = "You eat the {item}. You feel nourished and ready 
 pub const USE_UNKNOWN_EFFECT: &str = "You use the {item}. Nothing happens.";
 pub const USE_NOT_CONSUMABLE: &str = "You can't use the {item} that way.";
 
+// -- Spell templates --
+pub const CAST_NOT_A_CASTER: &str = "You don't know any spells.";
+pub const CAST_UNKNOWN_SPELL: &str = "You don't know that spell.";
+pub const CAST_NO_SLOTS: &str = "You have no spell slots remaining.";
+pub const CAST_NOT_IN_COMBAT: &str = "You can only cast that spell in combat.";
+pub const CAST_NEED_TARGET: &str = "Cast {spell} at whom?";
+pub const CAST_PRESTIDIGITATION: &str = "You snap your fingers and a cascade of harmless sparks dances across your palm.";
+pub const CAST_FIRE_BOLT_HIT: &str = "You hurl a bolt of fire at {target} ({roll}+{mod}={total} vs AC {ac}) -- hit for {damage} fire damage!";
+pub const CAST_FIRE_BOLT_CRIT: &str = "You hurl a bolt of fire at {target} -- CRITICAL HIT! {damage} fire damage!";
+pub const CAST_FIRE_BOLT_MISS: &str = "You hurl a bolt of fire at {target} ({roll}+{mod}={total} vs AC {ac}) -- the bolt flies wide.";
+pub const CAST_FIRE_BOLT_MISS_NAT1: &str = "You hurl a bolt of fire at {target} -- natural 1! The bolt fizzles.";
+pub const CAST_FIRE_BOLT_EXPLORE: &str = "You conjure a mote of fire, but there's nothing to throw it at.";
+pub const CAST_MAGIC_MISSILE: &str = "Three glowing darts of force streak toward {target}, dealing {d1}, {d2}, and {d3} damage ({total} total force damage).";
+pub const CAST_BURNING_HANDS_INTRO: &str = "Flames shoot from your outstretched fingers! (3d6 = {damage} fire, DC {dc} DEX save)";
+pub const CAST_BURNING_HANDS_FAIL: &str = "  {target}: {save_result} -- takes {damage} fire damage!";
+pub const CAST_BURNING_HANDS_SAVE: &str = "  {target}: {save_result} -- takes {damage} fire damage (half).";
+pub const CAST_BURNING_HANDS_NO_TARGETS: &str = "You release a fan of flames, but no enemies are close enough.";
+pub const CAST_SLEEP_INTRO: &str = "A wave of magical drowsiness rolls out (5d8 = {pool} HP affected).";
+pub const CAST_SLEEP_TARGET: &str = "  {target} ({hp} HP) falls asleep!";
+pub const CAST_SLEEP_NONE: &str = "  No creatures are affected.";
+pub const CAST_SHIELD: &str = "A shimmering barrier of force appears. (+5 AC until your next turn)";
+pub const CAST_SLOT_USED: &str = "[Spell slot used: {remaining}/{max} level {level} slots remaining]";
+
 pub const HELP_TEXT: &str = "\
 Commands:
   look [target]     - Examine surroundings or a specific thing
@@ -119,6 +142,7 @@ const EXPLORATION_HELP_TOPICS: &[&str] = &[
     "inventory",
     "equipment",
     "checks",
+    "spells",
     "system",
     "combat",
 ];
@@ -127,6 +151,7 @@ const COMBAT_HELP_TOPICS: &[&str] = &[
     "movement",
     "inventory",
     "equipment",
+    "spells",
     "system",
     "combat",
 ];
@@ -177,6 +202,7 @@ fn normalize_help_topic(raw_topic: &str) -> Option<&'static str> {
         "checks" | "check" | "skill" | "skills" | "roll" => Some("checks"),
         "system" | "save" | "load" | "help" | "commands" => Some("system"),
         "combat" | "battle" | "fight" | "attack" => Some("combat"),
+        "spells" | "spell" | "magic" | "cast" | "casting" => Some("spells"),
         _ => None,
     }
 }
@@ -262,6 +288,15 @@ fn topic_help(topic: &str, phase: HelpPhase) -> Vec<String> {
             "  dodge / disengage / dash - Tactical actions for your turn.".to_string(),
             "  end turn - End your turn and advance initiative.".to_string(),
         ],
+        ("spells", _) => vec![
+            "Help: spells".to_string(),
+            "  cast <spell> [at <target>] - Cast a spell.".to_string(),
+            "  Cantrips (free): Fire Bolt (ranged attack, 1d10 fire), Prestidigitation (flavor).".to_string(),
+            "  Level 1 spells (use spell slots): Magic Missile, Burning Hands, Sleep, Shield.".to_string(),
+            "  Spell attack: d20 + INT mod + proficiency vs AC.".to_string(),
+            "  Spell save DC: 8 + INT mod + proficiency.".to_string(),
+            "  Only Wizards can cast spells. View slots with 'character'.".to_string(),
+        ],
         _ => unreachable!("Topic '{topic}' should be resolved before rendering"),
     }
 }
@@ -318,7 +353,7 @@ mod tests {
 
         assert!(lines.iter().any(|line| line.contains("Unknown help topic")));
         assert!(lines.iter().any(|line| line.contains("Valid topics during combat")));
-        assert!(lines.iter().any(|line| line.contains("movement, inventory, equipment, system, combat")));
+        assert!(lines.iter().any(|line| line.contains("movement, inventory, equipment, spells, system, combat")));
     }
 }
 
