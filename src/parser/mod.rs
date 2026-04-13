@@ -556,4 +556,11 @@ mod tests {
         assert_eq!(parse("take off helmet"), Command::Unequip("helmet".to_string()));
         assert_eq!(parse("take sword"), Command::Take("sword".to_string()));
     }
+
+    #[test]
+    fn test_objective_aliases() {
+        assert_eq!(parse("objective"), Command::Objective);
+        assert_eq!(parse("goal"), Command::Objective);
+        assert_eq!(parse("quest"), Command::Objective);
+    }
 }

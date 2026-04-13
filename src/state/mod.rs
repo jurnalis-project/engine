@@ -305,4 +305,14 @@ mod tests {
             _ => panic!("Expected Armor"),
         }
     }
+
+    #[test]
+    fn test_load_game_missing_progress_defaults() {
+        let state = test_state();
+        let mut json: serde_json::Value = serde_json::from_str(&save_game(&state).unwrap()).unwrap();
+        json.as_object_mut().unwrap().remove("progress");
+
+        let loaded = load_game(&json.to_string()).unwrap();
+        assert!(!loaded.progress.first_victory);
+    }
 }

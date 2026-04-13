@@ -2347,6 +2347,25 @@ mod tests {
             "Non-consumable item should still be in inventory");
     }
 
+    #[test]
+    fn test_objective_command_shows_current_goal_in_exploration() {
+        let state = create_test_exploration_state();
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "objective");
+        assert!(output.text.iter().any(|t| t.contains("Objective:")), "{:?}", output.text);
+    }
+
+    #[test]
+    fn test_first_victory_marks_objective_complete() {
+        let mut state = create_test_exploration_state();
+        assert!(!state.progress.first_victory);
+
+        let lines = end_combat(&mut state, true);
+
+        assert!(state.progress.first_victory);
+        assert!(lines.iter().any(|l| l.contains("Objective complete")), "{:?}", lines);
+    }
+
     fn create_test_exploration_state() -> GameState {
         let mut rng = StdRng::seed_from_u64(42);
         let mut scores = HashMap::new();
