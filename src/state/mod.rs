@@ -7,9 +7,27 @@ use crate::conditions::ActiveCondition;
 
 pub const SAVE_VERSION: &str = "0.1.0";
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Objective {
+    pub id: String,
+    pub title: String,
+    pub description: String,
+    pub completed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ObjectiveType {
+    DefeatNpc(NpcId),
+    FindItem(ItemId),
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProgressState {
     pub first_victory: bool,
+    #[serde(default)]
+    pub objectives: Vec<Objective>,
+    #[serde(default)]
+    pub objective_triggers: Vec<ObjectiveType>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -342,5 +360,86 @@ mod tests {
 
         let loaded = load_game(&json.to_string()).unwrap();
         assert!(!loaded.progress.first_victory);
+    }
+
+    #[test]
+    fn test_objective_struct_fields() {
+        let obj = Objective {
+            id: "defeat_boss".to_string(),
+            title: "Defeat the Boss".to_string(),
+            description: "Slay the fearsome enemy.".to_string(),
+            completed: false,
+        };
+        assert_eq!(obj.id, "defeat_boss");
+        assert_eq!(obj.title, "Defeat the Boss");
+        assert!(!obj.completed);
+    }
+
+    #[test]
+    fn test_objective_type_variants() {
+        let defeat = ObjectiveType::DefeatNpc(42);
+        let find = ObjectiveType::FindItem(7);
+        match defeat {
+            ObjectiveType::DefeatNpc(id) => assert_eq!(id, 42),
+            _ => panic!("Expected DefeatNpc"),
+        }
+        match find {
+            ObjectiveType::FindItem(id) => assert_eq!(id, 7),
+            _ => panic!("Expected FindItem"),
+        }
+    }
+
+    #[test]
+    fn test_progress_state_has_objectives() {
+        let progress = ProgressState::default();
+        assert!(progress.objectives.is_empty());
+        assert!(progress.objective_triggers.is_empty());
+    }
+
+    #[test]
+    fn test_objective_serialization_roundtrip() {
+        let obj = Objective {
+            id: "find_artifact".to_string(),
+            title: "Find the Ancient Gem".to_string(),
+            description: "Locate the gem hidden in the ruins.".to_string(),
+            completed: true,
+        };
+        let json = serde_json::to_string(&obj).unwrap();
+        let loaded: Objective = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded.id, "find_artifact");
+        assert!(loaded.completed);
+    }
+
+    #[test]
+    fn test_progress_with_objectives_save_load() {
+        let mut state = test_state();
+        state.progress.objectives.push(Objective {
+            id: "defeat_boss".to_string(),
+            title: "Defeat Theron".to_string(),
+            description: "Slay Theron the Scarred.".to_string(),
+            completed: false,
+        });
+        state.progress.objective_triggers.push(ObjectiveType::DefeatNpc(3));
+
+        let json = save_game(&state).unwrap();
+        let loaded = load_game(&json).unwrap();
+        assert_eq!(loaded.progress.objectives.len(), 1);
+        assert_eq!(loaded.progress.objectives[0].title, "Defeat Theron");
+        assert_eq!(loaded.progress.objective_triggers.len(), 1);
+    }
+
+    #[test]
+    fn test_load_game_missing_objectives_defaults_empty() {
+        let state = test_state();
+        let mut json: serde_json::Value = serde_json::from_str(&save_game(&state).unwrap()).unwrap();
+        // Remove objectives and objective_triggers from progress
+        if let Some(progress) = json.get_mut("progress").and_then(|p| p.as_object_mut()) {
+            progress.remove("objectives");
+            progress.remove("objective_triggers");
+        }
+
+        let loaded = load_game(&json.to_string()).unwrap();
+        assert!(loaded.progress.objectives.is_empty());
+        assert!(loaded.progress.objective_triggers.is_empty());
     }
 }
