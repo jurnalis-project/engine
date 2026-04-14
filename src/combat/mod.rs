@@ -38,7 +38,21 @@ pub struct CombatState {
     /// Whether the player used Disengage (prevents opportunity attacks).
     pub player_disengaging: bool,
     /// Whether the player has used their action this turn.
-    pub player_action_used: bool,
+    ///
+    /// (Formerly `player_action_used`; renamed for consistency with the full
+    /// action-economy model. The `serde(alias)` keeps old saves loadable.)
+    #[serde(alias = "player_action_used")]
+    pub action_used: bool,
+    /// Whether the player has used their bonus action this turn.
+    #[serde(default)]
+    pub bonus_action_used: bool,
+    /// Whether the player has used their reaction. Resets at the end of the
+    /// player's turn (so reactions stay available during NPC turns).
+    #[serde(default)]
+    pub reaction_used: bool,
+    /// Whether the player has used their free object interaction this turn.
+    #[serde(default)]
+    pub free_interaction_used: bool,
     /// NPCs that are dodging (NpcId -> true until their next turn).
     pub npc_dodging: HashMap<NpcId, bool>,
     /// NPCs that are disengaging this turn.
@@ -76,6 +90,14 @@ impl CombatState {
         self.current_combatant() == Combatant::Player
     }
 
+    /// Called at the end of the player's turn, before advancing initiative.
+    ///
+    /// Per SRD 5.1, the reaction refreshes at the end of the previous turn so
+    /// that reactions remain available during subsequent NPC turns.
+    pub fn end_player_turn(&mut self) {
+        self.reaction_used = false;
+    }
+
     /// Advance to next living combatant. Returns the new combatant.
     pub fn advance_turn(&mut self, state: &GameState) -> Combatant {
         loop {
@@ -86,11 +108,14 @@ impl CombatState {
             let combatant = self.current_combatant();
             match combatant {
                 Combatant::Player => {
-                    // Reset player turn state
+                    // Reset player turn state. Reaction is NOT reset here --
+                    // it refreshes at end of previous turn (see `end_player_turn`).
                     self.player_movement_remaining = state.character.speed;
                     self.player_dodging = false;
                     self.player_disengaging = false;
-                    self.player_action_used = false;
+                    self.action_used = false;
+                    self.bonus_action_used = false;
+                    self.free_interaction_used = false;
                     self.player_shield_ac_bonus = 0;
                     return combatant;
                 }
@@ -189,7 +214,10 @@ pub fn start_combat(
         player_movement_remaining: player.speed,
         player_dodging: false,
         player_disengaging: false,
-        player_action_used: false,
+        action_used: false,
+        bonus_action_used: false,
+        reaction_used: false,
+        free_interaction_used: false,
         npc_dodging: HashMap::new(),
         npc_disengaging: HashMap::new(),
         player_shield_ac_bonus: 0,
@@ -754,10 +782,18 @@ pub fn format_combat_status(state: &GameState, combat: &CombatState) -> Vec<Stri
     if combat.is_player_turn() {
         lines.push(String::new());
         lines.push(format!("Movement remaining: {} ft", combat.player_movement_remaining));
-        if !combat.player_action_used {
-            lines.push("Action available. Commands: attack <target>, dodge, disengage, dash".to_string());
+        let status = |used: bool| if used { "used" } else { "available" };
+        lines.push(format!(
+            "Action: {} | Bonus: {} | Reaction: {} | Free interaction: {}",
+            status(combat.action_used),
+            status(combat.bonus_action_used),
+            status(combat.reaction_used),
+            status(combat.free_interaction_used),
+        ));
+        if !combat.action_used {
+            lines.push("Commands: attack <target>, dodge, disengage, dash".to_string());
         } else {
-            lines.push("Action used. You can still move (approach/retreat).".to_string());
+            lines.push("Action used. You can still move (approach/retreat) or spend your bonus action.".to_string());
         }
     }
 
@@ -1295,7 +1331,10 @@ mod tests {
             player_movement_remaining: 30,
             player_dodging: false,
             player_disengaging: false,
-            player_action_used: false,
+            action_used: false,
+            bonus_action_used: false,
+            reaction_used: false,
+            free_interaction_used: false,
             npc_dodging: HashMap::new(),
             npc_disengaging: HashMap::new(),
             player_shield_ac_bonus: 0,
@@ -1602,5 +1641,92 @@ mod tests {
             assert!(!all.contains("(with disadvantage)"),
                 "Should not show disadvantage text when player is not dodging. Got: {}", all);
         }
+    }
+
+    // ---- Action Economy tests ----
+
+    #[test]
+    fn test_combat_state_has_four_independent_resource_flags() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let state = test_state_with_goblin();
+        let combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+
+        // Fresh combat should have all resources available.
+        assert!(!combat.action_used, "Action should start available");
+        assert!(!combat.bonus_action_used, "Bonus action should start available");
+        assert!(!combat.reaction_used, "Reaction should start available");
+        assert!(!combat.free_interaction_used, "Free interaction should start available");
+    }
+
+    #[test]
+    fn test_reaction_resets_at_end_of_player_turn_not_start() {
+        // Per SRD: reaction resets at end of previous turn so it's available during NPC turns.
+        let mut rng = StdRng::seed_from_u64(42);
+        let state = test_state_with_goblin();
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+
+        // Simulate player consuming reaction (e.g. opportunity attack during NPC turn)
+        combat.reaction_used = true;
+
+        // End the player's turn: reaction should reset so NPC-turn reactions can fire later.
+        combat.end_player_turn();
+        assert!(!combat.reaction_used,
+            "Reaction should reset at end of player turn so NPCs can't prevent its use");
+    }
+
+    #[test]
+    fn test_action_bonus_free_reset_at_start_of_player_turn() {
+        // action/bonus/free reset at start of the new player turn (existing convention).
+        let mut rng = StdRng::seed_from_u64(42);
+        let state = test_state_with_goblin();
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+
+        combat.action_used = true;
+        combat.bonus_action_used = true;
+        combat.free_interaction_used = true;
+        combat.player_movement_remaining = 0;
+
+        // Force advance_turn to cycle back to player (even if already player turn)
+        // Simulate an NPC turn by setting current_turn to an NPC, then advancing.
+        combat.current_turn = combat.initiative_order.iter()
+            .position(|(c, _)| matches!(c, Combatant::Npc(_)))
+            .unwrap_or(0);
+
+        combat.advance_turn(&state);
+
+        assert!(combat.is_player_turn(), "Should advance back to player turn");
+        assert!(!combat.action_used, "Action should reset at start of player turn");
+        assert!(!combat.bonus_action_used, "Bonus should reset at start of player turn");
+        assert!(!combat.free_interaction_used, "Free interaction should reset at start of player turn");
+        assert_eq!(combat.player_movement_remaining, state.character.speed,
+            "Movement should reset to speed at start of player turn");
+    }
+
+    #[test]
+    fn test_action_used_serde_alias_loads_old_saves() {
+        // Backwards-compat: old saves serialised `player_action_used` should still deserialize.
+        let mut rng = StdRng::seed_from_u64(42);
+        let state = test_state_with_goblin();
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        combat.action_used = true; // Mark as used, so alias must carry the value.
+
+        let mut json = serde_json::to_value(&combat).unwrap();
+        // Simulate an old save: rename key, strip the new fields that old saves don't have.
+        if let Some(obj) = json.as_object_mut() {
+            let val = obj.remove("action_used").expect("action_used field");
+            obj.insert("player_action_used".to_string(), val);
+            obj.remove("bonus_action_used");
+            obj.remove("reaction_used");
+            obj.remove("free_interaction_used");
+        }
+        let round_tripped: CombatState = serde_json::from_value(json)
+            .expect("Old save with player_action_used should still deserialize");
+        // Old-save deserialization: action_used should come from the alias value (true).
+        assert!(round_tripped.action_used,
+            "Old saves' player_action_used value should map to action_used");
+        // New fields should default to false.
+        assert!(!round_tripped.bonus_action_used);
+        assert!(!round_tripped.reaction_used);
+        assert!(!round_tripped.free_interaction_used);
     }
 }

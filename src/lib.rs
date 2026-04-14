@@ -1249,7 +1249,7 @@ fn append_player_turn_prompt(lines: &mut Vec<String>, state: &GameState, combat:
         state.character.current_hp,
         state.character.max_hp
     ));
-    let action_status = if combat.player_action_used { "used" } else { "available" };
+    let action_status = if combat.action_used { "used" } else { "available" };
     lines.push(format!(
         "Movement remaining: {} ft | Action: {}",
         combat.player_movement_remaining,
@@ -1363,7 +1363,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                 ResolveResult::Found(id) => {
                     let npc_id = id as u32;
 
-                    if combat.player_action_used {
+                    if combat.action_used {
                         state.active_combat = Some(combat);
                         return vec!["You've already used your action this turn. You can still move (approach/retreat).".to_string()];
                     }
@@ -1457,7 +1457,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                         }
                     }
 
-                    combat.player_action_used = true;
+                    combat.action_used = true;
                     should_end_turn = combat.player_movement_remaining <= 0;
                 }
                 ResolveResult::Ambiguous(matches) => {
@@ -1505,62 +1505,62 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
             lines.extend(retreat_lines);
         }
         Command::Dodge => {
-            if combat.player_action_used {
+            if combat.action_used {
                 state.active_combat = Some(combat);
                 return vec!["You've already used your action this turn.".to_string()];
             }
             combat.player_dodging = true;
-            combat.player_action_used = true;
+            combat.action_used = true;
             should_end_turn = combat.player_movement_remaining <= 0;
             lines.push("You take the Dodge action. Attacks against you have disadvantage until your next turn.".to_string());
         }
         Command::Disengage => {
-            if combat.player_action_used {
+            if combat.action_used {
                 state.active_combat = Some(combat);
                 return vec!["You've already used your action this turn.".to_string()];
             }
             combat.player_disengaging = true;
-            combat.player_action_used = true;
+            combat.action_used = true;
             should_end_turn = combat.player_movement_remaining <= 0;
             lines.push("You take the Disengage action. You can retreat without provoking opportunity attacks.".to_string());
         }
         Command::Dash => {
-            if combat.player_action_used {
+            if combat.action_used {
                 state.active_combat = Some(combat);
                 return vec!["You've already used your action this turn.".to_string()];
             }
             combat.player_movement_remaining += state.character.speed;
-            combat.player_action_used = true;
+            combat.action_used = true;
             should_end_turn = false;
             lines.push(format!("You take the Dash action. Movement this turn: {} ft.", combat.player_movement_remaining));
         }
         Command::Equip(target_str) => {
-            if combat.player_action_used {
+            if combat.action_used {
                 state.active_combat = Some(combat);
                 return vec!["You've already used your action this turn.".to_string()];
             }
             lines.extend(handle_equip_command(state, &target_str));
-            combat.player_action_used = true;
+            combat.action_used = true;
             should_end_turn = combat.player_movement_remaining <= 0;
         }
         Command::Unequip(target_str) => {
-            if combat.player_action_used {
+            if combat.action_used {
                 state.active_combat = Some(combat);
                 return vec!["You've already used your action this turn.".to_string()];
             }
             lines.extend(handle_unequip_command(state, &target_str));
-            combat.player_action_used = true;
+            combat.action_used = true;
             should_end_turn = combat.player_movement_remaining <= 0;
         }
         Command::Use(item_name) => {
-            if combat.player_action_used {
+            if combat.action_used {
                 state.active_combat = Some(combat);
                 return vec!["You've already used your action this turn. You can still move (approach/retreat).".to_string()];
             }
             let (mut use_lines, consumed_action) = resolve_use_item(state, &mut rng, &item_name);
             lines.append(&mut use_lines);
             if consumed_action {
-                combat.player_action_used = true;
+                combat.action_used = true;
             }
             should_end_turn = combat.player_movement_remaining <= 0;
         }
@@ -1583,7 +1583,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                 }
             };
 
-            if combat.player_action_used {
+            if combat.action_used {
                 state.active_combat = Some(combat);
                 return vec!["You've already used your action this turn.".to_string()];
             }
@@ -1663,7 +1663,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                                         .replace("{ac}", &target_ac.to_string()));
                                 }
                             }
-                            combat.player_action_used = true;
+                            combat.action_used = true;
                             should_end_turn = combat.player_movement_remaining <= 0;
                         }
                         ResolveResult::Ambiguous(matches) => {
@@ -1678,7 +1678,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                 }
                 "Prestidigitation" => {
                     lines.push(narration::templates::CAST_PRESTIDIGITATION.to_string());
-                    combat.player_action_used = true;
+                    combat.action_used = true;
                     should_end_turn = combat.player_movement_remaining <= 0;
                 }
                 "Magic Missile" => {
@@ -1733,7 +1733,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                                     }
                                 }
                             }
-                            combat.player_action_used = true;
+                            combat.action_used = true;
                             should_end_turn = combat.player_movement_remaining <= 0;
                         }
                         ResolveResult::Ambiguous(matches) => {
@@ -1807,7 +1807,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                             }
                         }
                     }
-                    combat.player_action_used = true;
+                    combat.action_used = true;
                     should_end_turn = combat.player_movement_remaining <= 0;
                 }
                 "Sleep" => {
@@ -1846,7 +1846,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                             .replace("{max}", &max.to_string())
                             .replace("{level}", "1"));
                     }
-                    combat.player_action_used = true;
+                    combat.action_used = true;
                     should_end_turn = combat.player_movement_remaining <= 0;
                 }
                 "Shield" => {
@@ -1866,7 +1866,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                         // For MVP, we store shield bonus in a simple field
                         combat.player_shield_ac_bonus = 5;
                     }
-                    combat.player_action_used = true;
+                    combat.action_used = true;
                     should_end_turn = combat.player_movement_remaining <= 0;
                 }
                 _ => {
@@ -2801,7 +2801,7 @@ mod tests {
                     break;
                 }
             }
-            combat.player_action_used = false;
+            combat.action_used = false;
             combat.player_movement_remaining = state.character.speed;
         }
     }
@@ -2862,7 +2862,7 @@ mod tests {
                     break;
                 }
             }
-            combat.player_action_used = false;
+            combat.action_used = false;
         }
         let state_json = serde_json::to_string(&state).unwrap();
         let output = process_input(&state_json, "dodge");
@@ -2880,7 +2880,7 @@ mod tests {
                     break;
                 }
             }
-            combat.player_action_used = false;
+            combat.action_used = false;
         }
         let state_json = serde_json::to_string(&state).unwrap();
         let output = process_input(&state_json, "disengage");
@@ -2898,7 +2898,7 @@ mod tests {
                     break;
                 }
             }
-            combat.player_action_used = false;
+            combat.action_used = false;
         }
         let state_json = serde_json::to_string(&state).unwrap();
         let output = process_input(&state_json, "dash");
@@ -2942,7 +2942,7 @@ mod tests {
         let combat = new_state.active_combat.as_ref().unwrap();
 
         assert!(combat.is_player_turn(), "Attack should not auto-end turn when movement remains");
-        assert!(combat.player_action_used, "Attack should consume action");
+        assert!(combat.action_used, "Attack should consume action");
     }
 
     #[test]
@@ -2973,7 +2973,7 @@ mod tests {
         let combat = new_state.active_combat.as_ref().unwrap();
 
         assert!(combat.is_player_turn());
-        assert!(!combat.player_action_used);
+        assert!(!combat.action_used);
     }
 
     #[test]
@@ -2988,7 +2988,7 @@ mod tests {
                     break;
                 }
             }
-            combat.player_action_used = false;
+            combat.action_used = false;
             combat.player_movement_remaining = 30;
             combat.distances.insert(100, 5); // target in melee range
         }
@@ -3048,7 +3048,7 @@ mod tests {
 
         let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
         let combat = new_state.active_combat.as_ref().unwrap();
-        assert!(combat.player_action_used, "Using potion should consume action in combat");
+        assert!(combat.action_used, "Using potion should consume action in combat");
         assert!(new_state.character.current_hp > state.character.current_hp);
     }
 
