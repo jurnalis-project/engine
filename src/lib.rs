@@ -3813,4 +3813,67 @@ mod tests {
         assert_eq!(new_state.character.spell_slots_remaining, state.character.spell_slots_remaining);
         assert_eq!(new_state.character.known_spells, state.character.known_spells);
     }
+
+    // --- Rest command integration tests ---
+
+    #[test]
+    fn test_short_rest_command_through_process_input() {
+        let mut state = create_test_exploration_state();
+        state.character.current_hp = 1;
+        state.character.hit_dice_remaining = 1;
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "short rest");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+
+        let text = output.text.join("\n");
+        assert!(text.to_lowercase().contains("short rest"), "Expected short rest narration, got: {}", text);
+        assert!(new_state.character.current_hp > 1, "Short rest should heal");
+        assert_eq!(new_state.in_world_minutes, 60);
+    }
+
+    #[test]
+    fn test_long_rest_command_through_process_input() {
+        let mut state = create_test_exploration_state();
+        state.character.current_hp = 1;
+        state.character.exhaustion = 2;
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "long rest");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+
+        assert_eq!(new_state.character.current_hp, new_state.character.max_hp);
+        assert_eq!(new_state.character.exhaustion, 1);
+        assert_eq!(new_state.in_world_minutes, 8 * 60);
+        assert_eq!(new_state.last_long_rest_minutes, Some(0));
+    }
+
+    #[test]
+    fn test_long_rest_cooldown_integration() {
+        let mut state = create_test_exploration_state();
+        // Pretend we just rested
+        state.last_long_rest_minutes = Some(0);
+        state.in_world_minutes = 60 * 5; // only 5 hours later
+        state.character.current_hp = 1;
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "long rest");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+
+        let text = output.text.join("\n").to_lowercase();
+        assert!(text.contains("rested too recently"), "Expected cooldown message, got: {}", text);
+        // State must NOT change
+        assert_eq!(new_state.character.current_hp, 1);
+        assert_eq!(new_state.in_world_minutes, 60 * 5);
+    }
+
+    #[test]
+    fn test_bare_rest_command_disambiguates_through_process_input() {
+        let state = create_test_exploration_state();
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "rest");
+        let text = output.text.join("\n").to_lowercase();
+        assert!(
+            text.contains("short rest") && text.contains("long rest"),
+            "Bare 'rest' should ask which rest. Got: {}",
+            text,
+        );
+    }
 }
