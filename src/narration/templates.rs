@@ -287,6 +287,11 @@ fn topic_help(topic: &str, phase: HelpPhase) -> Vec<String> {
             "  retreat - Move away from all enemies.".to_string(),
             "  dodge / disengage / dash - Tactical actions for your turn.".to_string(),
             "  end turn - End your turn and advance initiative.".to_string(),
+            "  Bonus actions (one per turn):".to_string(),
+            "    bonus dash / dash as bonus - Dash using your bonus action instead.".to_string(),
+            "    offhand attack <target> / attack <target> off hand - Two-Weapon Fighting.".to_string(),
+            "  Reaction: when an enemy triggers a reaction (e.g. incoming hit for Shield,".to_string(),
+            "    or leaving your melee reach for an opportunity attack), answer 'yes' or 'no'.".to_string(),
         ],
         ("spells", _) => vec![
             "Help: spells".to_string(),

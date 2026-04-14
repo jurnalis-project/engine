@@ -1547,14 +1547,18 @@ fn append_player_turn_prompt(lines: &mut Vec<String>, state: &GameState, combat:
         state.character.current_hp,
         state.character.max_hp
     ));
-    let action_status = if combat.action_used { "used" } else { "available" };
+    let status = |used: bool| if used { "used" } else { "available" };
     lines.push(format!(
-        "Movement remaining: {} ft | Action: {}",
+        "Movement: {} ft | Action: {} | Bonus: {} | Reaction: {} | Free: {}",
         combat.player_movement_remaining,
-        action_status
+        status(combat.action_used),
+        status(combat.bonus_action_used),
+        status(combat.reaction_used),
+        status(combat.free_interaction_used),
     ));
     lines.extend(combat::format_enemy_summary(state, combat));
     lines.push("Commands: attack <target>, approach <target>, retreat, dodge, disengage, dash, end turn".to_string());
+    lines.push("Bonus actions: bonus dash, offhand attack <target>. Reactions: respond yes/no when prompted.".to_string());
 }
 
 fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
@@ -3638,6 +3642,40 @@ mod tests {
         assert!(post.character.inventory.iter().any(|id| {
             post.world.items.get(id).map(|i| i.name == "Healing Potion").unwrap_or(false)
         }));
+    }
+
+    // ---- Action Economy: Turn-status display ----
+
+    #[test]
+    fn test_turn_status_shows_all_four_resources() {
+        let mut state = create_test_combat_state();
+        force_player_turn(&mut state);
+
+        // Trigger the turn prompt by running a no-op command sequence. Easier
+        // to just call approach which keeps turn open.
+        if let Some(ref mut combat) = state.active_combat {
+            combat.distances.insert(100, 30);
+        }
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "approach test goblin");
+
+        let joined = output.text.join("\n").to_lowercase();
+        assert!(joined.contains("action"), "Expected action status, got: {:?}", output.text);
+        assert!(joined.contains("bonus"), "Expected bonus status, got: {:?}", output.text);
+        assert!(joined.contains("reaction"), "Expected reaction status, got: {:?}", output.text);
+        assert!(joined.contains("movement"), "Expected movement status, got: {:?}", output.text);
+    }
+
+    #[test]
+    fn test_combat_help_mentions_bonus_and_reaction() {
+        let state = create_test_combat_state();
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "help combat");
+
+        let joined = output.text.join("\n").to_lowercase();
+        assert!(joined.contains("bonus"), "Combat help should mention bonus actions, got: {:?}", output.text);
+        assert!(joined.contains("reaction") || joined.contains("yes/no"),
+            "Combat help should mention reactions, got: {:?}", output.text);
     }
 
     // ---- Action Economy: Reaction prompts during NPC turns ----
