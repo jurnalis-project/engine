@@ -2,6 +2,7 @@
 // SRD monster const table for combat encounters.
 
 use std::collections::HashMap;
+use rand::Rng;
 use crate::types::Ability;
 use crate::state::{CombatStats, NpcAttack, DamageType};
 
@@ -232,13 +233,114 @@ pub fn monster_to_combat_stats(def: &MonsterDef) -> CombatStats {
     }
 }
 
+/// HP target window for a given depth tier. Depth is a location index proxy
+/// (0 = entrance, increasing with distance from spawn). See
+/// `docs/specs/world-generation.md` for the authoritative definition.
+fn hp_window_for_depth(depth: usize) -> (i32, i32) {
+    match depth {
+        0..=3 => (5, 12),
+        4..=8 => (10, 18),
+        _ => (15, 25),
+    }
+}
+
+/// Pick an `SRD_MONSTERS` entry whose `max_hp` falls within the depth's
+/// target window. If no monster matches the window (defensive fallback),
+/// return the monster whose `max_hp` is closest to the window's midpoint,
+/// with ties broken by table order.
+///
+/// This biases early rooms (low depth) toward weaker foes, scaling up with
+/// distance from the player's spawn. Selection is deterministic for a given
+/// RNG state, preserving world-generation reproducibility.
+pub fn select_monster_for_depth(rng: &mut impl Rng, depth: usize) -> &'static MonsterDef {
+    let (lo, hi) = hp_window_for_depth(depth);
+
+    let matching: Vec<&'static MonsterDef> = SRD_MONSTERS
+        .iter()
+        .filter(|m| m.max_hp >= lo && m.max_hp <= hi)
+        .collect();
+
+    if !matching.is_empty() {
+        let idx = rng.gen_range(0..matching.len());
+        return matching[idx];
+    }
+
+    // Defensive fallback: pick the monster closest to the window midpoint.
+    // Ties are broken by table order (first occurrence wins).
+    let mid = (lo + hi) / 2;
+    SRD_MONSTERS
+        .iter()
+        .min_by_key(|m| (m.max_hp - mid).abs())
+        .expect("SRD_MONSTERS must not be empty")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand::SeedableRng;
+    use rand::rngs::StdRng;
 
     #[test]
     fn test_srd_monsters_count() {
         assert_eq!(SRD_MONSTERS.len(), 12);
+    }
+
+    #[test]
+    fn test_select_monster_for_depth_tier_0_hp_range() {
+        // Depth 0-3 should bias toward HP 5-12.
+        for depth in 0..=3 {
+            for seed in 0..32u64 {
+                let mut rng = StdRng::seed_from_u64(seed);
+                let def = select_monster_for_depth(&mut rng, depth);
+                assert!(
+                    def.max_hp >= 5 && def.max_hp <= 12,
+                    "depth {} seed {}: picked {} with HP {}, expected 5-12",
+                    depth, seed, def.name, def.max_hp
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_select_monster_for_depth_tier_1_hp_range() {
+        // Depth 4-8 should bias toward HP 10-18.
+        for depth in 4..=8 {
+            for seed in 0..32u64 {
+                let mut rng = StdRng::seed_from_u64(seed);
+                let def = select_monster_for_depth(&mut rng, depth);
+                assert!(
+                    def.max_hp >= 10 && def.max_hp <= 18,
+                    "depth {} seed {}: picked {} with HP {}, expected 10-18",
+                    depth, seed, def.name, def.max_hp
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_select_monster_for_depth_tier_2_hp_range() {
+        // Depth 9+ should bias toward HP 15-25.
+        for depth in [9usize, 12, 20, 100] {
+            for seed in 0..32u64 {
+                let mut rng = StdRng::seed_from_u64(seed);
+                let def = select_monster_for_depth(&mut rng, depth);
+                assert!(
+                    def.max_hp >= 15 && def.max_hp <= 25,
+                    "depth {} seed {}: picked {} with HP {}, expected 15-25",
+                    depth, seed, def.name, def.max_hp
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_select_monster_for_depth_deterministic() {
+        let mut rng1 = StdRng::seed_from_u64(7);
+        let mut rng2 = StdRng::seed_from_u64(7);
+        let a = select_monster_for_depth(&mut rng1, 2);
+        let b = select_monster_for_depth(&mut rng2, 2);
+        assert_eq!(a.name, b.name);
+        assert_eq!(a.max_hp, b.max_hp);
     }
 
     #[test]
