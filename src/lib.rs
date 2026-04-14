@@ -1335,17 +1335,6 @@ fn resolve_reaction_decision(
         combat::PendingReaction::OpportunityAttack { fleeing_npc_id, old_distance, new_distance, .. } => {
             if accept {
                 combat.reaction_used = true;
-                let player_ac = equipment::calculate_ac(&state.character, &state.world.items)
-                    + combat.player_shield_ac_bonus;
-                if let Some((npc_name, result)) = combat::resolve_opportunity_attack(
-                    rng, fleeing_npc_id, state, player_ac, old_distance
-                ) {
-                    // We're attacking them; resolve using the player's main-hand weapon.
-                    // Simpler path: use the existing `resolve_opportunity_attack` helper in
-                    // reverse -- but that is NPC attacking player. For OA we need the player
-                    // attacking the fleeing NPC. Use resolve_player_attack at old_distance.
-                    let _ = (npc_name, result);
-                }
                 // Player attacks the fleeing NPC with their main-hand weapon.
                 let weapon_id = state.character.equipped.main_hand;
                 let target_ac = state.world.npcs.get(&fleeing_npc_id)
@@ -2478,6 +2467,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
     }
 
     // End player's turn: advance and process NPC turns
+    combat.end_player_turn();
     combat.advance_turn(state);
     state.active_combat = Some(combat);
 
@@ -5023,6 +5013,33 @@ mod tests {
             text.contains("short rest") && text.contains("long rest"),
             "Bare 'rest' should ask which rest. Got: {}",
             text,
+        );
+    }
+
+    #[test]
+    fn test_reaction_used_resets_at_start_of_player_second_turn() {
+        let mut state = create_test_combat_state();
+
+        // Ensure it is the player's turn
+        force_player_turn(&mut state);
+
+        // Manually mark reaction as used (simulating a reaction taken this turn)
+        if let Some(ref mut combat) = state.active_combat {
+            combat.reaction_used = true;
+        }
+
+        // End the player's turn
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "end turn");
+        let mut state: GameState = serde_json::from_str(&output.state_json).unwrap();
+
+        // Force back to player's turn (second turn)
+        force_player_turn(&mut state);
+
+        let combat = state.active_combat.as_ref().expect("combat should still be active");
+        assert!(
+            !combat.reaction_used,
+            "reaction_used should be false at the start of the player's second turn"
         );
     }
 }
