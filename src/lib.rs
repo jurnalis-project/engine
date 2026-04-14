@@ -1099,7 +1099,9 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
                 }
             }
         }
-        Command::Attack(_) | Command::Approach(_) | Command::Retreat | Command::Dodge | Command::Disengage | Command::Dash | Command::EndTurn => {
+        Command::Attack(_) | Command::Approach(_) | Command::Retreat | Command::Dodge
+        | Command::Disengage | Command::Dash | Command::EndTurn
+        | Command::OffHandAttack(_) | Command::BonusDash | Command::ReactionYes | Command::ReactionNo => {
             vec!["You're not in combat.".to_string()]
         }
         Command::NewGame => {
@@ -1533,6 +1535,19 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
             combat.action_used = true;
             should_end_turn = false;
             lines.push(format!("You take the Dash action. Movement this turn: {} ft.", combat.player_movement_remaining));
+        }
+        Command::BonusDash => {
+            if combat.bonus_action_used {
+                state.active_combat = Some(combat);
+                return vec!["You've already used your bonus action this turn.".to_string()];
+            }
+            combat.player_movement_remaining += state.character.speed;
+            combat.bonus_action_used = true;
+            should_end_turn = false;
+            lines.push(format!(
+                "You dash as a bonus action. Movement this turn: {} ft.",
+                combat.player_movement_remaining
+            ));
         }
         Command::Equip(target_str) => {
             if combat.action_used {
@@ -3070,6 +3085,70 @@ mod tests {
         assert!(post.character.inventory.iter().any(|id| {
             post.world.items.get(id).map(|i| i.name == "Healing Potion").unwrap_or(false)
         }));
+    }
+
+    // ---- Action Economy: BonusDash ----
+
+    #[test]
+    fn test_bonus_dash_grants_movement_and_consumes_bonus_action() {
+        let mut state = create_test_combat_state();
+        force_player_turn(&mut state);
+        if let Some(ref mut combat) = state.active_combat {
+            combat.player_movement_remaining = 15; // some movement already spent
+            combat.bonus_action_used = false;
+        }
+        let baseline_movement = 15;
+        let speed = state.character.speed;
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "bonus dash");
+
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        let combat = new_state.active_combat.as_ref().unwrap();
+        assert!(combat.bonus_action_used, "BonusDash should consume the bonus action");
+        assert!(!combat.action_used, "BonusDash should NOT consume the action");
+        assert_eq!(combat.player_movement_remaining, baseline_movement + speed,
+            "BonusDash should grant speed-equivalent movement");
+        assert!(output.text.iter().any(|t| t.to_lowercase().contains("dash")),
+            "Expected dash narration, got: {:?}", output.text);
+    }
+
+    #[test]
+    fn test_bonus_dash_blocked_when_bonus_action_used() {
+        let mut state = create_test_combat_state();
+        force_player_turn(&mut state);
+        if let Some(ref mut combat) = state.active_combat {
+            combat.bonus_action_used = true;
+            combat.player_movement_remaining = 30;
+        }
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "bonus dash");
+
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        let combat = new_state.active_combat.as_ref().unwrap();
+        assert_eq!(combat.player_movement_remaining, 30,
+            "Movement should not change when bonus action already used");
+        assert!(output.text.iter().any(|t| t.to_lowercase().contains("bonus action")),
+            "Expected bonus-action-used narration, got: {:?}", output.text);
+    }
+
+    #[test]
+    fn test_bonus_dash_does_not_end_turn_automatically() {
+        let mut state = create_test_combat_state();
+        force_player_turn(&mut state);
+        if let Some(ref mut combat) = state.active_combat {
+            combat.player_movement_remaining = 0;
+            combat.bonus_action_used = false;
+        }
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "bonus dash");
+
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        let combat = new_state.active_combat.as_ref().unwrap();
+        assert!(combat.is_player_turn(),
+            "BonusDash should keep the player's turn open (movement just got granted).");
     }
 
     #[test]

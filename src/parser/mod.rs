@@ -34,6 +34,18 @@ pub enum Command {
     Dodge,
     Disengage,
     Dash,
+    // Action-economy commands
+    /// Off-hand attack (Two-Weapon Fighting). Consumes a bonus action.
+    OffHandAttack(String),
+    /// Dash as a bonus action (for Rogue Cunning Action or generic MVP).
+    BonusDash,
+    /// Accept a pending reaction prompt. Only meaningful when
+    /// `CombatState::pending_reaction` is Some; otherwise the orchestrator
+    /// treats it as an unknown verb.
+    ReactionYes,
+    /// Decline a pending reaction prompt. Only meaningful when
+    /// `CombatState::pending_reaction` is Some.
+    ReactionNo,
     // Rest commands
     ShortRest,
     LongRest,
@@ -48,6 +60,23 @@ pub fn parse(input: &str) -> Command {
 
     let lower = input.to_lowercase();
     let words: Vec<&str> = lower.split_whitespace().collect();
+
+    // 3-word phrases first (before 2-word phrases, to avoid mis-matches).
+    if words.len() >= 3 {
+        let three = format!("{} {} {}", words[0], words[1], words[2]);
+        let rest_after_three: String = if words.len() > 3 { words[3..].join(" ") } else { String::new() };
+        match three.as_str() {
+            "off hand attack" => {
+                return if rest_after_three.is_empty() {
+                    Command::Unknown("Off-hand attack what?".to_string())
+                } else {
+                    Command::OffHandAttack(rest_after_three)
+                };
+            }
+            "dash as bonus" => return Command::BonusDash,
+            _ => {}
+        }
+    }
 
     // 2-word phrases first
     if words.len() >= 2 {
@@ -104,6 +133,16 @@ pub fn parse(input: &str) -> Command {
                 } else {
                     Command::Attack(rest)
                 };
+            }
+            "offhand attack" => {
+                return if rest.is_empty() {
+                    Command::Unknown("Off-hand attack what?".to_string())
+                } else {
+                    Command::OffHandAttack(rest)
+                };
+            }
+            "bonus dash" | "dash bonus" => {
+                return Command::BonusDash;
             }
             "move to" | "move toward" => {
                 // Check if it looks like a direction first
@@ -197,7 +236,17 @@ pub fn parse(input: &str) -> Command {
             }
         }
         "attack" | "hit" | "strike" | "shoot" => {
-            if args.is_empty() { Command::Unknown("Attack what?".to_string()) } else { Command::Attack(args) }
+            if args.is_empty() {
+                Command::Unknown("Attack what?".to_string())
+            } else if let Some(target) = strip_offhand_suffix(&args) {
+                if target.is_empty() {
+                    Command::Unknown("Off-hand attack what?".to_string())
+                } else {
+                    Command::OffHandAttack(target)
+                }
+            } else {
+                Command::Attack(args)
+            }
         }
         "approach" | "advance" | "close" => {
             if args.is_empty() { Command::Unknown("Approach what?".to_string()) } else { Command::Approach(args) }
@@ -206,6 +255,8 @@ pub fn parse(input: &str) -> Command {
         "dodge" => Command::Dodge,
         "disengage" | "withdraw" => Command::Disengage,
         "dash" | "run" | "sprint" => Command::Dash,
+        "yes" | "y" => Command::ReactionYes,
+        "no" => Command::ReactionNo,
         "end" | "pass" | "wait" => Command::EndTurn,
         "inventory" | "i" | "inv" | "items" | "bag" => Command::Inventory,
         "character" | "char" | "sheet" | "stats" | "status" => Command::CharacterSheet,
@@ -221,6 +272,23 @@ pub fn parse(input: &str) -> Command {
         "map" => Command::Map,
         _ => Command::Unknown(input.to_string()),
     }
+}
+
+/// If the argument string ends with an "off hand" / "offhand" suffix,
+/// strip it and return the inner target. Returns None if the suffix
+/// is not present.
+fn strip_offhand_suffix(args: &str) -> Option<String> {
+    let trimmed = args.trim();
+    for suffix in &[" off hand", " offhand"] {
+        if let Some(stripped) = trimmed.strip_suffix(suffix) {
+            return Some(stripped.trim().to_string());
+        }
+    }
+    // Also accept bare "offhand" / "off hand" with no target.
+    if trimmed == "off hand" || trimmed == "offhand" {
+        return Some(String::new());
+    }
+    None
 }
 
 fn parse_direction(s: &str) -> Option<Direction> {
@@ -707,6 +775,65 @@ mod tests {
         assert_eq!(parse("long rest"), Command::LongRest);
         assert_eq!(parse("Long Rest"), Command::LongRest);
         assert_eq!(parse("LONG REST"), Command::LongRest);
+    }
+
+    // ---- Action economy tests ----
+
+    #[test]
+    fn test_offhand_attack_variants() {
+        assert_eq!(parse("offhand attack goblin"), Command::OffHandAttack("goblin".to_string()));
+        assert_eq!(parse("off hand attack goblin"), Command::OffHandAttack("goblin".to_string()));
+        assert_eq!(parse("attack goblin off hand"), Command::OffHandAttack("goblin".to_string()));
+        assert_eq!(parse("attack goblin offhand"), Command::OffHandAttack("goblin".to_string()));
+    }
+
+    #[test]
+    fn test_offhand_attack_multi_word_target() {
+        assert_eq!(
+            parse("attack giant rat off hand"),
+            Command::OffHandAttack("giant rat".to_string())
+        );
+    }
+
+    #[test]
+    fn test_offhand_bare_verb_error() {
+        match parse("offhand attack") {
+            Command::Unknown(s) => assert!(s.to_lowercase().contains("what")),
+            other => panic!("Expected Unknown, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_bonus_dash_variants() {
+        assert_eq!(parse("bonus dash"), Command::BonusDash);
+        assert_eq!(parse("dash as bonus"), Command::BonusDash);
+        assert_eq!(parse("dash bonus"), Command::BonusDash);
+    }
+
+    #[test]
+    fn test_regular_dash_still_parses() {
+        // Ensure the existing Dash command still works without bonus markers.
+        assert_eq!(parse("dash"), Command::Dash);
+        assert_eq!(parse("run"), Command::Dash);
+        assert_eq!(parse("sprint"), Command::Dash);
+    }
+
+    #[test]
+    fn test_reaction_yes_commands() {
+        assert_eq!(parse("yes"), Command::ReactionYes);
+        assert_eq!(parse("y"), Command::ReactionYes);
+    }
+
+    #[test]
+    fn test_reaction_no_commands() {
+        assert_eq!(parse("no"), Command::ReactionNo);
+        assert_eq!(parse("pass"), Command::EndTurn); // pass remains end-turn
+    }
+
+    #[test]
+    fn test_attack_still_works_after_offhand_additions() {
+        // Regression: plain `attack <target>` must still produce Attack, not OffHandAttack.
+        assert_eq!(parse("attack goblin"), Command::Attack("goblin".to_string()));
     }
 
     #[test]
