@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use rand::Rng;
 use crate::types::{Ability, Skill, ItemId};
 use self::race::Race;
-use self::class::Class;
+use self::class::{Class, ClassFeatureState};
 use crate::rules::dice::roll_4d6_drop_lowest;
 use crate::equipment::Equipment;
 use crate::conditions::ActiveCondition;
@@ -35,6 +35,16 @@ pub struct Character {
     pub spell_slots_remaining: Vec<i32>,
     #[serde(default)]
     pub known_spells: Vec<String>,
+    /// Hit dice available to spend during short rest. Replenished (partially)
+    /// on long rest. Max = character level.
+    #[serde(default)]
+    pub hit_dice_remaining: u32,
+    /// Per-class feature flags tracking short-rest / long-rest resources.
+    #[serde(default)]
+    pub class_features: ClassFeatureState,
+    /// Exhaustion level (0..=6 per SRD 5.1). Long rest reduces by 1.
+    #[serde(default)]
+    pub exhaustion: u32,
 }
 
 impl Character {
@@ -128,6 +138,9 @@ pub fn create_character(
         spell_slots_max,
         spell_slots_remaining,
         known_spells,
+        hit_dice_remaining: 1, // level 1 starts with 1 hit die
+        class_features: ClassFeatureState::default(),
+        exhaustion: 0,
     }
 }
 
@@ -230,5 +243,36 @@ mod tests {
         assert!(c.spell_slots_max.is_empty());
         assert!(c.spell_slots_remaining.is_empty());
         assert!(c.known_spells.is_empty());
+    }
+
+    #[test]
+    fn test_new_character_has_rest_fields_initialized() {
+        let c = create_character("Test".to_string(), Race::Human, Class::Fighter, test_scores(), vec![]);
+        // Level 1 character should have 1 hit die available
+        assert_eq!(c.hit_dice_remaining, 1);
+        // All short/long rest features available
+        assert!(c.class_features.second_wind_available);
+        assert!(c.class_features.action_surge_available);
+        assert!(!c.class_features.arcane_recovery_used_today);
+        // No exhaustion at creation
+        assert_eq!(c.exhaustion, 0);
+    }
+
+    #[test]
+    fn test_character_missing_rest_fields_deserialize_defaults() {
+        // Build a minimal legacy JSON missing hit_dice_remaining/class_features/exhaustion.
+        // Round-trip create then strip the fields and assert defaults on load.
+        let c = create_character("Test".to_string(), Race::Human, Class::Fighter, test_scores(), vec![]);
+        let mut v: serde_json::Value = serde_json::to_value(&c).unwrap();
+        let obj = v.as_object_mut().unwrap();
+        obj.remove("hit_dice_remaining");
+        obj.remove("class_features");
+        obj.remove("exhaustion");
+        let loaded: Character = serde_json::from_value(v).unwrap();
+        assert_eq!(loaded.hit_dice_remaining, 0); // u32 default
+        assert!(loaded.class_features.second_wind_available); // default_true kicks in
+        assert!(loaded.class_features.action_surge_available);
+        assert!(!loaded.class_features.arcane_recovery_used_today);
+        assert_eq!(loaded.exhaustion, 0);
     }
 }

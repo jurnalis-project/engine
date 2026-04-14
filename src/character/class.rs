@@ -2,6 +2,37 @@
 use serde::{Deserialize, Serialize};
 use crate::types::{Ability, Skill};
 
+/// Per-class feature-use tracking. All fields default so older saves
+/// deserialize cleanly.
+///
+/// Short-rest features (refresh on short OR long rest):
+///   - `second_wind_available` (Fighter)
+///
+/// Long-rest features (refresh only on long rest):
+///   - `action_surge_available` (Fighter)
+///   - `arcane_recovery_used_today` (Wizard — true = already used today)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClassFeatureState {
+    #[serde(default = "default_true")]
+    pub second_wind_available: bool,
+    #[serde(default = "default_true")]
+    pub action_surge_available: bool,
+    #[serde(default)]
+    pub arcane_recovery_used_today: bool,
+}
+
+fn default_true() -> bool { true }
+
+impl Default for ClassFeatureState {
+    fn default() -> Self {
+        Self {
+            second_wind_available: true,
+            action_surge_available: true,
+            arcane_recovery_used_today: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Class { Fighter, Rogue, Wizard }
 
@@ -109,6 +140,24 @@ mod tests {
         assert_eq!(loadout.off_hand, None);
         assert_eq!(loadout.body, Some("Leather"));
         assert_eq!(loadout.extra_inventory, &["Dagger"]);
+    }
+
+    #[test]
+    fn test_class_feature_state_defaults() {
+        let f = ClassFeatureState::default();
+        assert!(f.second_wind_available);
+        assert!(f.action_surge_available);
+        assert!(!f.arcane_recovery_used_today);
+    }
+
+    #[test]
+    fn test_class_feature_state_missing_fields_deserialize_defaults() {
+        // Simulate a save from before the field existed: use default().
+        let json = "{}";
+        let parsed: ClassFeatureState = serde_json::from_str(json).unwrap();
+        assert!(parsed.second_wind_available);
+        assert!(parsed.action_surge_available);
+        assert!(!parsed.arcane_recovery_used_today);
     }
 
     #[test]
