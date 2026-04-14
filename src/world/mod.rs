@@ -17,12 +17,14 @@ pub fn generate_world(rng: &mut impl Rng, location_count: usize) -> WorldState {
     let npc_count = location_count / 3 + 1;
     let mut npcs = npc::generate_npcs(rng, &location_refs, npc_count);
 
-    // Assign combat stats to hostile NPCs from SRD monster table.
-    // Index directly into SRD_MONSTERS to guarantee every hostile NPC gets a stat block.
+    // Assign combat stats to hostile NPCs from the SRD monster table, biased
+    // by the NPC's location index (depth proxy). See `docs/specs/world-generation.md`
+    // for the tier windows. Ensures first-encounter enemies are survivable at
+    // level 1 while deeper rooms escalate in difficulty.
     for npc in npcs.values_mut() {
         if npc.disposition == Disposition::Hostile {
-            let idx = rng.gen_range(0..monsters::SRD_MONSTERS.len());
-            let def = &monsters::SRD_MONSTERS[idx];
+            let depth = npc.location as usize;
+            let def = monsters::select_monster_for_depth(rng, depth);
             npc.combat_stats = Some(monsters::monster_to_combat_stats(def));
         }
     }
@@ -123,5 +125,57 @@ mod tests {
         assert_eq!(w1.npcs.len(), w2.npcs.len());
         assert_eq!(w1.items.len(), w2.items.len());
         assert_eq!(w1.triggers.len(), w2.triggers.len());
+    }
+
+    #[test]
+    fn test_hostile_hp_scales_with_location_depth() {
+        // Every hostile NPC's combat stats must fall within the HP window
+        // implied by its location index (depth proxy).
+        for seed in 0..16u64 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let world = generate_world(&mut rng, 20);
+            for npc in world.npcs.values() {
+                if npc.disposition != crate::state::Disposition::Hostile {
+                    continue;
+                }
+                let stats = npc.combat_stats.as_ref()
+                    .expect("hostile NPC must have combat_stats");
+                let depth = npc.location as usize;
+                let (lo, hi) = match depth {
+                    0..=3 => (5, 12),
+                    4..=8 => (10, 18),
+                    _ => (15, 25),
+                };
+                assert!(
+                    stats.max_hp >= lo && stats.max_hp <= hi,
+                    "seed {}: hostile '{}' at location {} (depth tier lo={},hi={}) has max_hp {}",
+                    seed, npc.name, npc.location, lo, hi, stats.max_hp
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_shallow_hostiles_have_survivable_hp() {
+        // Regression: first-encounter enemies (location 0-3) must cap at 12 HP.
+        // Previously, unweighted SRD sampling could spawn 22+ HP monsters in
+        // room 0, making level-1 play unwinnable.
+        for seed in 0..64u64 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let world = generate_world(&mut rng, 15);
+            for npc in world.npcs.values() {
+                if npc.disposition != crate::state::Disposition::Hostile {
+                    continue;
+                }
+                if (npc.location as usize) <= 3 {
+                    let hp = npc.combat_stats.as_ref().unwrap().max_hp;
+                    assert!(
+                        hp <= 12,
+                        "seed {}: shallow hostile '{}' at loc {} has max_hp {} (>12)",
+                        seed, npc.name, npc.location, hp
+                    );
+                }
+            }
+        }
     }
 }
