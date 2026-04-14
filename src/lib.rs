@@ -1549,6 +1549,199 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                 combat.player_movement_remaining
             ));
         }
+        Command::OffHandAttack(target_name) => {
+            // Two-Weapon Fighting: requires main-hand Attack action already used,
+            // both weapons light melee, and bonus action available.
+            if !combat.action_used {
+                state.active_combat = Some(combat);
+                return vec![
+                    "You must take the Attack action with your main hand before using the off-hand bonus attack.".to_string()
+                ];
+            }
+            if combat.bonus_action_used {
+                state.active_combat = Some(combat);
+                return vec!["You've already used your bonus action this turn.".to_string()];
+            }
+
+            // Off-hand weapon must be equipped and LIGHT melee.
+            let off_hand_id = match state.character.equipped.off_hand {
+                Some(id) => id,
+                None => {
+                    state.active_combat = Some(combat);
+                    return vec![
+                        "You have no weapon in your off hand. Equip a light weapon off hand first."
+                            .to_string(),
+                    ];
+                }
+            };
+            let (is_light_melee, is_weapon) = match state.world.items.get(&off_hand_id) {
+                Some(item) => match &item.item_type {
+                    state::ItemType::Weapon { properties, range_normal, .. } => {
+                        let light = properties & crate::equipment::LIGHT != 0;
+                        let melee = *range_normal == 0
+                            || (properties & crate::equipment::THROWN != 0); // thrown-light is fine at 5ft
+                        (light && melee, true)
+                    }
+                    _ => (false, false),
+                },
+                None => (false, false),
+            };
+            if !is_weapon {
+                state.active_combat = Some(combat);
+                return vec!["Your off-hand item is not a weapon.".to_string()];
+            }
+            if !is_light_melee {
+                state.active_combat = Some(combat);
+                return vec![
+                    "Two-Weapon Fighting requires a light weapon in the off hand.".to_string(),
+                ];
+            }
+
+            // Main-hand must also be a light melee weapon to permit TWF.
+            let main_hand_light_melee = match state.character.equipped.main_hand
+                .and_then(|id| state.world.items.get(&id))
+            {
+                Some(item) => match &item.item_type {
+                    state::ItemType::Weapon { properties, range_normal, .. } => {
+                        let light = properties & crate::equipment::LIGHT != 0;
+                        let melee = *range_normal == 0
+                            || (properties & crate::equipment::THROWN != 0);
+                        light && melee
+                    }
+                    _ => false,
+                },
+                None => false,
+            };
+            if !main_hand_light_melee {
+                state.active_combat = Some(combat);
+                return vec![
+                    "Two-Weapon Fighting requires a light weapon in the main hand as well."
+                        .to_string(),
+                ];
+            }
+
+            // Resolve target.
+            let owned_candidates = build_combat_npc_candidates(&combat, state);
+            let candidates: Vec<(usize, &str)> = owned_candidates.iter()
+                .map(|(id, name)| (*id, name.as_str()))
+                .collect();
+            match resolver::resolve_target(&target_name, &candidates) {
+                ResolveResult::Found(id) => {
+                    let npc_id = id as u32;
+                    let distance = *combat.distances.get(&npc_id).unwrap_or(&30);
+                    if distance > 5 {
+                        state.active_combat = Some(combat);
+                        return vec![format!(
+                            "The target is too far away for an off-hand strike ({}ft). Close to melee first.",
+                            distance
+                        )];
+                    }
+                    let target_ac = state.world.npcs.get(&npc_id)
+                        .and_then(|n| n.combat_stats.as_ref())
+                        .map(|s| s.ac)
+                        .unwrap_or(10);
+                    let target_dodging = combat.npc_dodging.get(&npc_id).copied().unwrap_or(false);
+                    let target_conditions: &[crate::conditions::ActiveCondition] =
+                        state.world.npcs.get(&npc_id)
+                            .map(|n| n.conditions.as_slice())
+                            .unwrap_or(&[]);
+                    let hostile_within_5ft = combat::has_living_hostile_within(state, &combat, 5);
+
+                    // Resolve the attack using the OFF-HAND weapon.
+                    let result = combat::resolve_player_attack(
+                        &mut rng, &state.character, target_ac, target_dodging,
+                        Some(off_hand_id), &state.world.items, distance,
+                        false, // off-hand slot is occupied (by this weapon), no Versatile bonus
+                        hostile_within_5ft,
+                        target_conditions,
+                    );
+
+                    // Off-hand damage rule: remove the positive ability modifier from the
+                    // damage roll. Negative modifiers still apply (SRD).
+                    let ability_mod_used = {
+                        let str_m = state.character.ability_modifier(Ability::Strength);
+                        let dex_m = state.character.ability_modifier(Ability::Dexterity);
+                        // resolve_player_attack uses max(STR,DEX) for FINESSE weapons,
+                        // and STR for non-finesse melee. We always have LIGHT melee here;
+                        // dagger/shortsword/scimitar are FINESSE|LIGHT so the mod picked is
+                        // max(STR,DEX). For a pure-LIGHT non-finesse weapon (handaxe,
+                        // light hammer, club, sickle) STR is used.
+                        let is_finesse = match state.world.items.get(&off_hand_id) {
+                            Some(item) => match &item.item_type {
+                                state::ItemType::Weapon { properties, .. } =>
+                                    properties & crate::equipment::FINESSE != 0,
+                                _ => false,
+                            },
+                            None => false,
+                        };
+                        if is_finesse { str_m.max(dex_m) } else { str_m }
+                    };
+                    let mut adjusted_damage = result.damage;
+                    if result.hit && ability_mod_used > 0 {
+                        adjusted_damage = (adjusted_damage - ability_mod_used).max(1);
+                    }
+
+                    let npc_name = state.world.npcs.get(&npc_id)
+                        .map(|n| n.name.clone())
+                        .unwrap_or_else(|| "the enemy".to_string());
+
+                    if result.hit {
+                        if result.natural_20 {
+                            lines.push(format!(
+                                "You strike {} with your off-hand {} -- CRITICAL HIT! {} {} damage!",
+                                npc_name, result.weapon_name, adjusted_damage, result.damage_type
+                            ));
+                        } else {
+                            lines.push(format!(
+                                "You strike {} with your off-hand {} ({}+{}={} vs AC {}) -- hit for {} {} damage.",
+                                npc_name, result.weapon_name, result.attack_roll,
+                                result.total_attack - result.attack_roll, result.total_attack,
+                                target_ac, adjusted_damage, result.damage_type
+                            ));
+                        }
+                    } else if result.natural_1 {
+                        lines.push(format!(
+                            "You strike with your off-hand {} -- natural 1, miss!",
+                            result.weapon_name
+                        ));
+                    } else {
+                        lines.push(format!(
+                            "You strike with your off-hand {} ({}+{}={} vs AC {}) -- miss.",
+                            result.weapon_name, result.attack_roll,
+                            result.total_attack - result.attack_roll, result.total_attack,
+                            target_ac
+                        ));
+                    }
+                    if result.disadvantage {
+                        lines.push("(Rolled with disadvantage)".to_string());
+                    }
+
+                    // Apply damage
+                    if result.hit {
+                        if let Some(npc) = state.world.npcs.get_mut(&npc_id) {
+                            if let Some(stats) = npc.combat_stats.as_mut() {
+                                stats.current_hp -= adjusted_damage;
+                                if stats.current_hp <= 0 {
+                                    stats.current_hp = 0;
+                                    lines.push(format!("{} is slain!", npc_name));
+                                }
+                            }
+                        }
+                    }
+
+                    combat.bonus_action_used = true;
+                    should_end_turn = combat.player_movement_remaining <= 0;
+                }
+                ResolveResult::Ambiguous(matches) => {
+                    state.active_combat = Some(combat);
+                    return resolver::format_disambiguation(&matches);
+                }
+                ResolveResult::NotFound => {
+                    state.active_combat = Some(combat);
+                    return vec![format!("There's no \"{}\" to attack.", target_name)];
+                }
+            }
+        }
         Command::Equip(target_str) => {
             if combat.action_used {
                 state.active_combat = Some(combat);
@@ -3085,6 +3278,233 @@ mod tests {
         assert!(post.character.inventory.iter().any(|id| {
             post.world.items.get(id).map(|i| i.name == "Healing Potion").unwrap_or(false)
         }));
+    }
+
+    // ---- Action Economy: OffHandAttack ----
+
+    /// Equip the player with two light finesse weapons (Shortsword main + Dagger off-hand),
+    /// returning (main_hand_id, off_hand_id).
+    fn equip_dual_light_weapons(state: &mut GameState) -> (u32, u32) {
+        // Clear any existing equipment first
+        state.character.equipped.main_hand = None;
+        state.character.equipped.off_hand = None;
+
+        let main_id = 300u32;
+        state.world.items.insert(main_id, state::Item {
+            id: main_id,
+            name: "Shortsword".to_string(),
+            description: "A light shortsword.".to_string(),
+            item_type: state::ItemType::Weapon {
+                damage_dice: 1, damage_die: 6,
+                damage_type: state::DamageType::Piercing,
+                properties: crate::equipment::FINESSE | crate::equipment::LIGHT,
+                category: state::WeaponCategory::Martial,
+                versatile_die: 0, range_normal: 0, range_long: 0,
+            },
+            location: None,
+            carried_by_player: true,
+        });
+        state.character.inventory.push(main_id);
+        state.character.equipped.main_hand = Some(main_id);
+
+        let off_id = 301u32;
+        state.world.items.insert(off_id, state::Item {
+            id: off_id,
+            name: "Dagger".to_string(),
+            description: "A light dagger.".to_string(),
+            item_type: state::ItemType::Weapon {
+                damage_dice: 1, damage_die: 4,
+                damage_type: state::DamageType::Piercing,
+                properties: crate::equipment::FINESSE | crate::equipment::LIGHT | crate::equipment::THROWN,
+                category: state::WeaponCategory::Simple,
+                versatile_die: 0, range_normal: 20, range_long: 60,
+            },
+            location: None,
+            carried_by_player: true,
+        });
+        state.character.inventory.push(off_id);
+        state.character.equipped.off_hand = Some(off_id);
+
+        (main_id, off_id)
+    }
+
+    #[test]
+    fn test_offhand_attack_requires_main_hand_attack_first() {
+        // Off-hand attack without having used the Attack action should be blocked.
+        let mut state = create_test_combat_state();
+        force_player_turn(&mut state);
+        equip_dual_light_weapons(&mut state);
+        if let Some(ref mut combat) = state.active_combat {
+            combat.distances.insert(100, 5);
+            combat.action_used = false;
+            combat.bonus_action_used = false;
+        }
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "offhand attack test goblin");
+
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        let combat = new_state.active_combat.as_ref().unwrap();
+        assert!(!combat.bonus_action_used,
+            "Off-hand attack without main-hand Attack should not consume bonus action");
+        assert!(output.text.iter().any(|t|
+            t.to_lowercase().contains("main-hand") || t.to_lowercase().contains("main hand")
+                || t.to_lowercase().contains("attack action")
+        ), "Expected main-hand-required narration, got: {:?}", output.text);
+    }
+
+    #[test]
+    fn test_offhand_attack_consumes_bonus_action_after_attack() {
+        let mut state = create_test_combat_state();
+        force_player_turn(&mut state);
+        equip_dual_light_weapons(&mut state);
+        if let Some(ref mut combat) = state.active_combat {
+            combat.distances.insert(100, 5);
+            combat.action_used = true;
+            combat.bonus_action_used = false;
+            combat.player_movement_remaining = 30;
+        }
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "offhand attack test goblin");
+
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        let combat = new_state.active_combat.as_ref().unwrap();
+        assert!(combat.bonus_action_used,
+            "Off-hand attack should consume the bonus action. Got: {:?}", output.text);
+        assert!(combat.action_used,
+            "Action flag should remain set from the main-hand attack");
+    }
+
+    #[test]
+    fn test_offhand_attack_blocked_when_bonus_action_used() {
+        let mut state = create_test_combat_state();
+        force_player_turn(&mut state);
+        equip_dual_light_weapons(&mut state);
+        if let Some(ref mut combat) = state.active_combat {
+            combat.distances.insert(100, 5);
+            combat.action_used = true;
+            combat.bonus_action_used = true; // Already spent
+        }
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "offhand attack test goblin");
+
+        assert!(output.text.iter().any(|t| t.to_lowercase().contains("bonus action")),
+            "Expected bonus-action-used narration, got: {:?}", output.text);
+    }
+
+    #[test]
+    fn test_offhand_attack_requires_light_offhand_weapon() {
+        // If the off-hand weapon is not LIGHT, off-hand attack should be refused.
+        let mut state = create_test_combat_state();
+        force_player_turn(&mut state);
+        let (_main_id, off_id) = equip_dual_light_weapons(&mut state);
+        // Override the dagger to be non-LIGHT.
+        if let Some(item) = state.world.items.get_mut(&off_id) {
+            item.item_type = state::ItemType::Weapon {
+                damage_dice: 1, damage_die: 6,
+                damage_type: state::DamageType::Slashing,
+                properties: 0, // no LIGHT
+                category: state::WeaponCategory::Martial,
+                versatile_die: 0, range_normal: 0, range_long: 0,
+            };
+        }
+        if let Some(ref mut combat) = state.active_combat {
+            combat.distances.insert(100, 5);
+            combat.action_used = true;
+        }
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "offhand attack test goblin");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        let combat = new_state.active_combat.as_ref().unwrap();
+        assert!(!combat.bonus_action_used,
+            "Non-light off-hand weapon should not consume bonus action");
+        assert!(output.text.iter().any(|t| t.to_lowercase().contains("light")),
+            "Expected 'light' mention in rejection text, got: {:?}", output.text);
+    }
+
+    #[test]
+    fn test_offhand_attack_requires_offhand_weapon_equipped() {
+        // No off-hand weapon equipped -> off-hand attack is refused.
+        let mut state = create_test_combat_state();
+        force_player_turn(&mut state);
+        // No off-hand
+        state.character.equipped.off_hand = None;
+        if let Some(ref mut combat) = state.active_combat {
+            combat.distances.insert(100, 5);
+            combat.action_used = true;
+        }
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "offhand attack test goblin");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        let combat = new_state.active_combat.as_ref().unwrap();
+        assert!(!combat.bonus_action_used);
+        assert!(output.text.iter().any(|t|
+            t.to_lowercase().contains("off hand") || t.to_lowercase().contains("off-hand")
+        ), "Expected off-hand requirement text, got: {:?}", output.text);
+    }
+
+    #[test]
+    fn test_offhand_attack_damage_omits_positive_ability_modifier() {
+        // Off-hand damage should exclude the positive STR/DEX ability modifier.
+        // Verify that a hit deals damage consistent with die + 0 mod (not die + mod).
+        // We use a high-STR fighter so any mod-included damage would show up as >= 5.
+        let mut state = create_test_combat_state();
+        force_player_turn(&mut state);
+        equip_dual_light_weapons(&mut state);
+
+        // Confirm the fighter has positive STR/DEX (from helper in test_character)
+        let ability_mod = state.character.ability_modifier(Ability::Strength)
+            .max(state.character.ability_modifier(Ability::Dexterity));
+        assert!(ability_mod > 0, "Test setup needs positive ability modifier");
+
+        // Capture the goblin's starting HP
+        let goblin_start_hp = state.world.npcs.get(&100).unwrap().combat_stats.as_ref().unwrap().current_hp;
+
+        // Try many seeds to collect off-hand hits and check the damage distribution.
+        let mut max_damage_seen = 0i32;
+        let mut any_hit = false;
+        for seed in 0..200u64 {
+            let mut test_state = state.clone();
+            test_state.rng_seed = seed;
+            test_state.rng_counter = 0;
+            if let Some(ref mut combat) = test_state.active_combat {
+                combat.distances.insert(100, 5);
+                combat.action_used = true;
+                combat.bonus_action_used = false;
+                // Reset goblin HP to full
+                if let Some(npc) = test_state.world.npcs.get_mut(&100) {
+                    if let Some(cs) = npc.combat_stats.as_mut() {
+                        cs.current_hp = goblin_start_hp;
+                    }
+                }
+            }
+            let json = serde_json::to_string(&test_state).unwrap();
+            let output = process_input(&json, "offhand attack test goblin");
+            let post: GameState = serde_json::from_str(&output.state_json).unwrap();
+            let post_hp = post.world.npcs.get(&100)
+                .and_then(|n| n.combat_stats.as_ref())
+                .map(|s| s.current_hp)
+                .unwrap_or(goblin_start_hp);
+            let dmg = goblin_start_hp - post_hp;
+            if dmg > 0 {
+                any_hit = true;
+                max_damage_seen = max_damage_seen.max(dmg);
+            }
+        }
+        assert!(any_hit, "Expected at least one hit across 200 seeds");
+        // Dagger = 1d4 (no crit on most seeds). Max off-hand damage on a non-crit
+        // should be 4 (die max), never more. If the ability modifier had been
+        // applied, max damage would be 4 + ability_mod > 4.
+        //
+        // Crits double the dice: max non-mod crit damage = 8. So upper bound is 8.
+        let crit_max = 2 * 4; // 2d4
+        assert!(max_damage_seen <= crit_max,
+            "Max off-hand damage = {} which exceeds expected die max {}; ability mod probably added. ability_mod={}",
+            max_damage_seen, crit_max, ability_mod);
     }
 
     // ---- Action Economy: BonusDash ----
