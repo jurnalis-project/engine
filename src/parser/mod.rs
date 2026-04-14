@@ -34,6 +34,9 @@ pub enum Command {
     Dodge,
     Disengage,
     Dash,
+    // Rest commands
+    ShortRest,
+    LongRest,
     Unknown(String),
 }
 
@@ -125,6 +128,12 @@ pub fn parse(input: &str) -> Command {
             "new game" => {
                 return Command::NewGame;
             }
+            "short rest" => {
+                return Command::ShortRest;
+            }
+            "long rest" => {
+                return Command::LongRest;
+            }
             _ => {}
         }
     }
@@ -207,6 +216,7 @@ pub fn parse(input: &str) -> Command {
         "load" | "restore" => { if args.is_empty() { Command::Load(None) } else { Command::Load(Some(args)) } }
         "help" | "?" | "commands" => { if args.is_empty() { Command::Help(None) } else { Command::Help(Some(args)) } }
         "newgame" | "restart" => Command::NewGame,
+        "rest" => Command::Unknown("Short rest or long rest? Try 'short rest' or 'long rest'.".to_string()),
         "objective" | "goal" | "quest" => Command::Objective,
         "map" => Command::Map,
         _ => Command::Unknown(input.to_string()),
@@ -683,5 +693,33 @@ mod tests {
         assert_eq!(parse("newgame"), Command::NewGame);
         assert_eq!(parse("restart"), Command::NewGame);
         assert_eq!(parse("New Game"), Command::NewGame);
+    }
+
+    #[test]
+    fn test_short_rest_command() {
+        assert_eq!(parse("short rest"), Command::ShortRest);
+        assert_eq!(parse("Short Rest"), Command::ShortRest);
+        assert_eq!(parse("SHORT REST"), Command::ShortRest);
+    }
+
+    #[test]
+    fn test_long_rest_command() {
+        assert_eq!(parse("long rest"), Command::LongRest);
+        assert_eq!(parse("Long Rest"), Command::LongRest);
+        assert_eq!(parse("LONG REST"), Command::LongRest);
+    }
+
+    #[test]
+    fn test_bare_rest_disambiguates() {
+        match parse("rest") {
+            Command::Unknown(s) => {
+                assert!(
+                    s.to_lowercase().contains("short") && s.to_lowercase().contains("long"),
+                    "Bare 'rest' should ask short vs long. Got: {}",
+                    s,
+                );
+            }
+            other => panic!("Expected Unknown for bare 'rest', got {:?}", other),
+        }
     }
 }

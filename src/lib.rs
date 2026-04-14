@@ -10,6 +10,7 @@ pub mod output;
 pub mod combat;
 pub mod conditions;
 pub mod spells;
+pub mod rest;
 
 use std::collections::{HashMap, HashSet};
 use rand::SeedableRng;
@@ -1102,6 +1103,12 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
         Command::NewGame => {
             vec!["You can only start a new game after being defeated.".to_string()]
         }
+        Command::ShortRest => {
+            rest::handle_short_rest(state, &mut rng)
+        }
+        Command::LongRest => {
+            rest::handle_long_rest(state, &mut rng)
+        }
         Command::Unknown(s) => {
             if s.is_empty() {
                 vec![]
@@ -1864,6 +1871,10 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                     lines.push("That spell is not implemented yet.".to_string());
                 }
             }
+        }
+        Command::ShortRest | Command::LongRest => {
+            state.active_combat = Some(combat);
+            return vec!["You cannot rest during combat.".to_string()];
         }
         Command::Unknown(s) => {
             state.active_combat = Some(combat);
