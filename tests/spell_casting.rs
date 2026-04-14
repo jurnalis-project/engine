@@ -100,6 +100,7 @@ fn create_wizard_combat_state_json() -> String {
         npc_dodging: HashMap::new(),
         npc_disengaging: HashMap::new(),
         player_shield_ac_bonus: 0,
+        pending_reaction: None,
     });
 
     serde_json::to_string(&state).unwrap()
@@ -161,6 +162,7 @@ fn create_wizard_multi_combat_state_json() -> String {
         npc_dodging: HashMap::new(),
         npc_disengaging: HashMap::new(),
         player_shield_ac_bonus: 0,
+        pending_reaction: None,
     });
 
     serde_json::to_string(&state).unwrap()

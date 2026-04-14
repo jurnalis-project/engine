@@ -99,6 +99,7 @@ fn fake_combat() -> CombatState {
         npc_dodging: HashMap::new(),
         npc_disengaging: HashMap::new(),
         player_shield_ac_bonus: 0,
+        pending_reaction: None,
     }
 }
 

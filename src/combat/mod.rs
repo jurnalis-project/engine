@@ -20,6 +20,39 @@ pub enum Combatant {
     Npc(NpcId),
 }
 
+/// A reaction prompt awaiting player input.
+///
+/// When a reaction-triggering event fires during NPC turn processing,
+/// the engine records the context here and returns a prompt. The next
+/// player input is interpreted against this pending reaction (yes/no).
+/// `resume_npc_index` points at the initiative entry whose turn should
+/// run next after the reaction resolves -- used to pick up NPC-turn
+/// processing where it paused.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum PendingReaction {
+    /// Offer the player a Shield spell reaction in response to an
+    /// incoming attack that would land.
+    Shield {
+        attacker_npc_id: NpcId,
+        /// Damage the player would take if the attack resolves unmodified.
+        incoming_damage: i32,
+        /// AC before the Shield bonus (for re-resolving the attack after
+        /// the reaction is accepted).
+        pre_roll_ac: i32,
+        /// Initiative index to resume NPC turn processing after the
+        /// reaction completes.
+        resume_npc_index: usize,
+    },
+    /// Offer the player an opportunity attack on an NPC leaving melee
+    /// reach without disengaging.
+    OpportunityAttack {
+        fleeing_npc_id: NpcId,
+        old_distance: u32,
+        new_distance: u32,
+        resume_npc_index: usize,
+    },
+}
+
 /// Full combat state, stored in GameState.active_combat.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CombatState {
@@ -60,6 +93,11 @@ pub struct CombatState {
     /// Shield spell AC bonus (resets at start of player's next turn).
     #[serde(default)]
     pub player_shield_ac_bonus: i32,
+    /// A reaction prompt awaiting the player's decision. When set, the
+    /// engine interprets the next input as a yes/no response before
+    /// resuming normal combat processing.
+    #[serde(default)]
+    pub pending_reaction: Option<PendingReaction>,
 }
 
 impl CombatState {
@@ -221,6 +259,7 @@ pub fn start_combat(
         npc_dodging: HashMap::new(),
         npc_disengaging: HashMap::new(),
         player_shield_ac_bonus: 0,
+        pending_reaction: None,
     }
 }
 
@@ -1338,6 +1377,7 @@ mod tests {
             npc_dodging: HashMap::new(),
             npc_disengaging: HashMap::new(),
             player_shield_ac_bonus: 0,
+            pending_reaction: None,
         };
 
         // Kill the first goblin (the one with stats)
@@ -1700,6 +1740,77 @@ mod tests {
         assert!(!combat.free_interaction_used, "Free interaction should reset at start of player turn");
         assert_eq!(combat.player_movement_remaining, state.character.speed,
             "Movement should reset to speed at start of player turn");
+    }
+
+    #[test]
+    fn test_pending_reaction_defaults_to_none_and_serialises() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let state = test_state_with_goblin();
+        let combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+
+        assert!(combat.pending_reaction.is_none(),
+            "Fresh combat should have no pending reaction");
+
+        // Round trip
+        let json = serde_json::to_string(&combat).unwrap();
+        let deserialised: CombatState = serde_json::from_str(&json).unwrap();
+        assert!(deserialised.pending_reaction.is_none());
+    }
+
+    #[test]
+    fn test_pending_reaction_opportunity_attack_round_trips() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let state = test_state_with_goblin();
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+
+        combat.pending_reaction = Some(PendingReaction::OpportunityAttack {
+            fleeing_npc_id: 0,
+            old_distance: 5,
+            new_distance: 30,
+            resume_npc_index: 1,
+        });
+
+        let json = serde_json::to_string(&combat).unwrap();
+        let deserialised: CombatState = serde_json::from_str(&json).unwrap();
+        match deserialised.pending_reaction {
+            Some(PendingReaction::OpportunityAttack {
+                fleeing_npc_id, old_distance, new_distance, resume_npc_index,
+            }) => {
+                assert_eq!(fleeing_npc_id, 0);
+                assert_eq!(old_distance, 5);
+                assert_eq!(new_distance, 30);
+                assert_eq!(resume_npc_index, 1);
+            }
+            other => panic!("Expected OpportunityAttack, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_pending_reaction_shield_round_trips() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let state = test_state_with_goblin();
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+
+        combat.pending_reaction = Some(PendingReaction::Shield {
+            attacker_npc_id: 0,
+            incoming_damage: 7,
+            pre_roll_ac: 15,
+            resume_npc_index: 1,
+        });
+
+        let json = serde_json::to_string(&combat).unwrap();
+        let deserialised: CombatState = serde_json::from_str(&json).unwrap();
+        match deserialised.pending_reaction {
+            Some(PendingReaction::Shield {
+                attacker_npc_id, incoming_damage, pre_roll_ac, resume_npc_index,
+            }) => {
+                assert_eq!(attacker_npc_id, 0);
+                assert_eq!(incoming_damage, 7);
+                assert_eq!(pre_roll_ac, 15);
+                assert_eq!(resume_npc_index, 1);
+            }
+            other => panic!("Expected Shield, got {:?}", other),
+        }
     }
 
     #[test]

@@ -369,6 +369,7 @@ mod tests {
             npc_dodging: HashMap::new(),
             npc_disengaging: HashMap::new(),
             player_shield_ac_bonus: 0,
+            pending_reaction: None,
         });
         assert_eq!(check_rest_allowed(&state), Err(RestDenial::InCombat));
     }
@@ -627,6 +628,7 @@ mod tests {
             npc_dodging: HashMap::new(),
             npc_disengaging: HashMap::new(),
             player_shield_ac_bonus: 0,
+            pending_reaction: None,
         });
         state.character.current_hp = 1;
         let before_time = state.in_world_minutes;
