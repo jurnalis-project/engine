@@ -898,6 +898,8 @@ mod tests {
             active_combat: None,
             ironman_mode: false,
             progress: crate::state::ProgressState::default(),
+            in_world_minutes: 0,
+            last_long_rest_minutes: None,
         }
     }
 
@@ -1232,6 +1234,8 @@ mod tests {
             active_combat: None,
             ironman_mode: false,
             progress: crate::state::ProgressState::default(),
+            in_world_minutes: 0,
+            last_long_rest_minutes: None,
         }
     }
 

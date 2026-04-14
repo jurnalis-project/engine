@@ -46,6 +46,15 @@ pub struct GameState {
     pub ironman_mode: bool,
     #[serde(default)]
     pub progress: ProgressState,
+    /// Monotonic in-world time counter in minutes. Advanced by rest, travel,
+    /// and other time-passing actions. Starts at 0.
+    #[serde(default)]
+    pub in_world_minutes: u64,
+    /// `in_world_minutes` at the start of the most recent completed long rest,
+    /// used to enforce the SRD 5.1 "one long rest per 24 hours" rule.
+    /// `None` if the character has never taken a long rest.
+    #[serde(default)]
+    pub last_long_rest_minutes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -260,6 +269,8 @@ mod tests {
             active_combat: None,
             ironman_mode: false,
             progress: ProgressState::default(),
+            in_world_minutes: 0,
+            last_long_rest_minutes: None,
         }
     }
 
@@ -437,6 +448,25 @@ mod tests {
         let json = serde_json::to_string(&phase).unwrap();
         let loaded: GamePhase = serde_json::from_str(&json).unwrap();
         assert_eq!(loaded, GamePhase::Victory);
+    }
+
+    #[test]
+    fn test_new_state_has_zero_in_world_time() {
+        let state = test_state();
+        assert_eq!(state.in_world_minutes, 0);
+        assert_eq!(state.last_long_rest_minutes, None);
+    }
+
+    #[test]
+    fn test_load_game_missing_rest_fields_defaults() {
+        let state = test_state();
+        let mut json: serde_json::Value = serde_json::from_str(&save_game(&state).unwrap()).unwrap();
+        json.as_object_mut().unwrap().remove("in_world_minutes");
+        json.as_object_mut().unwrap().remove("last_long_rest_minutes");
+
+        let loaded = load_game(&json.to_string()).unwrap();
+        assert_eq!(loaded.in_world_minutes, 0);
+        assert_eq!(loaded.last_long_rest_minutes, None);
     }
 
     #[test]

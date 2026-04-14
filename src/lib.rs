@@ -51,6 +51,8 @@ pub fn new_game(seed: u64, ironman_mode: bool) -> GameOutput {
         active_combat: None,
         ironman_mode,
         progress: state::ProgressState::default(),
+        in_world_minutes: 0,
+        last_long_rest_minutes: None,
     };
 
     let state_json = serde_json::to_string(&state).unwrap();
@@ -3581,6 +3583,8 @@ mod tests {
             active_combat: None,
             ironman_mode: false,
             progress: state::ProgressState::default(),
+            in_world_minutes: 0,
+            last_long_rest_minutes: None,
         }
     }
 
@@ -3740,6 +3744,8 @@ mod tests {
             active_combat: None,
             ironman_mode: false,
             progress: state::ProgressState::default(),
+            in_world_minutes: 0,
+            last_long_rest_minutes: None,
         }
     }
 
