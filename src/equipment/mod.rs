@@ -1,4 +1,6 @@
 // jurnalis-engine/src/equipment/mod.rs
+pub mod magic;
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use crate::types::ItemId;
