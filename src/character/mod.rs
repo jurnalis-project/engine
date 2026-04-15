@@ -2,6 +2,7 @@
 pub mod race;
 pub mod class;
 pub mod background;
+pub mod feat;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
