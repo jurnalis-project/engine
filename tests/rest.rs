@@ -568,3 +568,154 @@ fn short_then_long_rest_sequence_produces_fully_rested_character() {
     assert!(end.character.hit_dice_remaining >= mid.character.hit_dice_remaining + 1);
     assert!(end.character.hit_dice_remaining <= end.character.level);
 }
+
+// ---------- rest refreshes for new SRD classes (feat/remaining-srd-classes) --
+
+#[test]
+fn barbarian_short_rest_refunds_one_rage_use_capped_at_max() {
+    let mut state = make_exploration_state(Class::Barbarian);
+    // Level 1 Barbarian: max Rage = 2. Drain both, then short rest -> +1.
+    state.character.class_features.rage_uses_remaining = 0;
+
+    let out = process_input(&into_json(&state), "short rest");
+    let mid = from_json(&out.state_json);
+    assert_eq!(mid.character.class_features.rage_uses_remaining, 1,
+        "Short rest should refund exactly one Rage use");
+
+    // Second short rest caps at max (2), not 3.
+    let out2 = process_input(&into_json(&mid), "short rest");
+    let after = from_json(&out2.state_json);
+    assert_eq!(after.character.class_features.rage_uses_remaining, 2,
+        "Rage uses should cap at max");
+}
+
+#[test]
+fn barbarian_long_rest_refunds_all_rage_uses_and_clears_rage_active() {
+    let mut state = make_exploration_state(Class::Barbarian);
+    state.character.class_features.rage_uses_remaining = 0;
+    state.character.class_features.rage_active = true;
+    // Satisfy long-rest preconditions: ensure no recent long-rest cooldown.
+    state.in_world_minutes = 60 * 24;
+    state.last_long_rest_minutes = None;
+
+    let out = process_input(&into_json(&state), "long rest");
+    let after = from_json(&out.state_json);
+    assert_eq!(after.character.class_features.rage_uses_remaining, 2,
+        "Long rest refunds all Rage uses to max");
+    assert!(!after.character.class_features.rage_active,
+        "Long rest clears rage_active");
+}
+
+#[test]
+fn bard_long_rest_refreshes_bardic_inspiration() {
+    let mut state = make_exploration_state(Class::Bard);
+    // Force CHA mod = +2 so the max is clearly >= 2 (scores_balanced uses CHA 8).
+    state.character.ability_scores.insert(Ability::Charisma, 14);
+    state.character.class_features.bardic_inspiration_remaining = 0;
+    state.in_world_minutes = 60 * 24;
+    state.last_long_rest_minutes = None;
+
+    let out = process_input(&into_json(&state), "long rest");
+    let after = from_json(&out.state_json);
+    // max(1, CHA_mod) with CHA 14 -> +2 -> expect 2.
+    assert_eq!(after.character.class_features.bardic_inspiration_remaining, 2);
+}
+
+#[test]
+fn bard_long_rest_min_one_bardic_inspiration_even_with_low_cha() {
+    let mut state = make_exploration_state(Class::Bard);
+    // CHA 8 -> -1 mod. Feature should still grant 1 use.
+    state.character.class_features.bardic_inspiration_remaining = 0;
+    state.in_world_minutes = 60 * 24;
+    state.last_long_rest_minutes = None;
+
+    let out = process_input(&into_json(&state), "long rest");
+    let after = from_json(&out.state_json);
+    assert_eq!(after.character.class_features.bardic_inspiration_remaining, 1,
+        "Minimum 1 Bardic Inspiration even with low CHA");
+}
+
+#[test]
+fn monk_short_rest_refreshes_ki_to_monk_level() {
+    let mut state = make_exploration_state(Class::Monk);
+    // Ki unlocks at level 2; set level 3 so max_ki = 3.
+    state.character.level = 3;
+    state.character.class_features.ki_points_remaining = 0;
+
+    let out = process_input(&into_json(&state), "short rest");
+    let after = from_json(&out.state_json);
+    assert_eq!(after.character.class_features.ki_points_remaining, 3,
+        "Monk short rest should refresh Ki to monk level");
+}
+
+#[test]
+fn monk_level_one_short_rest_is_noop_for_ki() {
+    let mut state = make_exploration_state(Class::Monk);
+    // Level 1 monk: no Ki yet.
+    state.character.class_features.ki_points_remaining = 0;
+
+    let out = process_input(&into_json(&state), "short rest");
+    let after = from_json(&out.state_json);
+    assert_eq!(after.character.class_features.ki_points_remaining, 0,
+        "Level 1 Monk has no Ki and short rest shouldn't grant any");
+}
+
+#[test]
+fn warlock_short_rest_restores_pact_magic_spell_slots() {
+    let mut state = make_exploration_state(Class::Warlock);
+    // Warlock starts with [1] slot at level 1; drain it.
+    assert_eq!(state.character.spell_slots_max, vec![1]);
+    state.character.spell_slots_remaining = vec![0];
+
+    let out = process_input(&into_json(&state), "short rest");
+    let after = from_json(&out.state_json);
+    assert_eq!(after.character.spell_slots_remaining, vec![1],
+        "Warlock short rest restores Pact Magic slots");
+}
+
+#[test]
+fn cleric_short_rest_refunds_channel_divinity_at_or_above_level_two() {
+    let mut state = make_exploration_state(Class::Cleric);
+    // Level 2 Cleric has 1 Channel Divinity.
+    state.character.level = 2;
+    state.character.class_features.channel_divinity_remaining = 0;
+
+    let out = process_input(&into_json(&state), "short rest");
+    let after = from_json(&out.state_json);
+    assert_eq!(after.character.class_features.channel_divinity_remaining, 1);
+}
+
+#[test]
+fn cleric_level_one_short_rest_does_not_grant_channel_divinity() {
+    let state = make_exploration_state(Class::Cleric);
+    // Level 1 Cleric has 0 CD.
+    assert_eq!(state.character.class_features.channel_divinity_remaining, 0);
+
+    let out = process_input(&into_json(&state), "short rest");
+    let after = from_json(&out.state_json);
+    assert_eq!(after.character.class_features.channel_divinity_remaining, 0,
+        "Cleric short rest at level 1 does not grant Channel Divinity");
+}
+
+#[test]
+fn paladin_short_rest_refunds_channel_divinity_at_or_above_level_three() {
+    let mut state = make_exploration_state(Class::Paladin);
+    state.character.level = 3;
+    state.character.class_features.channel_divinity_remaining = 0;
+
+    let out = process_input(&into_json(&state), "short rest");
+    let after = from_json(&out.state_json);
+    assert_eq!(after.character.class_features.channel_divinity_remaining, 1);
+}
+
+#[test]
+fn paladin_level_one_short_rest_does_not_grant_channel_divinity() {
+    let state = make_exploration_state(Class::Paladin);
+    // Level 1 Paladin has 0 CD (Paladin unlocks at L3).
+    assert_eq!(state.character.class_features.channel_divinity_remaining, 0);
+
+    let out = process_input(&into_json(&state), "short rest");
+    let after = from_json(&out.state_json);
+    assert_eq!(after.character.class_features.channel_divinity_remaining, 0);
+}
+

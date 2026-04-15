@@ -3490,6 +3490,245 @@ mod tests {
         }
     }
 
+    // ---- Orchestrator dispatch: class-feature commands (feat/remaining-srd-classes)
+    //
+    // These tests build an exploration-phase GameState with a chosen class and
+    // verify the command dispatch paths for Rage / BardicInspiration /
+    // ChannelDivinity / LayOnHands / Ki, covering both happy and error paths
+    // per the `docs/specs/srd-classes.md` acceptance criteria.
+
+    fn exploration_state_with_class(class: Class) -> GameState {
+        let mut state = create_test_exploration_state();
+        state.character.class = class;
+        state.character.save_proficiencies = class.saving_throw_proficiencies();
+        state.character.spell_slots_max = class.starting_spell_slots();
+        state.character.spell_slots_remaining = state.character.spell_slots_max.clone();
+        // Re-initialise feature state for the chosen class (fighter default
+        // would leak Second Wind flags etc. otherwise).
+        state.character.class_features = character::class::ClassFeatureState::default();
+        let cha_mod = state.character.ability_modifier(Ability::Charisma);
+        character::init_class_features(
+            &mut state.character.class_features,
+            class,
+            1,
+            cha_mod,
+            &state.character.known_spells,
+        );
+        state
+    }
+
+    // ---- Rage ---------------------------------------------------------------
+
+    #[test]
+    fn test_rage_dispatch_non_barbarian_errors_and_no_state_change() {
+        let state = exploration_state_with_class(Class::Fighter);
+        let before = state.character.class_features.clone();
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "rage");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(new_state.character.class_features, before);
+        assert!(output.text.iter().any(|l| l.to_lowercase().contains("barbarian")),
+            "Expected 'barbarian' in error. Got: {:?}", output.text);
+    }
+
+    #[test]
+    fn test_rage_dispatch_barbarian_zero_uses_errors_and_no_state_change() {
+        let mut state = exploration_state_with_class(Class::Barbarian);
+        state.character.class_features.rage_uses_remaining = 0;
+        let before = state.character.class_features.clone();
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "rage");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(new_state.character.class_features, before);
+        assert!(output.text.iter().any(|l| l.to_lowercase().contains("no rage")),
+            "Expected 'no Rage' in error. Got: {:?}", output.text);
+    }
+
+    #[test]
+    fn test_rage_dispatch_barbarian_decrements_and_flips_active() {
+        let state = exploration_state_with_class(Class::Barbarian);
+        let starting_uses = state.character.class_features.rage_uses_remaining;
+        assert!(starting_uses > 0, "Barbarian should start with Rage uses");
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "rage");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(new_state.character.class_features.rage_uses_remaining, starting_uses - 1);
+        assert!(new_state.character.class_features.rage_active);
+    }
+
+    #[test]
+    fn test_rage_dispatch_already_raging_errors() {
+        let mut state = exploration_state_with_class(Class::Barbarian);
+        state.character.class_features.rage_active = true;
+        let uses_before = state.character.class_features.rage_uses_remaining;
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "rage");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(new_state.character.class_features.rage_uses_remaining, uses_before);
+        assert!(output.text.iter().any(|l| l.to_lowercase().contains("already")));
+    }
+
+    // ---- Bardic Inspiration -------------------------------------------------
+
+    #[test]
+    fn test_bardic_inspiration_dispatch_non_bard_errors() {
+        let state = exploration_state_with_class(Class::Fighter);
+        let before = state.character.class_features.clone();
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "inspire ally");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(new_state.character.class_features, before);
+        assert!(output.text.iter().any(|l| l.to_lowercase().contains("bard")));
+    }
+
+    #[test]
+    fn test_bardic_inspiration_dispatch_bard_decrements() {
+        let mut state = exploration_state_with_class(Class::Bard);
+        // Ensure at least one use (CHA mod could be >=1, but be safe).
+        state.character.class_features.bardic_inspiration_remaining = 3;
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "inspire ally");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(new_state.character.class_features.bardic_inspiration_remaining, 2);
+        assert!(output.text.iter().any(|l| l.contains("ally")));
+    }
+
+    #[test]
+    fn test_bardic_inspiration_dispatch_bard_zero_uses_errors() {
+        let mut state = exploration_state_with_class(Class::Bard);
+        state.character.class_features.bardic_inspiration_remaining = 0;
+        let before = state.character.class_features.clone();
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "inspire ally");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(new_state.character.class_features, before);
+        assert!(output.text.iter().any(|l| l.to_lowercase().contains("no bardic inspiration")),
+            "Got: {:?}", output.text);
+    }
+
+    // ---- Channel Divinity ---------------------------------------------------
+
+    #[test]
+    fn test_channel_divinity_dispatch_non_cleric_paladin_errors() {
+        let state = exploration_state_with_class(Class::Fighter);
+        let before = state.character.class_features.clone();
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "channel divinity");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(new_state.character.class_features, before);
+        assert!(output.text.iter().any(|l| l.to_lowercase().contains("cleric")
+            || l.to_lowercase().contains("paladin")));
+    }
+
+    #[test]
+    fn test_channel_divinity_dispatch_level_one_cleric_errors() {
+        // Level-1 Cleric has channel_divinity_remaining = 0 (unlocks at L2).
+        let state = exploration_state_with_class(Class::Cleric);
+        assert_eq!(state.character.class_features.channel_divinity_remaining, 0);
+        let before = state.character.class_features.clone();
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "channel divinity");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(new_state.character.class_features, before);
+        assert!(output.text.iter().any(|l| l.to_lowercase().contains("no channel")),
+            "Got: {:?}", output.text);
+    }
+
+    #[test]
+    fn test_channel_divinity_dispatch_cleric_with_uses_decrements() {
+        let mut state = exploration_state_with_class(Class::Cleric);
+        state.character.class_features.channel_divinity_remaining = 1;
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "channel divinity");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(new_state.character.class_features.channel_divinity_remaining, 0);
+        assert!(output.text.iter().any(|l| l.to_lowercase().contains("divine")),
+            "Got: {:?}", output.text);
+    }
+
+    // ---- Lay on Hands -------------------------------------------------------
+
+    #[test]
+    fn test_lay_on_hands_dispatch_non_paladin_errors() {
+        let state = exploration_state_with_class(Class::Fighter);
+        let before = state.character.class_features.clone();
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "lay on hands");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(new_state.character.class_features, before);
+        assert!(output.text.iter().any(|l| l.to_lowercase().contains("paladin")));
+    }
+
+    #[test]
+    fn test_lay_on_hands_dispatch_paladin_heals_and_deducts_pool() {
+        let mut state = exploration_state_with_class(Class::Paladin);
+        state.character.current_hp = state.character.max_hp - 4;
+        let pool_before = state.character.class_features.lay_on_hands_pool;
+        assert!(pool_before >= 4, "Paladin starts with pool >= 4");
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "lay on hands");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        // Heals up to missing HP, capped by the pool.
+        assert_eq!(new_state.character.current_hp, new_state.character.max_hp);
+        assert_eq!(
+            new_state.character.class_features.lay_on_hands_pool,
+            pool_before - 4
+        );
+        assert!(output.text.iter().any(|l| l.to_lowercase().contains("lay hands")
+            || l.to_lowercase().contains("restoring")));
+    }
+
+    #[test]
+    fn test_lay_on_hands_dispatch_empty_pool_errors() {
+        let mut state = exploration_state_with_class(Class::Paladin);
+        state.character.class_features.lay_on_hands_pool = 0;
+        let before = state.character.class_features.clone();
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "lay on hands");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(new_state.character.class_features, before);
+        assert!(output.text.iter().any(|l| l.to_lowercase().contains("empty")
+            || l.to_lowercase().contains("no lay")));
+    }
+
+    // ---- Ki / Focus ---------------------------------------------------------
+
+    #[test]
+    fn test_ki_dispatch_non_monk_errors() {
+        let state = exploration_state_with_class(Class::Fighter);
+        let before = state.character.class_features.clone();
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "ki flurry");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(new_state.character.class_features, before);
+        assert!(output.text.iter().any(|l| l.to_lowercase().contains("monk")));
+    }
+
+    #[test]
+    fn test_ki_dispatch_level_one_monk_has_no_ki() {
+        // Level-1 Monk starts with 0 Ki per SRD.
+        let state = exploration_state_with_class(Class::Monk);
+        assert_eq!(state.character.class_features.ki_points_remaining, 0);
+        let before = state.character.class_features.clone();
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "ki flurry");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(new_state.character.class_features, before);
+        assert!(output.text.iter().any(|l| l.to_lowercase().contains("no ki")));
+    }
+
+    #[test]
+    fn test_ki_dispatch_monk_with_ki_decrements() {
+        let mut state = exploration_state_with_class(Class::Monk);
+        state.character.class_features.ki_points_remaining = 2;
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "ki flurry");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(new_state.character.class_features.ki_points_remaining, 1);
+        assert!(output.text.iter().any(|l| l.to_lowercase().contains("flurry")),
+            "Got: {:?}", output.text);
+    }
+
     #[test]
     fn test_full_character_creation_flow() {
         let output = new_game(42, false);
