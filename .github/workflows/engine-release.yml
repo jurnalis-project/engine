@@ -1,0 +1,176 @@
+name: Engine Release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Cargo.toml"
+
+permissions:
+  contents: write
+
+jobs:
+  check-version:
+    name: Check engine version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.read.outputs.version }}
+      should_release: ${{ steps.gate.outputs.should_release }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read engine version
+        id: read
+        run: |
+          set -euo pipefail
+          version=$(grep -m1 '^version' Cargo.toml | sed -E 's/version *= *"([^"]+)"/\1/')
+          if [ -z "$version" ]; then
+            echo "Failed to read version from Cargo.toml" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Engine version: $version"
+
+      - name: Check if tag already exists
+        id: gate
+        run: |
+          set -euo pipefail
+          tag="engine-v${{ steps.read.outputs.version }}"
+          if git ls-remote --tags --exit-code origin "refs/tags/$tag" >/dev/null 2>&1; then
+            echo "Tag $tag already exists. Skipping release."
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Tag $tag does not exist. Proceeding."
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: check-version
+    if: needs.check-version.outputs.should_release == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive: tar.gz
+            bin: jurnalis-cli
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            archive: tar.gz
+            bin: jurnalis-cli
+          - target: x86_64-apple-darwin
+            os: macos-13
+            archive: tar.gz
+            bin: jurnalis-cli
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            archive: zip
+            bin: jurnalis-cli.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+
+      - name: Build jurnalis-cli
+        run: cargo build --release --bin jurnalis-cli --target ${{ matrix.target }}
+
+      - name: Package (unix)
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          set -euo pipefail
+          staging="jurnalis-cli-${{ needs.check-version.outputs.version }}-${{ matrix.target }}"
+          mkdir -p "$staging"
+          cp "target/${{ matrix.target }}/release/${{ matrix.bin }}" "$staging/"
+          tar -czf "$staging.tar.gz" "$staging"
+          echo "ASSET=$staging.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Package (windows)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          $staging = "jurnalis-cli-${{ needs.check-version.outputs.version }}-${{ matrix.target }}"
+          New-Item -ItemType Directory -Force -Path $staging | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/${{ matrix.bin }}" "$staging/"
+          Compress-Archive -Path $staging -DestinationPath "$staging.zip"
+          Add-Content -Path $env:GITHUB_ENV -Value "ASSET=$staging.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: jurnalis-cli-${{ matrix.target }}
+          path: ${{ env.ASSET }}
+          if-no-files-found: error
+
+  release:
+    name: Create GitHub release
+    needs: [check-version, build]
+    if: needs.check-version.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Build changelog
+        id: changelog
+        run: |
+          set -euo pipefail
+          version="${{ needs.check-version.outputs.version }}"
+          tag="engine-v$version"
+
+          prev_tag=$(git tag --list 'engine-v*' --sort=-creatordate | head -n1 || true)
+
+          {
+            echo "## Changes"
+            echo
+            if [ -n "$prev_tag" ]; then
+              git log --pretty=format:'- %h %s' "$prev_tag"..HEAD
+              echo
+              echo
+              echo "Full diff: $prev_tag...$tag"
+            else
+              echo "Initial engine release."
+              echo
+              git log --pretty=format:'- %h %s' HEAD
+            fi
+          } > CHANGELOG_BODY.md
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "--- CHANGELOG_BODY.md ---"
+          cat CHANGELOG_BODY.md
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.changelog.outputs.tag }}
+          name: jurnalis-engine v${{ needs.check-version.outputs.version }}
+          body_path: CHANGELOG_BODY.md
+          files: dist/*
+          fail_on_unmatched_files: true
