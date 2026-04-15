@@ -11,8 +11,9 @@ use jurnalis_engine::{
 fn create_wizard_state_json() -> String {
     let mut output = new_game(42, false);
 
-    // Race: Human, Class: Wizard, Standard Array, assign scores, choose skills, name
-    for input in ["1", "3", "1", "15 14 13 12 10 8", "1 2", "Elara"] {
+    // Race, Class, Background, Background ability pattern, Ability method,
+    // Assign scores, Choose skills, Name
+    for input in ["1", "3", "1", "2", "1", "15 14 13 12 10 8", "1 2", "Elara"] {
         output = process_input(&output.state_json, input);
     }
 
@@ -27,7 +28,7 @@ fn create_wizard_state_json() -> String {
 fn create_fighter_state_json() -> String {
     let mut output = new_game(42, false);
 
-    for input in ["1", "1", "1", "15 14 13 12 10 8", "1 2", "Conan"] {
+    for input in ["1", "1", "1", "2", "1", "15 14 13 12 10 8", "1 2", "Conan"] {
         output = process_input(&output.state_json, input);
     }
 

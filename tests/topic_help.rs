@@ -9,7 +9,9 @@ use jurnalis_engine::{
 fn create_exploration_state_json() -> String {
     let mut output = new_game(7, false);
 
-    for input in ["1", "1", "1", "15 14 13 12 10 8", "1 2", "Aria"] {
+    // Race, Class, Background, Background ability pattern, Ability method,
+    // Assign scores, Choose skills, Name
+    for input in ["1", "1", "1", "2", "1", "15 14 13 12 10 8", "1 2", "Aria"] {
         output = process_input(&output.state_json, input);
     }
 
