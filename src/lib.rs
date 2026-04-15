@@ -1317,6 +1317,76 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
         Command::LongRest => {
             rest::handle_long_rest(state, &mut rng)
         }
+        // ---- Class-feature commands ----
+        Command::Rage => {
+            if state.character.class != character::class::Class::Barbarian {
+                return vec!["Only Barbarians can rage.".to_string()];
+            }
+            if state.character.class_features.rage_active {
+                return vec!["You are already raging.".to_string()];
+            }
+            if state.character.class_features.rage_uses_remaining == 0 {
+                return vec!["You have no Rage uses remaining. Rest to recover them.".to_string()];
+            }
+            state.character.class_features.rage_uses_remaining -= 1;
+            state.character.class_features.rage_active = true;
+            vec!["You enter a rage! Your attacks deal bonus damage and you have resistance to physical damage.".to_string()]
+        }
+        Command::BardicInspiration(target) => {
+            if state.character.class != character::class::Class::Bard {
+                return vec!["Only Bards can grant Bardic Inspiration.".to_string()];
+            }
+            if state.character.class_features.bardic_inspiration_remaining == 0 {
+                return vec!["You have no Bardic Inspiration uses remaining. Rest to recover them.".to_string()];
+            }
+            state.character.class_features.bardic_inspiration_remaining -= 1;
+            let recipient = if target.is_empty() { "an ally".to_string() } else { target };
+            vec![format!("You inspire {}! They gain a Bardic Inspiration die.", recipient)]
+        }
+        Command::ChannelDivinity => {
+            let is_eligible = matches!(state.character.class,
+                character::class::Class::Cleric | character::class::Class::Paladin);
+            if !is_eligible {
+                return vec!["Only Clerics and Paladins can use Channel Divinity.".to_string()];
+            }
+            if state.character.class_features.channel_divinity_remaining == 0 {
+                return vec!["You have no Channel Divinity uses remaining. Rest to recover them.".to_string()];
+            }
+            state.character.class_features.channel_divinity_remaining -= 1;
+            vec!["You channel divine power!".to_string()]
+        }
+        Command::LayOnHands(target) => {
+            if state.character.class != character::class::Class::Paladin {
+                return vec!["Only Paladins have Lay on Hands.".to_string()];
+            }
+            if state.character.class_features.lay_on_hands_pool == 0 {
+                return vec!["Your Lay on Hands pool is empty. Long rest to restore it.".to_string()];
+            }
+            // Heal 5 HP per use from the pool (MVP: spend all available, cap at missing HP)
+            let heal_amount = state.character.class_features.lay_on_hands_pool
+                .min((state.character.max_hp - state.character.current_hp).max(0) as u32);
+            state.character.class_features.lay_on_hands_pool -= heal_amount;
+            state.character.current_hp =
+                (state.character.current_hp + heal_amount as i32).min(state.character.max_hp);
+            let recipient = if target.is_empty() || target == "self" {
+                "yourself".to_string()
+            } else {
+                target
+            };
+            vec![format!("You lay hands on {}, restoring {} HP. ({} HP remaining in pool)",
+                recipient, heal_amount, state.character.class_features.lay_on_hands_pool)]
+        }
+        Command::Ki(ability) => {
+            if state.character.class != character::class::Class::Monk {
+                return vec!["Only Monks can spend Ki points.".to_string()];
+            }
+            if state.character.class_features.ki_points_remaining == 0 {
+                return vec!["You have no Ki points remaining. Rest to restore them.".to_string()];
+            }
+            state.character.class_features.ki_points_remaining -= 1;
+            vec![format!("You spend a Ki point on {}. ({} Ki remaining)",
+                ability, state.character.class_features.ki_points_remaining)]
+        }
         Command::Unknown(s) => {
             if s.is_empty() {
                 vec![]
@@ -2802,6 +2872,111 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
         Command::ShortRest | Command::LongRest => {
             state.active_combat = Some(combat);
             return vec!["You cannot rest during combat.".to_string()];
+        }
+        // ---- Class-feature commands (combat) ----
+        Command::Rage => {
+            if state.character.class != character::class::Class::Barbarian {
+                state.active_combat = Some(combat);
+                return vec!["Only Barbarians can rage.".to_string()];
+            }
+            if state.character.class_features.rage_active {
+                state.active_combat = Some(combat);
+                return vec!["You are already raging.".to_string()];
+            }
+            if state.character.class_features.rage_uses_remaining == 0 {
+                state.active_combat = Some(combat);
+                return vec!["You have no Rage uses remaining.".to_string()];
+            }
+            if combat.action_used {
+                state.active_combat = Some(combat);
+                return vec!["You have already used your action this turn.".to_string()];
+            }
+            state.character.class_features.rage_uses_remaining -= 1;
+            state.character.class_features.rage_active = true;
+            combat.action_used = true;
+            lines.push("You enter a rage! Your attacks deal bonus damage and you have resistance to physical damage.".to_string());
+        }
+        Command::BardicInspiration(target) => {
+            if state.character.class != character::class::Class::Bard {
+                state.active_combat = Some(combat);
+                return vec!["Only Bards can grant Bardic Inspiration.".to_string()];
+            }
+            if state.character.class_features.bardic_inspiration_remaining == 0 {
+                state.active_combat = Some(combat);
+                return vec!["You have no Bardic Inspiration uses remaining.".to_string()];
+            }
+            if combat.bonus_action_used {
+                state.active_combat = Some(combat);
+                return vec!["You have already used your bonus action this turn.".to_string()];
+            }
+            state.character.class_features.bardic_inspiration_remaining -= 1;
+            combat.bonus_action_used = true;
+            let recipient = if target.is_empty() { "an ally".to_string() } else { target };
+            lines.push(format!("You inspire {}! They gain a Bardic Inspiration die.", recipient));
+        }
+        Command::ChannelDivinity => {
+            let is_eligible = matches!(state.character.class,
+                character::class::Class::Cleric | character::class::Class::Paladin);
+            if !is_eligible {
+                state.active_combat = Some(combat);
+                return vec!["Only Clerics and Paladins can use Channel Divinity.".to_string()];
+            }
+            if state.character.class_features.channel_divinity_remaining == 0 {
+                state.active_combat = Some(combat);
+                return vec!["You have no Channel Divinity uses remaining.".to_string()];
+            }
+            if combat.action_used {
+                state.active_combat = Some(combat);
+                return vec!["You have already used your action this turn.".to_string()];
+            }
+            state.character.class_features.channel_divinity_remaining -= 1;
+            combat.action_used = true;
+            lines.push("You channel divine power!".to_string());
+        }
+        Command::LayOnHands(target) => {
+            if state.character.class != character::class::Class::Paladin {
+                state.active_combat = Some(combat);
+                return vec!["Only Paladins have Lay on Hands.".to_string()];
+            }
+            if state.character.class_features.lay_on_hands_pool == 0 {
+                state.active_combat = Some(combat);
+                return vec!["Your Lay on Hands pool is empty.".to_string()];
+            }
+            if combat.action_used {
+                state.active_combat = Some(combat);
+                return vec!["You have already used your action this turn.".to_string()];
+            }
+            let heal_amount = state.character.class_features.lay_on_hands_pool
+                .min((state.character.max_hp - state.character.current_hp).max(0) as u32);
+            state.character.class_features.lay_on_hands_pool -= heal_amount;
+            state.character.current_hp =
+                (state.character.current_hp + heal_amount as i32).min(state.character.max_hp);
+            combat.action_used = true;
+            let recipient = if target.is_empty() || target == "self" {
+                "yourself".to_string()
+            } else {
+                target
+            };
+            lines.push(format!("You lay hands on {}, restoring {} HP. ({} HP remaining in pool)",
+                recipient, heal_amount, state.character.class_features.lay_on_hands_pool));
+        }
+        Command::Ki(ability) => {
+            if state.character.class != character::class::Class::Monk {
+                state.active_combat = Some(combat);
+                return vec!["Only Monks can spend Ki points.".to_string()];
+            }
+            if state.character.class_features.ki_points_remaining == 0 {
+                state.active_combat = Some(combat);
+                return vec!["You have no Ki points remaining.".to_string()];
+            }
+            if combat.bonus_action_used {
+                state.active_combat = Some(combat);
+                return vec!["You have already used your bonus action this turn.".to_string()];
+            }
+            state.character.class_features.ki_points_remaining -= 1;
+            combat.bonus_action_used = true;
+            lines.push(format!("You spend a Ki point on {}. ({} Ki remaining)",
+                ability, state.character.class_features.ki_points_remaining));
         }
         Command::Unknown(s) => {
             state.active_combat = Some(combat);

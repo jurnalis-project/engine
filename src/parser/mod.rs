@@ -49,6 +49,20 @@ pub enum Command {
     // Rest commands
     ShortRest,
     LongRest,
+    // Class-feature commands
+    /// Barbarian: enter Rage. No argument; orchestrator validates class & uses.
+    Rage,
+    /// Bard: grant Bardic Inspiration to a target ally (free-form name).
+    BardicInspiration(String),
+    /// Cleric / Paladin: invoke Channel Divinity. Subclass-specific effect is
+    /// not selected in MVP; this just decrements the resource counter.
+    ChannelDivinity,
+    /// Paladin: spend points from the Lay on Hands pool. Bare form heals self;
+    /// targeted form aims at an ally (free-form name).
+    LayOnHands(String),
+    /// Monk: spend a Ki / Focus point. The argument names the ability invoked
+    /// (e.g. "flurry", "patient defense"). Treated as free-form for MVP.
+    Ki(String),
     Unknown(String),
 }
 
@@ -74,6 +88,8 @@ pub fn parse(input: &str) -> Command {
                 };
             }
             "dash as bonus" => return Command::BonusDash,
+            // Paladin: "lay on hands [target]"
+            "lay on hands" => return Command::LayOnHands(rest_after_three),
             _ => {}
         }
     }
@@ -173,6 +189,18 @@ pub fn parse(input: &str) -> Command {
             "long rest" => {
                 return Command::LongRest;
             }
+            // Barbarian: "enter rage"
+            "enter rage" => return Command::Rage,
+            // Cleric / Paladin: "channel divinity"
+            "channel divinity" => return Command::ChannelDivinity,
+            // Bard: "bardic inspiration <target>"
+            "bardic inspiration" => {
+                return if rest.is_empty() {
+                    Command::Unknown("Inspire whom?".to_string())
+                } else {
+                    Command::BardicInspiration(rest)
+                };
+            }
             _ => {}
         }
     }
@@ -270,6 +298,24 @@ pub fn parse(input: &str) -> Command {
         "rest" => Command::Unknown("Short rest or long rest? Try 'short rest' or 'long rest'.".to_string()),
         "objective" | "goal" | "quest" => Command::Objective,
         "map" => Command::Map,
+        // Barbarian: "rage"
+        "rage" => Command::Rage,
+        // Bard: "inspire <target>"
+        "inspire" => {
+            if args.is_empty() {
+                Command::Unknown("Inspire whom?".to_string())
+            } else {
+                Command::BardicInspiration(args)
+            }
+        }
+        // Monk: "ki <ability>"
+        "ki" | "focus" => {
+            if args.is_empty() {
+                Command::Unknown("Spend ki on what? (e.g. 'ki flurry', 'ki patient defense')".to_string())
+            } else {
+                Command::Ki(args)
+            }
+        }
         _ => Command::Unknown(input.to_string()),
     }
 }
@@ -588,6 +634,60 @@ mod tests {
     fn test_equip_bare_verb_error() {
         match parse("equip") { Command::Unknown(s) => assert!(s.contains("what"), "Got: {}", s), other => panic!("Expected Unknown, got {:?}", other) }
         match parse("unequip") { Command::Unknown(s) => assert!(s.contains("what"), "Got: {}", s), other => panic!("Expected Unknown, got {:?}", other) }
+    }
+
+    // ---- Class-feature commands (feat/remaining-srd-classes) ----
+
+    #[test]
+    fn test_rage_command() {
+        assert_eq!(parse("rage"), Command::Rage);
+        assert_eq!(parse("RAGE"), Command::Rage);
+        assert_eq!(parse("enter rage"), Command::Rage);
+    }
+
+    #[test]
+    fn test_bardic_inspiration_command() {
+        assert_eq!(parse("inspire ally"), Command::BardicInspiration("ally".to_string()));
+        assert_eq!(
+            parse("bardic inspiration friend"),
+            Command::BardicInspiration("friend".to_string())
+        );
+    }
+
+    #[test]
+    fn test_bardic_inspiration_bare_verb_errors() {
+        match parse("inspire") {
+            Command::Unknown(s) => assert!(s.to_lowercase().contains("whom") || s.to_lowercase().contains("who")),
+            other => panic!("Expected Unknown, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_channel_divinity_command() {
+        assert_eq!(parse("channel divinity"), Command::ChannelDivinity);
+        assert_eq!(parse("CHANNEL DIVINITY"), Command::ChannelDivinity);
+    }
+
+    #[test]
+    fn test_lay_on_hands_command() {
+        // Bare form targets self (empty target string).
+        assert_eq!(parse("lay on hands"), Command::LayOnHands(String::new()));
+        // With a target.
+        assert_eq!(parse("lay on hands self"), Command::LayOnHands("self".to_string()));
+    }
+
+    #[test]
+    fn test_ki_command() {
+        assert_eq!(parse("ki flurry"), Command::Ki("flurry".to_string()));
+        assert_eq!(parse("ki patient defense"), Command::Ki("patient defense".to_string()));
+    }
+
+    #[test]
+    fn test_ki_bare_verb_errors() {
+        match parse("ki") {
+            Command::Unknown(s) => assert!(s.to_lowercase().contains("ki")),
+            other => panic!("Expected Unknown, got {:?}", other),
+        }
     }
 
     #[test]
