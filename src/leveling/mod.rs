@@ -13,9 +13,19 @@ use crate::types::Ability;
 pub const LEVEL_CAP: u32 = 20;
 
 /// Levels at which a character earns an Ability Score Improvement (or feat).
-/// Per SRD core classes (the universal subset; some classes get extras at
-/// 6/14, but the engine MVP doesn't model those yet).
+/// Per SRD core classes (the universal subset). Class-specific extras are
+/// handled by `class_extra_asi_levels`.
 pub const ASI_LEVELS: &[u32] = &[4, 8, 12, 16, 19];
+
+/// Extra ASI levels specific to a class. Returns `&[6, 14]` for Fighter,
+/// `&[10]` for Rogue, and `&[]` for all other classes.
+pub fn class_extra_asi_levels(class: Class) -> &'static [u32] {
+    match class {
+        Class::Fighter => &[6, 14],
+        Class::Rogue   => &[10],
+        _              => &[],
+    }
+}
 
 /// Flat XP bonus awarded when an objective (DefeatNpc or FindItem) is
 /// completed. Stacks on top of monster XP for DefeatNpc objectives.
@@ -194,8 +204,9 @@ pub fn perform_level_up(character: &mut Character) -> LevelUpReport {
         character.hit_dice_remaining += 1;
     }
 
-    // 3. ASI credits
-    let asi_granted = ASI_LEVELS.contains(&new_level);
+    // 3. ASI credits — universal levels plus class-specific extras
+    let asi_granted = ASI_LEVELS.contains(&new_level)
+        || class_extra_asi_levels(character.class).contains(&new_level);
     if asi_granted {
         character.asi_credits += 1;
     }
@@ -455,11 +466,11 @@ mod tests {
     fn level_up_no_asi_at_non_asi_level() {
         let mut c = fighter_con13();
         for _ in 0..6 {
-            // Walk up to level 7, ASI should fire only at 4
+            // Walk up to level 7; Fighter gets ASI at 4 and 6
             perform_level_up(&mut c);
         }
         assert_eq!(c.level, 7);
-        assert_eq!(c.asi_credits, 1); // only from the level-4 hop
+        assert_eq!(c.asi_credits, 2); // level 4 (universal) + level 6 (Fighter extra)
     }
 
     #[test]
@@ -572,5 +583,81 @@ mod tests {
         let loaded: Character = serde_json::from_value(v).unwrap();
         assert_eq!(loaded.xp, 0);
         assert_eq!(loaded.asi_credits, 0);
+    }
+
+    // ---- Class-extra ASI levels (Fighter 6/14, Rogue 10) ----
+
+    #[test]
+    fn class_extra_asi_levels_fighter_returns_6_and_14() {
+        assert_eq!(class_extra_asi_levels(Class::Fighter), &[6, 14]);
+    }
+
+    #[test]
+    fn class_extra_asi_levels_rogue_returns_10() {
+        assert_eq!(class_extra_asi_levels(Class::Rogue), &[10]);
+    }
+
+    #[test]
+    fn class_extra_asi_levels_other_classes_return_empty() {
+        for class in [Class::Wizard, Class::Barbarian, Class::Bard, Class::Cleric,
+                      Class::Druid, Class::Monk, Class::Paladin, Class::Ranger,
+                      Class::Sorcerer, Class::Warlock] {
+            assert!(class_extra_asi_levels(class).is_empty(),
+                "{:?} should have no extra ASI levels", class);
+        }
+    }
+
+    #[test]
+    fn fighter_level_6_grants_extra_asi() {
+        let mut c = fighter_con13();
+        c.level = 5;
+        let report = perform_level_up(&mut c);
+        assert_eq!(c.level, 6);
+        assert!(report.asi_granted, "Fighter level 6 should grant ASI");
+        assert_eq!(c.asi_credits, 1);
+    }
+
+    #[test]
+    fn fighter_level_14_grants_extra_asi() {
+        let mut c = fighter_con13();
+        c.level = 13;
+        let report = perform_level_up(&mut c);
+        assert_eq!(c.level, 14);
+        assert!(report.asi_granted, "Fighter level 14 should grant ASI");
+    }
+
+    #[test]
+    fn rogue_level_10_grants_extra_asi() {
+        let mut scores = HashMap::new();
+        scores.insert(Ability::Strength, 10);
+        scores.insert(Ability::Dexterity, 15);
+        scores.insert(Ability::Constitution, 13);
+        scores.insert(Ability::Intelligence, 12);
+        scores.insert(Ability::Wisdom, 10);
+        scores.insert(Ability::Charisma, 8);
+        let mut c = create_character("Rogue".to_string(), Race::Human,
+            Class::Rogue, scores, Vec::<Skill>::new());
+        c.level = 9;
+        let report = perform_level_up(&mut c);
+        assert_eq!(c.level, 10);
+        assert!(report.asi_granted, "Rogue level 10 should grant ASI");
+    }
+
+    #[test]
+    fn non_fighter_non_rogue_level_6_no_extra_asi() {
+        let mut c = wizard_con13();
+        c.level = 5;
+        let report = perform_level_up(&mut c);
+        assert_eq!(c.level, 6);
+        assert!(!report.asi_granted, "Wizard level 6 should not grant ASI");
+    }
+
+    #[test]
+    fn non_fighter_non_rogue_level_10_no_extra_asi() {
+        let mut c = wizard_con13();
+        c.level = 9;
+        let report = perform_level_up(&mut c);
+        assert_eq!(c.level, 10);
+        assert!(!report.asi_granted, "Wizard level 10 should not grant ASI");
     }
 }
