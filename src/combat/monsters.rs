@@ -3,8 +3,70 @@
 
 use std::collections::HashMap;
 use rand::Rng;
+use serde::{Deserialize, Serialize};
 use crate::types::Ability;
 use crate::state::{CombatStats, NpcAttack, DamageType};
+use crate::conditions::ConditionType;
+
+/// SRD creature type. See `docs/reference/monsters.md` for the canonical list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum CreatureType {
+    Aberration,
+    Beast,
+    Celestial,
+    Construct,
+    Dragon,
+    Elemental,
+    Fey,
+    Fiend,
+    Giant,
+    Humanoid,
+    Monstrosity,
+    Ooze,
+    Plant,
+    Undead,
+}
+
+impl Default for CreatureType {
+    fn default() -> Self { CreatureType::Humanoid }
+}
+
+/// SRD creature size. Determines hit-die size in the SRD (informational here).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Size {
+    Tiny,
+    Small,
+    Medium,
+    Large,
+    Huge,
+    Gargantuan,
+}
+
+impl Default for Size {
+    fn default() -> Self { Size::Medium }
+}
+
+/// Nine-axis alignment plus Unaligned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Alignment {
+    LawfulGood,
+    NeutralGood,
+    ChaoticGood,
+    LawfulNeutral,
+    TrueNeutral,
+    ChaoticNeutral,
+    LawfulEvil,
+    NeutralEvil,
+    ChaoticEvil,
+    Unaligned,
+}
+
+impl Default for Alignment {
+    fn default() -> Self { Alignment::Unaligned }
+}
+
+/// Default value for `CombatStats.multiattack` when absent from older saves.
+pub fn default_multiattack() -> u32 { 1 }
 
 /// Static monster definition for the const table.
 pub struct MonsterDef {
@@ -415,6 +477,69 @@ mod tests {
         for monster in SRD_MONSTERS {
             assert!(monster.cr.is_finite(), "{} has non-finite CR", monster.name);
             assert!(monster.cr >= 0.0, "{} has negative CR", monster.name);
+        }
+    }
+
+    #[test]
+    fn test_creature_type_has_all_srd_variants() {
+        // Compile-time check via match exhaustion: every SRD creature type listed.
+        let v = CreatureType::Beast;
+        let _name = match v {
+            CreatureType::Aberration => "aberration",
+            CreatureType::Beast => "beast",
+            CreatureType::Celestial => "celestial",
+            CreatureType::Construct => "construct",
+            CreatureType::Dragon => "dragon",
+            CreatureType::Elemental => "elemental",
+            CreatureType::Fey => "fey",
+            CreatureType::Fiend => "fiend",
+            CreatureType::Giant => "giant",
+            CreatureType::Humanoid => "humanoid",
+            CreatureType::Monstrosity => "monstrosity",
+            CreatureType::Ooze => "ooze",
+            CreatureType::Plant => "plant",
+            CreatureType::Undead => "undead",
+        };
+        assert_eq!(CreatureType::default(), CreatureType::Humanoid);
+    }
+
+    #[test]
+    fn test_size_default_is_medium() {
+        assert_eq!(Size::default(), Size::Medium);
+        // Exhaustiveness:
+        let _ = match Size::Tiny {
+            Size::Tiny | Size::Small | Size::Medium |
+            Size::Large | Size::Huge | Size::Gargantuan => (),
+        };
+    }
+
+    #[test]
+    fn test_alignment_default_is_unaligned() {
+        assert_eq!(Alignment::default(), Alignment::Unaligned);
+        let _ = match Alignment::TrueNeutral {
+            Alignment::LawfulGood | Alignment::NeutralGood | Alignment::ChaoticGood |
+            Alignment::LawfulNeutral | Alignment::TrueNeutral | Alignment::ChaoticNeutral |
+            Alignment::LawfulEvil | Alignment::NeutralEvil | Alignment::ChaoticEvil |
+            Alignment::Unaligned => (),
+        };
+    }
+
+    #[test]
+    fn test_enums_serialize_round_trip() {
+        for ct in [CreatureType::Beast, CreatureType::Undead, CreatureType::Fey] {
+            let json = serde_json::to_string(&ct).unwrap();
+            let back: CreatureType = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, ct);
+        }
+        for sz in [Size::Tiny, Size::Medium, Size::Gargantuan] {
+            let json = serde_json::to_string(&sz).unwrap();
+            let back: Size = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, sz);
+        }
+        for al in [Alignment::ChaoticEvil, Alignment::LawfulGood, Alignment::Unaligned] {
+            let json = serde_json::to_string(&al).unwrap();
+            let back: Alignment = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, al);
         }
     }
 
