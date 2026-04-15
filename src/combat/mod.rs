@@ -342,25 +342,13 @@ pub fn resolve_player_attack(
             None => ("Unarmed".to_string(), 0, 0, DamageType::Bludgeoning, 0u16, 0, 0, 0),
         };
 
+    // Unarmed strikes (no weapon, damage_dice == 0) flow through the standard
+    // attack-roll pipeline per SRD 5.1 Rules Glossary ("Unarmed Strike"):
+    //   attack roll bonus = STR mod + proficiency bonus
+    //   on hit: Bludgeoning damage = 1 + STR mod
+    // Advantage/disadvantage from conditions applies automatically on the
+    // standard path. See docs/reference/rules-glossary.md ("Unarmed Strike").
     let is_unarmed = damage_dice == 0;
-
-    if is_unarmed {
-        // Unarmed strike: always hits, 1 + STR mod (min 1)
-        let str_mod = player.ability_modifier(Ability::Strength);
-        let damage = (1 + str_mod).max(1);
-        return AttackResult {
-            hit: true,
-            natural_20: false,
-            natural_1: false,
-            attack_roll: 0,
-            total_attack: 0,
-            target_ac,
-            damage,
-            damage_type: DamageType::Bludgeoning,
-            weapon_name,
-            disadvantage: false,
-        };
-    }
 
     let is_finesse = properties & FINESSE != 0;
     let is_thrown = properties & THROWN != 0;
@@ -450,16 +438,23 @@ pub fn resolve_player_attack(
     let auto_crit = hit && conditions::is_auto_crit_target(target_conditions) && distance <= 5;
 
     let damage = if hit {
-        // Determine die to use
-        let actual_die = if is_versatile && off_hand_free && versatile_die > 0 {
-            versatile_die
+        if is_unarmed {
+            // Unarmed damage: flat 1 + STR mod. On a crit, the static "1" base
+            // doubles to 2 (no dice to roll double). Floor at 1 HP.
+            let base = if natural_20 || auto_crit { 2 } else { 1 };
+            (base + ability_mod).max(1)
         } else {
-            damage_die
-        };
+            // Determine die to use
+            let actual_die = if is_versatile && off_hand_free && versatile_die > 0 {
+                versatile_die
+            } else {
+                damage_die
+            };
 
-        let dice_count = if natural_20 || auto_crit { damage_dice * 2 } else { damage_dice };
-        let dice_total: i32 = roll_dice(rng, dice_count, actual_die).iter().sum();
-        (dice_total + ability_mod).max(1)
+            let dice_count = if natural_20 || auto_crit { damage_dice * 2 } else { damage_dice };
+            let dice_total: i32 = roll_dice(rng, dice_count, actual_die).iter().sum();
+            (dice_total + ability_mod).max(1)
+        }
     } else {
         0
     };
@@ -1132,16 +1127,99 @@ mod tests {
         assert!(dodge_hits < normal_hits, "Dodging should reduce hit rate: dodge={}, normal={}", dodge_hits, normal_hits);
     }
 
+    // Hypothesis (see handoff fix-unarmed-attack-roll):
+    //   The unarmed branch in resolve_player_attack short-circuits with hit: true,
+    //   bypassing the d20 pipeline and condition-based advantage/disadvantage.
+    //   Fix: remove the early return so unarmed flows through the standard path,
+    //   using STR mod + prof bonus on the attack roll, and damage = 1 + STR mod
+    //   (doubled base to 2 + STR mod on a natural 20 since there are no dice to
+    //   double). Damage floor remains 1.
     #[test]
-    fn test_unarmed_strike() {
-        let mut rng = StdRng::seed_from_u64(42);
+    fn test_unarmed_strike_rolls_to_hit() {
+        // SRD: unarmed must roll d20 + STR + prof vs AC, not auto-hit.
+        // Against an unreachable AC (100), only a natural 20 can "hit"; every
+        // other roll must miss and deal 0 damage.
         let player = test_character();
         let items = HashMap::new();
-        let result = resolve_player_attack(&mut rng, &player, 15, false, None, &items, 5, true, false, &[]);
-        assert!(result.hit, "Unarmed always hits");
-        // STR 16+1(human)=17, mod +3, damage = 1+3 = 4
-        assert_eq!(result.damage, 4);
-        assert_eq!(result.weapon_name, "Unarmed");
+        let mut saw_miss = false;
+        for seed in 0..200 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let result = resolve_player_attack(&mut rng, &player, 100, false, None, &items, 5, true, false, &[]);
+            assert_eq!(result.weapon_name, "Unarmed");
+            assert!(result.attack_roll >= 1 && result.attack_roll <= 20,
+                "Attack roll must be a real d20 (seed={}, roll={})", seed, result.attack_roll);
+            if result.natural_20 {
+                // Nat 20 always hits per SRD, even against absurd AC.
+                assert!(result.hit, "Nat 20 must hit (seed={})", seed);
+            } else {
+                saw_miss = true;
+                assert!(!result.hit, "Non-crit unarmed must miss AC 100 (seed={}, roll={}, total={})",
+                    seed, result.attack_roll, result.total_attack);
+                assert_eq!(result.damage, 0, "Miss should deal 0 damage (seed={})", seed);
+            }
+        }
+        assert!(saw_miss, "Expected to observe at least one miss against AC 100");
+    }
+
+    #[test]
+    fn test_unarmed_strike_hits_reachable_ac() {
+        // Against AC 1, every d20 roll hits (even a nat 1 only auto-misses).
+        // Damage on hit = 1 + STR mod. STR 16+1(human)=17, mod +3 -> damage 4.
+        // On nat 20 crit: 2 + STR mod = 5 (per handoff: flat +1 doubles).
+        let player = test_character();
+        let items = HashMap::new();
+        let mut hit_count = 0;
+        let mut base_damage_seen = false;
+        let mut crit_damage_seen = false;
+        for seed in 0..200 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let result = resolve_player_attack(&mut rng, &player, 1, false, None, &items, 5, true, false, &[]);
+            assert_eq!(result.weapon_name, "Unarmed");
+            assert_eq!(result.damage_type, DamageType::Bludgeoning);
+            if result.hit {
+                hit_count += 1;
+                if result.natural_20 {
+                    assert_eq!(result.damage, 5, "Nat 20 crit should deal 2 + STR mod (seed={})", seed);
+                    crit_damage_seen = true;
+                } else {
+                    assert_eq!(result.damage, 4, "Normal hit should deal 1 + STR mod (seed={})", seed);
+                    base_damage_seen = true;
+                }
+            } else {
+                assert!(result.natural_1, "Only a nat 1 should miss AC 1 (seed={}, roll={})", seed, result.attack_roll);
+            }
+        }
+        assert!(hit_count > 0, "Expected at least some hits against AC 1");
+        assert!(base_damage_seen, "Expected to observe a normal-hit damage roll");
+        assert!(crit_damage_seen, "Expected to observe a nat-20 crit in 200 seeds");
+    }
+
+    #[test]
+    fn test_unarmed_strike_disadvantage_from_poisoned() {
+        use crate::conditions::{ActiveCondition, ConditionDuration};
+
+        // Poisoned imposes disadvantage on attack rolls. With unarmed now on the
+        // standard roll pipeline, a poisoned attacker should hit less often.
+        let player = test_character();
+        let mut poisoned_player = player.clone();
+        poisoned_player.conditions.push(ActiveCondition::new(
+            ConditionType::Poisoned, ConditionDuration::Rounds(3),
+        ));
+        let items = HashMap::new();
+
+        let mut normal_hits = 0;
+        let mut poisoned_hits = 0;
+        for seed in 0..1000 {
+            let mut rng1 = StdRng::seed_from_u64(seed);
+            let mut rng2 = StdRng::seed_from_u64(seed);
+            let normal = resolve_player_attack(&mut rng1, &player, 15, false, None, &items, 5, true, false, &[]);
+            let poisoned = resolve_player_attack(&mut rng2, &poisoned_player, 15, false, None, &items, 5, true, false, &[]);
+            if normal.hit { normal_hits += 1; }
+            if poisoned.hit { poisoned_hits += 1; }
+        }
+        assert!(poisoned_hits < normal_hits,
+            "Poisoned unarmed attacker should hit less often: normal={}, poisoned={}",
+            normal_hits, poisoned_hits);
     }
 
     #[test]

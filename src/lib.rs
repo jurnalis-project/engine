@@ -1769,13 +1769,21 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                         .map(|n| n.name.clone())
                         .unwrap_or_else(|| "the enemy".to_string());
 
-                    if result.weapon_name == "Unarmed" {
-                        lines.push(format!("You punch {} for {} {} damage.",
-                            npc_name, result.damage, result.damage_type));
-                    } else if result.hit {
+                    let is_unarmed = result.weapon_name == "Unarmed";
+                    if result.hit {
                         if result.natural_20 {
-                            lines.push(format!("You attack {} with {} -- CRITICAL HIT! {} {} damage!",
-                                npc_name, result.weapon_name, result.damage, result.damage_type));
+                            if is_unarmed {
+                                lines.push(format!("You punch {} -- CRITICAL HIT! {} {} damage!",
+                                    npc_name, result.damage, result.damage_type));
+                            } else {
+                                lines.push(format!("You attack {} with {} -- CRITICAL HIT! {} {} damage!",
+                                    npc_name, result.weapon_name, result.damage, result.damage_type));
+                            }
+                        } else if is_unarmed {
+                            lines.push(format!("You punch {} ({}+{}={} vs AC {}) -- hit for {} {} damage.",
+                                npc_name, result.attack_roll,
+                                result.total_attack - result.attack_roll, result.total_attack, target_ac,
+                                result.damage, result.damage_type));
                         } else {
                             lines.push(format!("You attack {} with {} ({}+{}={} vs AC {}) -- hit for {} {} damage.",
                                 npc_name, result.weapon_name, result.attack_roll,
@@ -1783,8 +1791,16 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                                 result.damage, result.damage_type));
                         }
                     } else if result.natural_1 {
-                        lines.push(format!("You attack {} with {} -- natural 1, miss!",
-                            npc_name, result.weapon_name));
+                        if is_unarmed {
+                            lines.push(format!("You swing at {} -- natural 1, miss!", npc_name));
+                        } else {
+                            lines.push(format!("You attack {} with {} -- natural 1, miss!",
+                                npc_name, result.weapon_name));
+                        }
+                    } else if is_unarmed {
+                        lines.push(format!("You swing at {} ({}+{}={} vs AC {}) -- miss.",
+                            npc_name, result.attack_roll,
+                            result.total_attack - result.attack_roll, result.total_attack, target_ac));
                     } else {
                         lines.push(format!("You attack {} with {} ({}+{}={} vs AC {}) -- miss.",
                             npc_name, result.weapon_name, result.attack_roll,
