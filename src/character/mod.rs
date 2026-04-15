@@ -9,6 +9,7 @@ use rand::Rng;
 use crate::types::{Ability, Skill, ItemId};
 use self::race::Race;
 use self::class::{Class, ClassFeatureState};
+use self::background::Background;
 use crate::rules::dice::roll_4d6_drop_lowest;
 use crate::equipment::Equipment;
 use crate::conditions::ActiveCondition;
@@ -55,6 +56,18 @@ pub struct Character {
     /// system (#28). Defaults to 0.
     #[serde(default)]
     pub asi_credits: u32,
+    /// Character background. `#[serde(default)]` so older saves deserialize
+    /// cleanly (defaults to `Background::Acolyte`).
+    #[serde(default)]
+    pub background: Background,
+    /// Tool proficiency names (granted by background). Stored as strings
+    /// until a tool system is modelled (pending issue #42).
+    #[serde(default)]
+    pub tool_proficiencies: Vec<String>,
+    /// Known languages. Common is always included; additional languages
+    /// come from background, race, and other features.
+    #[serde(default)]
+    pub languages: Vec<String>,
 }
 
 impl Character {
@@ -153,6 +166,9 @@ pub fn create_character(
         exhaustion: 0,
         xp: 0,
         asi_credits: 0,
+        background: Background::default(),
+        tool_proficiencies: Vec::new(),
+        languages: vec!["Common".to_string()],
     }
 }
 
@@ -268,6 +284,32 @@ mod tests {
         assert!(!c.class_features.arcane_recovery_used_today);
         // No exhaustion at creation
         assert_eq!(c.exhaustion, 0);
+    }
+
+    #[test]
+    fn test_new_character_has_background_fields_initialized() {
+        let c = create_character("Test".to_string(), Race::Human, Class::Fighter, test_scores(), vec![]);
+        // Default background for unset characters
+        assert_eq!(c.background, Background::Acolyte);
+        // Tool proficiencies start empty; filled in at finalization
+        assert!(c.tool_proficiencies.is_empty());
+        // Common is always known
+        assert!(c.languages.contains(&"Common".to_string()));
+    }
+
+    #[test]
+    fn test_character_missing_background_fields_deserialize_defaults() {
+        // Legacy save that predates background/tool_proficiencies/languages.
+        let c = create_character("Test".to_string(), Race::Human, Class::Fighter, test_scores(), vec![]);
+        let mut v: serde_json::Value = serde_json::to_value(&c).unwrap();
+        let obj = v.as_object_mut().unwrap();
+        obj.remove("background");
+        obj.remove("tool_proficiencies");
+        obj.remove("languages");
+        let loaded: Character = serde_json::from_value(v).unwrap();
+        assert_eq!(loaded.background, Background::Acolyte);
+        assert!(loaded.tool_proficiencies.is_empty());
+        assert!(loaded.languages.is_empty(), "legacy saves default to empty Vec<String>");
     }
 
     #[test]
