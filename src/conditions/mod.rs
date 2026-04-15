@@ -323,6 +323,35 @@ pub fn get_save_for_condition(condition: ConditionType) -> Option<(Ability, i32)
     }
 }
 
+// ---- Exhaustion (2024 SRD unified formula) ----
+//
+// Exhaustion level is stored as `Character.exhaustion: u32`. It is not an
+// `ActiveCondition` entry (single source of truth for the numeric level).
+//
+// Formula (level n in 0..=6):
+//   D20 Tests: result -= 2 * n
+//   Speed:     result -= 5 * n (feet; caller clamps at 0)
+//   Death at n == 6.
+//   Long rest: n -= 1 (saturating at 0; handled in rest module).
+
+/// Penalty to apply to any D20 Test total given an exhaustion level.
+/// Returns a negative i32 (or 0).
+pub fn exhaustion_d20_penalty(level: u32) -> i32 {
+    -2 * (level as i32)
+}
+
+/// Penalty (in feet) to apply to a creature's speed given an exhaustion level.
+/// Returns a negative i32 (or 0). Callers are responsible for clamping final
+/// speed at 0.
+pub fn exhaustion_speed_penalty(level: u32) -> i32 {
+    -5 * (level as i32)
+}
+
+/// Whether the given exhaustion level is lethal (>= 6 per SRD 2024).
+pub fn exhaustion_is_lethal(level: u32) -> bool {
+    level >= 6
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -884,6 +913,51 @@ mod tests {
         let mut condition = ActiveCondition::new(ConditionType::Prone, ConditionDuration::Permanent);
         assert!(!tick_duration(&mut condition));
         assert!(!tick_duration(&mut condition));
+    }
+
+    // --- Exhaustion 2024 unified formula ---
+
+    #[test]
+    fn test_exhaustion_d20_penalty_scales_linearly() {
+        assert_eq!(exhaustion_d20_penalty(0), 0);
+        assert_eq!(exhaustion_d20_penalty(1), -2);
+        assert_eq!(exhaustion_d20_penalty(3), -6);
+        assert_eq!(exhaustion_d20_penalty(5), -10);
+        assert_eq!(exhaustion_d20_penalty(6), -12);
+    }
+
+    #[test]
+    fn test_exhaustion_speed_penalty_scales_linearly() {
+        assert_eq!(exhaustion_speed_penalty(0), 0);
+        assert_eq!(exhaustion_speed_penalty(1), -5);
+        assert_eq!(exhaustion_speed_penalty(3), -15);
+        assert_eq!(exhaustion_speed_penalty(5), -25);
+        assert_eq!(exhaustion_speed_penalty(6), -30);
+    }
+
+    #[test]
+    fn test_exhaustion_is_lethal_at_six() {
+        assert!(!exhaustion_is_lethal(0));
+        assert!(!exhaustion_is_lethal(5));
+        assert!(exhaustion_is_lethal(6));
+        // Defensive: treat any above-max value as lethal.
+        assert!(exhaustion_is_lethal(99));
+    }
+
+    #[test]
+    fn test_exhaustion_penalty_caps_arithmetically() {
+        // Helper returns i32 so callers can just add it to a d20 total or speed.
+        let roll: i32 = 15;
+        let at_level_3 = roll + exhaustion_d20_penalty(3);
+        assert_eq!(at_level_3, 9);
+
+        let speed: i32 = 30;
+        let adjusted = (speed + exhaustion_speed_penalty(4)).max(0);
+        assert_eq!(adjusted, 10);
+
+        // Speed floor at 0 if level would make it negative.
+        let adjusted_zero = (speed + exhaustion_speed_penalty(6)).max(0);
+        assert_eq!(adjusted_zero, 0);
     }
 
     #[test]
