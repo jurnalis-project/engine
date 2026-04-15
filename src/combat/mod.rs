@@ -263,6 +263,56 @@ pub fn start_combat(
     }
 }
 
+/// Melee reach (in feet) for the player, based on the main-hand weapon's
+/// REACH property. Returns 10 ft when the equipped main-hand weapon has the
+/// REACH property; otherwise defaults to 5 ft.
+///
+/// Pure ranged weapons (e.g. a longbow with no melee capability) also fall
+/// back to the 5 ft unarmed default — the player can still swing with their
+/// fists at melee range. This helper does NOT attempt to choose between main
+/// and off hand; it always consults the main-hand weapon.
+pub fn player_melee_reach(
+    character: &Character,
+    items: &HashMap<ItemId, crate::state::Item>,
+) -> u32 {
+    let weapon_id = match character.equipped.main_hand {
+        Some(id) => id,
+        None => return 5,
+    };
+    let item = match items.get(&weapon_id) {
+        Some(i) => i,
+        None => return 5,
+    };
+    match &item.item_type {
+        ItemType::Weapon { properties, .. } if properties & REACH != 0 => 10,
+        _ => 5,
+    }
+}
+
+/// Returns true when the given NPC is currently within the player's melee
+/// reach (as determined by [`player_melee_reach`]). Used by the orchestrator
+/// to gate whether an NPC leaving a square should provoke a player
+/// opportunity attack.
+pub fn npc_within_player_reach(
+    state: &GameState,
+    combat: &CombatState,
+    npc_id: NpcId,
+) -> bool {
+    let alive = state.world.npcs.get(&npc_id)
+        .and_then(|npc| npc.combat_stats.as_ref())
+        .map(|stats| stats.current_hp > 0)
+        .unwrap_or(false);
+    if !alive {
+        return false;
+    }
+    let distance = match combat.distances.get(&npc_id).copied() {
+        Some(d) => d,
+        None => return false,
+    };
+    let player_reach = player_melee_reach(&state.character, &state.world.items);
+    distance <= player_reach
+}
+
 /// Returns true if any living hostile NPC is within the specified distance.
 pub fn has_living_hostile_within(state: &GameState, combat: &CombatState, feet: u32) -> bool {
     combat.initiative_order.iter().any(|(combatant, _)| match combatant {
@@ -354,7 +404,9 @@ pub fn resolve_player_attack(
     let is_finesse = properties & FINESSE != 0;
     let is_thrown = properties & THROWN != 0;
     let is_versatile = properties & VERSATILE != 0;
-    let _is_reach = properties & REACH != 0;
+    // Note: REACH is consulted at the orchestrator layer via
+    // `combat::player_melee_reach` to gate opportunity attacks. It does not
+    // influence per-attack resolution, so no local flag is needed here.
     let ranged = is_ranged_attack(&ItemType::Weapon {
         damage_dice, damage_die, damage_type, properties, category: crate::state::WeaponCategory::Simple,
         versatile_die, range_normal, range_long,
@@ -1046,6 +1098,148 @@ mod tests {
         let combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
         assert_eq!(combat.initiative_order.len(), 2);
         assert_eq!(combat.round, 1);
+    }
+
+    #[test]
+    fn test_player_melee_reach_unarmed_is_5() {
+        let character = test_character();
+        let items = HashMap::new();
+        assert_eq!(player_melee_reach(&character, &items), 5,
+            "Unarmed melee reach should be 5 ft");
+    }
+
+    #[test]
+    fn test_player_melee_reach_longsword_is_5() {
+        use crate::state::{Item, ItemType, WeaponCategory};
+        let mut character = test_character();
+        let mut items = HashMap::new();
+        items.insert(500u32, Item {
+            id: 500,
+            name: "Longsword".to_string(),
+            description: "".to_string(),
+            item_type: ItemType::Weapon {
+                damage_dice: 1, damage_die: 8,
+                damage_type: DamageType::Slashing,
+                properties: crate::equipment::VERSATILE,
+                category: WeaponCategory::Martial,
+                versatile_die: 10, range_normal: 0, range_long: 0,
+            },
+            location: None,
+            carried_by_player: true,
+        });
+        character.equipped.main_hand = Some(500);
+        assert_eq!(player_melee_reach(&character, &items), 5,
+            "Non-reach weapon should give 5 ft reach");
+    }
+
+    #[test]
+    fn test_player_melee_reach_glaive_is_10() {
+        use crate::state::{Item, ItemType, WeaponCategory};
+        let mut character = test_character();
+        let mut items = HashMap::new();
+        items.insert(501u32, Item {
+            id: 501,
+            name: "Glaive".to_string(),
+            description: "".to_string(),
+            item_type: ItemType::Weapon {
+                damage_dice: 1, damage_die: 10,
+                damage_type: DamageType::Slashing,
+                properties: crate::equipment::REACH | crate::equipment::HEAVY | crate::equipment::TWO_HANDED,
+                category: WeaponCategory::Martial,
+                versatile_die: 0, range_normal: 0, range_long: 0,
+            },
+            location: None,
+            carried_by_player: true,
+        });
+        character.equipped.main_hand = Some(501);
+        assert_eq!(player_melee_reach(&character, &items), 10,
+            "REACH weapon should give 10 ft reach");
+    }
+
+    #[test]
+    fn test_player_melee_reach_ranged_only_weapon_falls_back_to_5() {
+        // Pure ranged weapon (longbow) has no melee usage; reach should
+        // fall back to the unarmed default of 5 rather than 0.
+        use crate::state::{Item, ItemType, WeaponCategory};
+        let mut character = test_character();
+        let mut items = HashMap::new();
+        items.insert(502u32, Item {
+            id: 502,
+            name: "Longbow".to_string(),
+            description: "".to_string(),
+            item_type: ItemType::Weapon {
+                damage_dice: 1, damage_die: 8,
+                damage_type: DamageType::Piercing,
+                properties: crate::equipment::AMMUNITION | crate::equipment::TWO_HANDED | crate::equipment::HEAVY,
+                category: WeaponCategory::Martial,
+                versatile_die: 0, range_normal: 150, range_long: 600,
+            },
+            location: None,
+            carried_by_player: true,
+        });
+        character.equipped.main_hand = Some(502);
+        assert_eq!(player_melee_reach(&character, &items), 5,
+            "Pure ranged weapon should fall back to unarmed reach of 5 ft");
+    }
+
+    #[test]
+    fn test_npc_within_player_reach_unarmed_at_5ft() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let state = test_state_with_goblin();
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+
+        combat.distances.insert(0, 5);
+        assert!(npc_within_player_reach(&state, &combat, 0),
+            "Goblin at 5 ft should be in unarmed reach");
+
+        combat.distances.insert(0, 10);
+        assert!(!npc_within_player_reach(&state, &combat, 0),
+            "Goblin at 10 ft should NOT be in unarmed reach");
+    }
+
+    #[test]
+    fn test_npc_within_player_reach_respects_reach_weapon() {
+        use crate::state::{Item, ItemType, WeaponCategory};
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut state = test_state_with_goblin();
+        // Equip a glaive (REACH weapon). 10 ft threatened area.
+        state.world.items.insert(700u32, Item {
+            id: 700,
+            name: "Glaive".to_string(),
+            description: "".to_string(),
+            item_type: ItemType::Weapon {
+                damage_dice: 1, damage_die: 10,
+                damage_type: DamageType::Slashing,
+                properties: crate::equipment::REACH | crate::equipment::HEAVY | crate::equipment::TWO_HANDED,
+                category: WeaponCategory::Martial,
+                versatile_die: 0, range_normal: 0, range_long: 0,
+            },
+            location: None,
+            carried_by_player: true,
+        });
+        state.character.equipped.main_hand = Some(700);
+
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        combat.distances.insert(0, 10);
+        assert!(npc_within_player_reach(&state, &combat, 0),
+            "Glaive-equipped player should threaten NPC at 10 ft");
+
+        combat.distances.insert(0, 15);
+        assert!(!npc_within_player_reach(&state, &combat, 0),
+            "Glaive reach is 10 ft; NPC at 15 ft should NOT be threatened");
+    }
+
+    #[test]
+    fn test_npc_within_player_reach_dead_npc_not_threatened() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut state = test_state_with_goblin();
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+
+        // Kill the goblin.
+        state.world.npcs.get_mut(&0).unwrap().combat_stats.as_mut().unwrap().current_hp = 0;
+        combat.distances.insert(0, 5);
+        assert!(!npc_within_player_reach(&state, &combat, 0),
+            "Dead NPC at 5 ft should not be treated as reachable for OA");
     }
 
     #[test]
