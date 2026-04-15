@@ -395,27 +395,37 @@ pub fn resolve_player_attack(
         }
     }
 
-    // Check player conditions that impose attack disadvantage
-    if let Some(false) = conditions::get_attack_advantage(&player.conditions) {
-        disadvantage = true;
+    // Attacker-side conditions: Invisible grants advantage; Poisoned/Blinded/Prone/
+    // Frightened/Restrained impose disadvantage.
+    let mut advantage = false;
+    match conditions::get_attack_advantage(&player.conditions) {
+        Some(true) => advantage = true,
+        Some(false) => disadvantage = true,
+        None => {}
     }
 
-    // Check target conditions that grant advantage to attacker (within 5ft for prone)
-    let attacker_has_advantage = if let Some(true) = conditions::get_defense_advantage(&player.conditions, target_conditions) {
-        // Prone only grants advantage if within 5ft
-        if conditions::has_condition(target_conditions, ConditionType::Prone) && distance > 5 {
-            false
-        } else {
-            true
+    // Defender-side conditions: Prone/Stunned/Paralyzed/Petrified/Restrained/
+    // Unconscious/Blinded grant advantage; Invisible imposes disadvantage.
+    match conditions::get_defense_advantage(&player.conditions, target_conditions) {
+        Some(true) => {
+            // Prone only grants advantage if within 5 ft; beyond 5 ft it flips to disadvantage.
+            if conditions::has_condition(target_conditions, ConditionType::Prone) && distance > 5 {
+                disadvantage = true;
+            } else {
+                advantage = true;
+            }
         }
-    } else {
-        false
-    };
-
-    // Advantage cancels disadvantage (and vice versa)
-    if attacker_has_advantage && disadvantage {
-        disadvantage = false; // Neutral
+        Some(false) => disadvantage = true,
+        None => {}
     }
+
+    // Per SRD: advantage and disadvantage on the same roll cancel to neither.
+    let attacker_has_advantage = if advantage && disadvantage {
+        disadvantage = false;
+        false
+    } else {
+        advantage
+    };
 
     // Roll attack with advantage/disadvantage/neutral
     let roll1 = roll_d20(rng);
@@ -498,22 +508,30 @@ pub fn resolve_npc_attack(
         disadvantage = true; // Long range
     }
 
-    // Check NPC conditions that impose attack disadvantage
-    if let Some(false) = conditions::get_attack_advantage(npc_conditions) {
-        disadvantage = true;
+    // Attacker-side conditions on the NPC: Invisible => advantage;
+    // Poisoned/Blinded/Prone/Frightened/Restrained => disadvantage.
+    match conditions::get_attack_advantage(npc_conditions) {
+        Some(true) => advantage = true,
+        Some(false) => disadvantage = true,
+        None => {}
     }
 
-    // Check player conditions that grant advantage to attacker
-    if let Some(true) = conditions::get_defense_advantage(npc_conditions, player_conditions) {
-        // Prone only grants advantage if within 5ft
-        if conditions::has_condition(player_conditions, ConditionType::Prone) && distance > 5 {
-            // No advantage
-        } else {
-            advantage = true;
+    // Defender-side conditions on the player: Prone/Blinded/Stunned/Paralyzed/
+    // Petrified/Restrained/Unconscious => advantage; Invisible => disadvantage.
+    match conditions::get_defense_advantage(npc_conditions, player_conditions) {
+        Some(true) => {
+            // Prone only grants advantage within 5 ft; beyond, it's disadvantage.
+            if conditions::has_condition(player_conditions, ConditionType::Prone) && distance > 5 {
+                disadvantage = true;
+            } else {
+                advantage = true;
+            }
         }
+        Some(false) => disadvantage = true,
+        None => {}
     }
 
-    // Advantage and disadvantage cancel out
+    // Advantage and disadvantage cancel out per SRD.
     let use_disadvantage = disadvantage && !advantage;
     let use_advantage = advantage && !disadvantage;
 
@@ -1707,6 +1725,131 @@ mod tests {
         let normal: Vec<ActiveCondition> = vec![];
         assert_eq!(conditions::get_speed_multiplier(&normal), 1.0,
             "No conditions should have normal speed");
+    }
+
+    // ---- Integration: new SRD conditions in attack resolution ----
+
+    #[test]
+    fn test_invisible_attacker_vs_visible_target_grants_advantage() {
+        use crate::conditions::{self, ActiveCondition, ConditionType, ConditionDuration};
+
+        let invisible = vec![
+            ActiveCondition::new(ConditionType::Invisible, ConditionDuration::Rounds(3)),
+        ];
+        // Attacker-side query returns Some(true) => advantage.
+        assert_eq!(conditions::get_attack_advantage(&invisible), Some(true));
+    }
+
+    #[test]
+    fn test_restrained_imposes_attack_disadvantage_in_combat() {
+        use crate::conditions::{self, ActiveCondition, ConditionType, ConditionDuration};
+
+        let restrained = vec![
+            ActiveCondition::new(ConditionType::Restrained, ConditionDuration::Permanent),
+        ];
+        assert_eq!(conditions::get_attack_advantage(&restrained), Some(false));
+    }
+
+    #[test]
+    fn test_attacking_restrained_target_grants_advantage_in_combat() {
+        use crate::conditions::{self, ActiveCondition, ConditionType, ConditionDuration};
+
+        let attacker: Vec<ActiveCondition> = vec![];
+        let restrained = vec![
+            ActiveCondition::new(ConditionType::Restrained, ConditionDuration::Permanent),
+        ];
+        assert_eq!(conditions::get_defense_advantage(&attacker, &restrained), Some(true));
+    }
+
+    #[test]
+    fn test_attacking_invisible_target_imposes_disadvantage() {
+        use crate::conditions::{self, ActiveCondition, ConditionType, ConditionDuration};
+
+        let attacker: Vec<ActiveCondition> = vec![];
+        let invisible = vec![
+            ActiveCondition::new(ConditionType::Invisible, ConditionDuration::Rounds(3)),
+        ];
+        assert_eq!(conditions::get_defense_advantage(&attacker, &invisible), Some(false));
+    }
+
+    #[test]
+    fn test_unconscious_target_is_auto_crit() {
+        use crate::conditions::{self, ActiveCondition, ConditionType, ConditionDuration};
+
+        let unconscious = vec![
+            ActiveCondition::new(ConditionType::Unconscious, ConditionDuration::Permanent),
+        ];
+        assert!(conditions::is_auto_crit_target(&unconscious));
+    }
+
+    #[test]
+    fn test_player_with_invisible_rolls_attack_with_advantage() {
+        // End-to-end: player attacks a goblin while Invisible. Over many trials
+        // the hit rate should be measurably higher than neutral, confirming that
+        // advantage was actually applied to the roll (not just returned by the
+        // query function).
+        use crate::conditions::{ActiveCondition, ConditionType, ConditionDuration};
+
+        let mut wins_with_adv = 0;
+        let mut wins_neutral = 0;
+        let trials = 400;
+
+        for seed in 0..trials {
+            let mut state_adv = test_state_with_goblin();
+            state_adv.character.conditions.push(
+                ActiveCondition::new(ConditionType::Invisible, ConditionDuration::Rounds(10)),
+            );
+            // Equip a simple weapon so the attack actually rolls (unarmed bypasses).
+            // Shortcut: put an item with id 9999 as a club-equivalent into items.
+            let club = crate::state::Item {
+                id: 9999,
+                name: "club".to_string(),
+                description: "A sturdy club.".to_string(),
+                item_type: crate::state::ItemType::Weapon {
+                    damage_dice: 1,
+                    damage_die: 6,
+                    damage_type: crate::state::DamageType::Bludgeoning,
+                    properties: 0,
+                    category: crate::state::WeaponCategory::Simple,
+                    versatile_die: 0,
+                    range_normal: 0,
+                    range_long: 0,
+                },
+                location: None,
+                carried_by_player: true,
+            };
+            state_adv.world.items.insert(9999, club.clone());
+            state_adv.character.inventory.push(9999);
+            state_adv.character.equipped.main_hand = Some(9999);
+
+            let mut state_neu = state_adv.clone();
+            state_neu.character.conditions.clear();
+
+            let distance = 5u32;
+            let target_ac = 15i32;
+            let mut rng1 = StdRng::seed_from_u64(seed as u64);
+            let mut rng2 = StdRng::seed_from_u64(seed as u64);
+
+            let res_adv = resolve_player_attack(
+                &mut rng1, &state_adv.character, target_ac, false, Some(9999),
+                &state_adv.world.items, distance, true, false,
+                &[], // defender has no conditions
+            );
+            let res_neu = resolve_player_attack(
+                &mut rng2, &state_neu.character, target_ac, false, Some(9999),
+                &state_neu.world.items, distance, true, false, &[],
+            );
+
+            if res_adv.hit { wins_with_adv += 1; }
+            if res_neu.hit { wins_neutral += 1; }
+        }
+
+        // Advantage should measurably improve hit rate; require a reasonable gap.
+        assert!(
+            wins_with_adv > wins_neutral + 20,
+            "Invisible attacker should hit more often ({} vs neutral {})",
+            wins_with_adv, wins_neutral
+        );
     }
 
     // Hypothesis (Bug 3): Dodge disadvantage is not surfaced in attack output because
