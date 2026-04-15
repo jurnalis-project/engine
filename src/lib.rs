@@ -853,7 +853,7 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
             lines
         }
         Command::CharacterSheet => {
-            narration::narrate_character_sheet(state)
+            render_character_sheet_with_xp(state)
         }
         Command::Check(skill_name) => {
             match parser::resolve_skill(&skill_name) {
@@ -1442,6 +1442,27 @@ fn resolve_single_npc_attack(
     lines
 }
 
+/// Render `narrate_character_sheet` plus XP/level progression info.
+/// Kept in the orchestrator to avoid a `narration -> leveling` dependency.
+fn render_character_sheet_with_xp(state: &GameState) -> Vec<String> {
+    let mut lines = narration::narrate_character_sheet(state);
+    let xp = state.character.xp;
+    let level = state.character.level;
+    if level >= leveling::LEVEL_CAP {
+        lines.push(format!("XP: {} (max level)", xp));
+    } else {
+        let next = leveling::xp_for_next_level(level);
+        lines.push(format!("XP: {} / {} (level {} -> {})", xp, next, level, level + 1));
+    }
+    if state.character.asi_credits > 0 {
+        lines.push(format!(
+            "Unspent ASI/feat credits: {}",
+            state.character.asi_credits
+        ));
+    }
+    lines
+}
+
 fn end_combat(state: &mut GameState, victory: bool) -> Vec<String> {
     // Snapshot the dead NPCs from the just-ended combat BEFORE clearing
     // `active_combat`, so we award XP only for foes that were actually in
@@ -1681,7 +1702,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
             return inv_lines;
         }
         Command::CharacterSheet => {
-            return narration::narrate_character_sheet(state);
+            return render_character_sheet_with_xp(state);
         }
         Command::Help(topic) => {
             return narration::templates::render_help(
@@ -5302,6 +5323,35 @@ mod tests {
         // 450 (test foe) + 450 (boss) + 100 (quest bonus) = 1000.
         assert_eq!(state.character.xp, 1000);
         assert!(state.progress.objectives[0].completed);
+    }
+
+    #[test]
+    fn character_sheet_shows_xp_and_next_level_threshold() {
+        let mut state = create_test_exploration_state();
+        state.character.xp = 150;
+        let lines = render_character_sheet_with_xp(&state);
+        let joined = lines.join("\n");
+        assert!(joined.contains("XP: 150 / 300"), "Got: {}", joined);
+        assert!(joined.contains("level 1 -> 2"), "Got: {}", joined);
+    }
+
+    #[test]
+    fn character_sheet_at_max_level_shows_max_indicator() {
+        let mut state = create_test_exploration_state();
+        state.character.level = 20;
+        state.character.xp = 999_999;
+        let lines = render_character_sheet_with_xp(&state);
+        let joined = lines.join("\n");
+        assert!(joined.contains("max level"), "Got: {}", joined);
+    }
+
+    #[test]
+    fn character_sheet_shows_asi_credits_when_present() {
+        let mut state = create_test_exploration_state();
+        state.character.asi_credits = 2;
+        let lines = render_character_sheet_with_xp(&state);
+        let joined = lines.join("\n");
+        assert!(joined.contains("ASI/feat credits: 2"), "Got: {}", joined);
     }
 
     #[test]
