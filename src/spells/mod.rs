@@ -925,6 +925,56 @@ pub fn consume_spell_slot(
     true
 }
 
+/// Compute the concentration-save DC on taking damage while concentrating.
+///
+/// Per SRD 5.1: DC = max(10, damage_taken / 2). The caster makes a
+/// Constitution save against this DC; failure drops the concentration.
+pub fn concentration_save_dc(damage_taken: i32) -> i32 {
+    (damage_taken / 2).max(10)
+}
+
+/// Outcome of starting a new concentration spell.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConcentrationStart {
+    /// No prior concentration; the new spell is now the active concentration.
+    Started,
+    /// A prior concentration spell was dropped. Carries the dropped
+    /// spell's name so narration can mention it.
+    ReplacedPrior(String),
+}
+
+/// Apply starting a new concentration spell to the caster's state.
+///
+/// Mutates `current` to `Some(new_spell)` and returns whether there was a
+/// prior concentration that got dropped. The caller is responsible for
+/// narrating.
+pub fn begin_concentration(
+    current: &mut Option<String>,
+    new_spell: &str,
+) -> ConcentrationStart {
+    let prior = current.take();
+    *current = Some(new_spell.to_string());
+    match prior {
+        Some(name) if name.to_lowercase() != new_spell.to_lowercase() => {
+            ConcentrationStart::ReplacedPrior(name)
+        }
+        _ => ConcentrationStart::Started,
+    }
+}
+
+/// Resolve a concentration-maintenance save result. `saved == false` means
+/// the caster drops concentration.
+pub fn resolve_concentration_save(
+    rng: &mut impl Rng,
+    con_score: i32,
+    con_save_prof: bool,
+    proficiency_bonus: i32,
+    damage_taken: i32,
+) -> SpellSaveResult {
+    let dc = concentration_save_dc(damage_taken);
+    roll_spell_save(rng, con_score, proficiency_bonus, con_save_prof, dc)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1343,5 +1393,61 @@ mod tests {
         assert!(text.contains("Hunter's Mark [C]"), "Expected 'Hunter's Mark [C]' in:\n{}", text);
         // Detect Magic is both -> "[C,R]"
         assert!(text.contains("Detect Magic [C,R]"), "Expected 'Detect Magic [C,R]' in:\n{}", text);
+    }
+
+    // ---- Concentration ----
+
+    #[test]
+    fn test_concentration_save_dc_floor_is_10() {
+        // Tiny damage: DC still 10.
+        assert_eq!(concentration_save_dc(1), 10);
+        assert_eq!(concentration_save_dc(19), 10);
+    }
+
+    #[test]
+    fn test_concentration_save_dc_half_for_big_damage() {
+        // 30 damage -> DC 15.
+        assert_eq!(concentration_save_dc(30), 15);
+        // 100 damage -> DC 50.
+        assert_eq!(concentration_save_dc(100), 50);
+        // 20 damage -> DC 10 (half = 10, floor also 10).
+        assert_eq!(concentration_save_dc(20), 10);
+    }
+
+    #[test]
+    fn test_begin_concentration_from_none_starts() {
+        let mut current: Option<String> = None;
+        let result = begin_concentration(&mut current, "Bless");
+        assert_eq!(result, ConcentrationStart::Started);
+        assert_eq!(current, Some("Bless".to_string()));
+    }
+
+    #[test]
+    fn test_begin_concentration_replaces_prior() {
+        let mut current = Some("Bless".to_string());
+        let result = begin_concentration(&mut current, "Hold Person");
+        match result {
+            ConcentrationStart::ReplacedPrior(name) => assert_eq!(name, "Bless"),
+            _ => panic!("expected ReplacedPrior"),
+        }
+        assert_eq!(current, Some("Hold Person".to_string()));
+    }
+
+    #[test]
+    fn test_begin_concentration_same_spell_not_replaced() {
+        // Re-casting the same concentration spell should not report a replacement.
+        let mut current = Some("Bless".to_string());
+        let result = begin_concentration(&mut current, "bless"); // case-insensitive
+        assert_eq!(result, ConcentrationStart::Started);
+    }
+
+    #[test]
+    fn test_resolve_concentration_save_uses_con() {
+        // Sanity: DC is driven by damage, save uses CON score.
+        let mut rng = StdRng::seed_from_u64(5);
+        let save = resolve_concentration_save(&mut rng, 14, true, 2, 12);
+        // damage 12 -> DC 10. CON 14 (+2) + prof 2 = +4.
+        assert_eq!(save.dc, 10);
+        assert_eq!(save.modifier, 4);
     }
 }

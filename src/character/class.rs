@@ -61,6 +61,15 @@ pub struct ClassFeatureState {
     pub cunning_action_used: bool,
     #[serde(default)]
     pub sneak_attack_used_this_turn: bool,
+
+    // ---- Concentration (spells) ----
+    /// Name of the spell the character is currently concentrating on, or
+    /// `None`. Starting a new concentration spell drops the previous one
+    /// (per SRD 5.1: a caster can only concentrate on one spell at a time).
+    /// Also cleared when the caster fails a concentration save or drops
+    /// the spell deliberately.
+    #[serde(default)]
+    pub concentration_spell: Option<String>,
 }
 
 fn default_true() -> bool { true }
@@ -80,6 +89,7 @@ impl Default for ClassFeatureState {
             ki_points_remaining: 0,
             cunning_action_used: false,
             sneak_attack_used_this_turn: false,
+            concentration_spell: None,
         }
     }
 }
@@ -642,6 +652,8 @@ mod tests {
         assert!(!f.cunning_action_used);
         assert!(!f.sneak_attack_used_this_turn);
         assert!(f.prepared_spells.is_empty());
+        // New in feat/expanded-spell-catalog: concentration tracking.
+        assert!(f.concentration_spell.is_none());
     }
 
     #[test]
@@ -666,5 +678,7 @@ mod tests {
         assert!(!loaded.cunning_action_used);
         assert!(!loaded.sneak_attack_used_this_turn);
         assert!(loaded.prepared_spells.is_empty());
+        // Legacy saves have no concentration_spell; field defaults to None.
+        assert!(loaded.concentration_spell.is_none());
     }
 }
