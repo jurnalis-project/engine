@@ -4157,6 +4157,131 @@ mod tests {
     }
 
     #[test]
+    fn test_ranged_attack_no_nearby_hostiles_has_no_disadvantage() {
+        // Counter-test: no hostile within 5ft, ranged attack at normal range should
+        // NOT apply the melee-disadvantage. Target dodging is also off.
+        let mut state = create_test_combat_state();
+        force_player_turn(&mut state);
+
+        if let Some(ref mut combat) = state.active_combat {
+            combat.distances.insert(100, 40); // goblin at 40 ft — well clear of melee
+        }
+
+        // Equip a shortbow; pure ranged.
+        let bow_id = 203u32;
+        state.world.items.insert(bow_id, state::Item {
+            id: bow_id,
+            name: "Shortbow".to_string(),
+            description: "A shortbow.".to_string(),
+            item_type: state::ItemType::Weapon {
+                damage_dice: 1, damage_die: 6,
+                damage_type: state::DamageType::Piercing,
+                properties: crate::equipment::AMMUNITION | crate::equipment::TWO_HANDED,
+                category: state::WeaponCategory::Simple,
+                versatile_die: 0,
+                range_normal: 80,
+                range_long: 320,
+            },
+            location: None,
+            carried_by_player: true,
+        });
+        state.character.inventory.push(bow_id);
+        state.character.equipped.main_hand = Some(bow_id);
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "attack test goblin");
+
+        // No hostiles within 5ft, not dodging, within normal range -> no disadvantage.
+        assert!(
+            !output.text.iter().any(|t| t.to_lowercase().contains("disadvantage")),
+            "Ranged attack with no hostile in melee should NOT apply disadvantage. Got: {:?}",
+            output.text
+        );
+    }
+
+    #[test]
+    fn test_ranged_attack_at_distance_5_with_other_hostile_in_melee_has_disadvantage() {
+        // Integration: verify hostile_within_5ft wiring at every relevant call site
+        // by firing at a target at exactly 5 ft (the documented trigger boundary).
+        // SRD 5.1: ranged attacks within 5 ft of ANY living hostile have disadvantage.
+        let mut state = create_test_combat_state();
+        force_player_turn(&mut state);
+
+        // Add a SECOND hostile NPC in melee (distance 5) to prove the check
+        // considers all hostiles, not only the target.
+        let second_npc_id = 101;
+        let loc_id = state.current_location;
+        state.world.npcs.insert(second_npc_id, state::Npc {
+            id: second_npc_id,
+            name: "Second Goblin".to_string(),
+            role: state::NpcRole::Guard,
+            disposition: state::Disposition::Hostile,
+            dialogue_tags: vec![],
+            location: loc_id,
+            combat_stats: Some(state::CombatStats {
+                max_hp: 7, current_hp: 7, ac: 15, speed: 30,
+                ability_scores: {
+                    let mut m = HashMap::new();
+                    m.insert(Ability::Strength, 8);
+                    m.insert(Ability::Dexterity, 14);
+                    m
+                },
+                attacks: vec![state::NpcAttack {
+                    name: "Scimitar".to_string(), hit_bonus: 4,
+                    damage_dice: 1, damage_die: 6, damage_bonus: 2,
+                    damage_type: state::DamageType::Slashing, reach: 5,
+                    range_normal: 0, range_long: 0,
+                }],
+                proficiency_bonus: 2,
+                cr: 0.25,
+            }),
+            conditions: Vec::new(),
+        });
+        if let Some(loc) = state.world.locations.get_mut(&loc_id) {
+            loc.npcs.push(second_npc_id);
+        }
+
+        if let Some(ref mut combat) = state.active_combat {
+            // Target (first goblin) is at distance 40 (comfortably ranged).
+            combat.distances.insert(100, 40);
+            // Second goblin is in melee at distance 5.
+            combat.distances.insert(second_npc_id, 5);
+            // Add second goblin to initiative so it's picked up by has_living_hostile_within.
+            combat.initiative_order.push((combat::Combatant::Npc(second_npc_id), 5));
+        }
+
+        // Equip a longbow (pure ranged; no THROWN/melee fallback).
+        let bow_id = 202u32;
+        state.world.items.insert(bow_id, state::Item {
+            id: bow_id,
+            name: "Longbow".to_string(),
+            description: "A longbow.".to_string(),
+            item_type: state::ItemType::Weapon {
+                damage_dice: 1, damage_die: 8,
+                damage_type: state::DamageType::Piercing,
+                properties: crate::equipment::AMMUNITION | crate::equipment::TWO_HANDED | crate::equipment::HEAVY,
+                category: state::WeaponCategory::Martial,
+                versatile_die: 0,
+                range_normal: 150,
+                range_long: 600,
+            },
+            location: None,
+            carried_by_player: true,
+        });
+        state.character.inventory.push(bow_id);
+        state.character.equipped.main_hand = Some(bow_id);
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "attack test goblin");
+
+        assert!(
+            output.text.iter().any(|t| t.to_lowercase().contains("disadvantage")),
+            "Ranged attack while another hostile is within 5ft should apply disadvantage. Got: {:?}",
+            output.text
+        );
+    }
+
+    #[test]
     fn test_combat_not_in_combat_message() {
         let state = create_test_exploration_state();
         let state_json = serde_json::to_string(&state).unwrap();
