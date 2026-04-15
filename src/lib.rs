@@ -1669,7 +1669,7 @@ fn resolve_reaction_decision(
                 // weapon is being used for the OA (unusual) the standard
                 // ranged-in-melee disadvantage applies.
                 let hostile_within_5ft = combat::has_living_hostile_within(state, &combat, 5);
-                let result = combat::resolve_player_attack(
+                let mut result = combat::resolve_player_attack(
                     rng, &state.character, target_ac, false,
                     weapon_id, &state.world.items, old_distance,
                     state.character.equipped.off_hand.is_none(),
@@ -1677,6 +1677,9 @@ fn resolve_reaction_decision(
                     &target_conditions,
                     grappled_disadv,
                 );
+                // Apply magic weapon bonuses (if wielding a MagicWeapon).
+                let (atk_b, dmg_b) = magic_weapon_bonuses(state, weapon_id);
+                apply_magic_weapon_bonuses(&mut result, atk_b, dmg_b);
                 if result.hit {
                     if let Some(npc) = state.world.npcs.get_mut(&fleeing_npc_id) {
                         let _dealt = combat::apply_damage_to_npc(
@@ -2215,12 +2218,15 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                         &npc_name,
                     );
 
-                    let result = combat::resolve_player_attack(
+                    let mut result = combat::resolve_player_attack(
                         &mut rng, &state.character, target_ac, target_dodging,
                         weapon_id, &state.world.items, distance, off_hand_free, hostile_within_5ft,
                         target_conditions,
                         grappled_disadv,
                     );
+                    // Apply magic weapon bonuses (if wielding a MagicWeapon).
+                    let (atk_b, dmg_b) = magic_weapon_bonuses(state, weapon_id);
+                    apply_magic_weapon_bonuses(&mut result, atk_b, dmg_b);
 
                     let npc_name = state.world.npcs.get(&npc_id)
                         .map(|n| n.name.clone())
@@ -2483,7 +2489,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                     );
 
                     // Resolve the attack using the OFF-HAND weapon.
-                    let result = combat::resolve_player_attack(
+                    let mut result = combat::resolve_player_attack(
                         &mut rng, &state.character, target_ac, target_dodging,
                         Some(off_hand_id), &state.world.items, distance,
                         false, // off-hand slot is occupied (by this weapon), no Versatile bonus
@@ -2491,6 +2497,9 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                         target_conditions,
                         grappled_disadv,
                     );
+                    // Apply magic weapon bonuses to the off-hand result too.
+                    let (atk_b, dmg_b) = magic_weapon_bonuses(state, Some(off_hand_id));
+                    apply_magic_weapon_bonuses(&mut result, atk_b, dmg_b);
 
                     // Off-hand damage rule: remove the positive ability modifier from the
                     // damage roll. Negative modifiers still apply (SRD).
@@ -2502,9 +2511,15 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                         // dagger/shortsword/scimitar are FINESSE|LIGHT so the mod picked is
                         // max(STR,DEX). For a pure-LIGHT non-finesse weapon (handaxe,
                         // light hammer, club, sickle) STR is used.
+                        //
+                        // MagicWeapon variants carry the same `properties` field, so
+                        // we check both variants to find FINESSE for off-hand magic
+                        // daggers/shortswords.
                         let is_finesse = match state.world.items.get(&off_hand_id) {
                             Some(item) => match &item.item_type {
                                 state::ItemType::Weapon { properties, .. } =>
+                                    properties & crate::equipment::FINESSE != 0,
+                                state::ItemType::MagicWeapon { properties, .. } =>
                                     properties & crate::equipment::FINESSE != 0,
                                 _ => false,
                             },
@@ -3458,6 +3473,58 @@ fn handle_unequip_command(state: &mut GameState, target_str: &str) -> Vec<String
         }
         ResolveResult::Ambiguous(matches) => resolver::format_disambiguation(&matches),
         ResolveResult::NotFound => vec![narration::templates::UNEQUIP_NOT_EQUIPPED.replace("{name}", target_str)],
+    }
+}
+
+/// Return the (attack_bonus, damage_bonus) for a magic weapon, if any, gated
+/// on attunement when required. Returns (0, 0) for mundane weapons or items
+/// that are not attuned when attunement is needed.
+///
+/// Kept in `lib.rs` per the module-isolation rule: `combat/` does not know
+/// about magic weapon bonuses, and `equipment/` does not know about combat
+/// `AttackResult`. This helper lives at the orchestrator boundary.
+fn magic_weapon_bonuses(
+    state: &GameState,
+    weapon_id: Option<crate::types::ItemId>,
+) -> (i32, i32) {
+    let Some(id) = weapon_id else { return (0, 0) };
+    let Some(item) = state.world.items.get(&id) else { return (0, 0) };
+    match &item.item_type {
+        state::ItemType::MagicWeapon { attack_bonus, damage_bonus, requires_attunement, .. } => {
+            if *requires_attunement && !state.character.attuned_items.contains(&id) {
+                (0, 0)
+            } else {
+                (*attack_bonus, *damage_bonus)
+            }
+        }
+        _ => (0, 0),
+    }
+}
+
+/// Apply a magic weapon's attack/damage bonuses to an AttackResult in place.
+/// Re-evaluates `hit` and `total_attack` with the attack bonus, and adds
+/// `damage_bonus` to damage on hit (crits already double dice; the flat
+/// bonus is NOT doubled, per SRD 5.1).
+fn apply_magic_weapon_bonuses(
+    result: &mut combat::AttackResult,
+    attack_bonus: i32,
+    damage_bonus: i32,
+) {
+    if attack_bonus == 0 && damage_bonus == 0 {
+        return;
+    }
+    result.total_attack += attack_bonus;
+    // Re-evaluate hit with the new total_attack (nat-1 still auto-misses,
+    // nat-20 still auto-hits regardless of AC).
+    if !result.natural_1 && !result.natural_20 {
+        result.hit = result.total_attack >= result.target_ac;
+    }
+    if result.hit && damage_bonus != 0 {
+        result.damage = (result.damage + damage_bonus).max(1);
+    } else if !result.hit {
+        // On a miss (possibly caused by a negative damage_bonus... edge case),
+        // damage stays 0.
+        result.damage = 0;
     }
 }
 
@@ -7171,6 +7238,125 @@ mod tests {
         let output = process_input(&state_json, "attunement");
         assert!(output.text.iter().any(|t| t.to_lowercase().contains("not attuned") && t.contains("0")),
             "Expected 'not attuned' narration. Got: {:?}", output.text);
+    }
+
+    #[test]
+    fn test_magic_weapon_bonuses_returns_zero_for_mundane() {
+        let state = create_test_exploration_state();
+        // Make a mundane dagger in items
+        let mut state = state;
+        let id = give_magic_weapon_to_player(&mut state, "Dagger", "Dagger", 0, 0); // reused helper, bonus=0
+        // Overwrite as mundane weapon to be explicit.
+        state.world.items.insert(id, state::Item {
+            id, name: "Dagger".to_string(), description: String::new(),
+            item_type: state::ItemType::Weapon {
+                damage_dice: 1, damage_die: 4,
+                damage_type: state::DamageType::Piercing, properties: 0,
+                category: state::WeaponCategory::Simple,
+                versatile_die: 0, range_normal: 0, range_long: 0,
+            },
+            location: None, carried_by_player: true, charges_remaining: None,
+        });
+        assert_eq!(magic_weapon_bonuses(&state, Some(id)), (0, 0));
+    }
+
+    #[test]
+    fn test_magic_weapon_bonuses_returns_bonus_for_plus_one() {
+        let mut state = create_test_exploration_state();
+        let id = give_magic_weapon_to_player(&mut state, "+1 Longsword", "Longsword", 1, 1);
+        assert_eq!(magic_weapon_bonuses(&state, Some(id)), (1, 1));
+    }
+
+    #[test]
+    fn test_magic_weapon_bonuses_gated_on_attunement() {
+        use equipment::magic::Rarity;
+        let mut state = create_test_exploration_state();
+        let id = 9001;
+        state.world.items.insert(id, state::Item {
+            id, name: "Holy Avenger".to_string(), description: String::new(),
+            item_type: state::ItemType::MagicWeapon {
+                base_weapon: "Longsword".to_string(),
+                damage_dice: 1, damage_die: 8,
+                damage_type: state::DamageType::Slashing, properties: 0,
+                category: state::WeaponCategory::Martial,
+                versatile_die: 10, range_normal: 0, range_long: 0,
+                attack_bonus: 3, damage_bonus: 3,
+                rarity: Rarity::Legendary,
+                requires_attunement: true,
+            },
+            location: None, carried_by_player: true, charges_remaining: None,
+        });
+        state.character.inventory.push(id);
+        // Not attuned — no bonus.
+        assert_eq!(magic_weapon_bonuses(&state, Some(id)), (0, 0));
+        state.character.attuned_items.push(id);
+        assert_eq!(magic_weapon_bonuses(&state, Some(id)), (3, 3));
+    }
+
+    #[test]
+    fn test_apply_magic_weapon_bonuses_hits_with_new_threshold() {
+        use combat::AttackResult;
+        use state::DamageType;
+        // A near-miss that flips to a hit with +2 attack bonus.
+        let mut r = AttackResult {
+            hit: false, natural_20: false, natural_1: false,
+            attack_roll: 10, total_attack: 14, target_ac: 15,
+            damage: 0, damage_type: DamageType::Slashing,
+            weapon_name: "+2 Longsword".to_string(),
+            disadvantage: false,
+        };
+        apply_magic_weapon_bonuses(&mut r, 2, 2);
+        assert!(r.hit);
+        assert_eq!(r.total_attack, 16);
+    }
+
+    #[test]
+    fn test_apply_magic_weapon_bonuses_adds_damage_on_hit() {
+        use combat::AttackResult;
+        use state::DamageType;
+        let mut r = AttackResult {
+            hit: true, natural_20: false, natural_1: false,
+            attack_roll: 15, total_attack: 20, target_ac: 15,
+            damage: 8, damage_type: DamageType::Slashing,
+            weapon_name: "+1 Longsword".to_string(),
+            disadvantage: false,
+        };
+        apply_magic_weapon_bonuses(&mut r, 1, 1);
+        assert_eq!(r.damage, 9);
+    }
+
+    #[test]
+    fn test_apply_magic_weapon_bonuses_nat1_still_misses() {
+        use combat::AttackResult;
+        use state::DamageType;
+        let mut r = AttackResult {
+            hit: false, natural_20: false, natural_1: true,
+            attack_roll: 1, total_attack: 5, target_ac: 15,
+            damage: 0, damage_type: DamageType::Slashing,
+            weapon_name: "+3 Longsword".to_string(),
+            disadvantage: false,
+        };
+        apply_magic_weapon_bonuses(&mut r, 3, 3);
+        // Nat 1 still misses, regardless of bonus.
+        assert!(!r.hit);
+    }
+
+    #[test]
+    fn test_apply_magic_weapon_bonuses_nat20_still_hits_and_adds_damage() {
+        use combat::AttackResult;
+        use state::DamageType;
+        // Nat 20 crit already, damage was 2d8 + str mod rolled as 15. The
+        // +2 damage bonus is added flat (NOT doubled per SRD).
+        let mut r = AttackResult {
+            hit: true, natural_20: true, natural_1: false,
+            attack_roll: 20, total_attack: 25, target_ac: 30, // still hits because nat20
+            damage: 15, damage_type: DamageType::Slashing,
+            weapon_name: "+2 Longsword".to_string(),
+            disadvantage: false,
+        };
+        apply_magic_weapon_bonuses(&mut r, 2, 2);
+        assert!(r.hit);
+        assert_eq!(r.damage, 17);
     }
 
     #[test]

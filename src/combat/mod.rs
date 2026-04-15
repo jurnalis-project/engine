@@ -286,6 +286,8 @@ pub fn player_melee_reach(
     };
     match &item.item_type {
         ItemType::Weapon { properties, .. } if properties & REACH != 0 => 10,
+        // MagicWeapon inherits the base weapon's reach.
+        ItemType::MagicWeapon { properties, .. } if properties & REACH != 0 => 10,
         _ => 5,
     }
 }
@@ -383,10 +385,17 @@ pub fn resolve_player_attack(
     target_conditions: &[ActiveCondition],
     extra_disadvantage: bool,
 ) -> AttackResult {
+    // Base weapon fields come from either a mundane `Weapon` or a
+    // `MagicWeapon` (which embeds the same mechanical fields). Magic
+    // attack/damage bonuses are applied by the `lib.rs` orchestrator AFTER
+    // this function returns — this function stays oblivious to magic bonuses.
     let (weapon_name, damage_dice, damage_die, damage_type, properties, versatile_die, range_normal, range_long) =
         match weapon_id.and_then(|id| items.get(&id)) {
             Some(item) => match &item.item_type {
                 ItemType::Weapon { damage_dice, damage_die, damage_type, properties, versatile_die, range_normal, range_long, .. } => {
+                    (item.name.clone(), *damage_dice, *damage_die, *damage_type, *properties, *versatile_die, *range_normal, *range_long)
+                }
+                ItemType::MagicWeapon { damage_dice, damage_die, damage_type, properties, versatile_die, range_normal, range_long, .. } => {
                     (item.name.clone(), *damage_dice, *damage_die, *damage_type, *properties, *versatile_die, *range_normal, *range_long)
                 }
                 _ => ("Unarmed".to_string(), 0, 0, DamageType::Bludgeoning, 0u16, 0, 0, 0),
