@@ -11,6 +11,7 @@ use crate::types::{Ability, Skill, ItemId};
 use self::race::Race;
 use self::class::{Class, ClassFeatureState};
 use self::background::Background;
+use self::feat::{FeatDef, FeatEffect};
 use crate::rules::dice::roll_4d6_drop_lowest;
 use crate::equipment::Equipment;
 use crate::conditions::ActiveCondition;
@@ -76,6 +77,15 @@ pub struct Character {
     /// to an empty vec. Added 2026-04-15 (feat/magic-items).
     #[serde(default)]
     pub attuned_items: Vec<ItemId>,
+    /// The origin feat chosen at character creation. Defaults to None on
+    /// legacy saves and before the ChooseOriginFeat step completes.
+    /// See `docs/specs/feat-system.md`.
+    #[serde(default)]
+    pub origin_feat: Option<String>,
+    /// Names of general and fighting-style feats taken via ASI credits.
+    /// Empty for characters who have never spent an ASI on a feat.
+    #[serde(default)]
+    pub general_feats: Vec<String>,
 }
 
 impl Character {
@@ -176,6 +186,8 @@ pub fn create_character(
         tool_proficiencies: Vec::new(),
         languages: vec!["Common".to_string()],
         attuned_items: Vec::new(),
+        origin_feat: None,
+        general_feats: Vec::new(),
     }
 }
 
@@ -225,6 +237,26 @@ pub fn default_starting_spells(class: Class) -> Vec<String> {
         Class::Paladin | Class::Ranger => Vec::new(),
         Class::Barbarian | Class::Fighter | Class::Monk | Class::Rogue => Vec::new(),
     }
+}
+
+/// Total initiative bonus granted by the character's feats. Iterates all
+/// held feats (origin + general) and sums every `FeatEffect::Initiative(n)`
+/// found on their definitions. Unknown feat names are silently ignored —
+/// this mirrors how `grant_starting_equipment` skips unknown items.
+pub fn initiative_bonus_from_feats(character: &Character) -> i32 {
+    let mut total = 0i32;
+    let mut all_names: Vec<&str> = character.general_feats.iter().map(|s| s.as_str()).collect();
+    if let Some(ref name) = character.origin_feat {
+        all_names.push(name.as_str());
+    }
+    for name in all_names {
+        if let Some(feat) = FeatDef::lookup(name) {
+            for effect in feat.effects {
+                if let FeatEffect::Initiative(n) = effect { total += *n; }
+            }
+        }
+    }
+    total
 }
 
 /// Populate per-class feature counters at character creation. Mutates the
@@ -526,6 +558,51 @@ mod tests {
         v.as_object_mut().unwrap().remove("attuned_items");
         let loaded: Character = serde_json::from_value(v).unwrap();
         assert!(loaded.attuned_items.is_empty());
+    }
+
+    #[test]
+    fn test_new_character_has_no_feats() {
+        let c = create_character("Test".to_string(), Race::Human, Class::Fighter, test_scores(), vec![]);
+        assert_eq!(c.origin_feat, None);
+        assert!(c.general_feats.is_empty());
+    }
+
+    #[test]
+    fn test_character_missing_feat_fields_deserialize_defaults() {
+        let c = create_character("Test".to_string(), Race::Human, Class::Fighter, test_scores(), vec![]);
+        let mut v: serde_json::Value = serde_json::to_value(&c).unwrap();
+        let obj = v.as_object_mut().unwrap();
+        obj.remove("origin_feat");
+        obj.remove("general_feats");
+        let loaded: Character = serde_json::from_value(v).unwrap();
+        assert_eq!(loaded.origin_feat, None);
+        assert!(loaded.general_feats.is_empty());
+    }
+
+    #[test]
+    fn test_initiative_bonus_from_feats_alert() {
+        let mut c = create_character("Test".to_string(), Race::Human, Class::Fighter, test_scores(), vec![]);
+        assert_eq!(initiative_bonus_from_feats(&c), 0, "no feats, no bonus");
+        c.origin_feat = Some("Alert".to_string());
+        assert_eq!(initiative_bonus_from_feats(&c), 5, "Alert grants +5");
+    }
+
+    #[test]
+    fn test_initiative_bonus_from_feats_unknown_ignored() {
+        let mut c = create_character("Test".to_string(), Race::Human, Class::Fighter, test_scores(), vec![]);
+        c.origin_feat = Some("Nonexistent".to_string());
+        c.general_feats = vec!["AlsoMissing".to_string()];
+        assert_eq!(initiative_bonus_from_feats(&c), 0);
+    }
+
+    #[test]
+    fn test_initiative_bonus_sums_origin_and_general() {
+        let mut c = create_character("Test".to_string(), Race::Human, Class::Fighter, test_scores(), vec![]);
+        c.origin_feat = Some("Alert".to_string());
+        // No general feats grant initiative in our catalog, but verify summation
+        // is non-destructive when there are no extra contributions.
+        c.general_feats = vec!["Tough".to_string()];
+        assert_eq!(initiative_bonus_from_feats(&c), 5);
     }
 
     #[test]
