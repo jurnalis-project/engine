@@ -1,6 +1,7 @@
 // jurnalis-engine/src/character/mod.rs
 pub mod race;
 pub mod class;
+pub mod background;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
