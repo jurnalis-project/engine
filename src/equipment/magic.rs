@@ -211,6 +211,78 @@ pub const SRD_WANDS: &[MagicItemDef] = &[
         kind: MagicItemKind::Wand { spell_name: "Lightning Bolt", charges_max: 7 } },
 ];
 
+/// Sum AC bonuses from any wondrous items the character is wearing/carrying
+/// whose effect contributes to AC. Attunement-gated effects contribute only
+/// while the item is present in `character.attuned_items`; non-attunement
+/// wondrous items contribute whenever the item is in inventory.
+///
+/// Currently Cloak of Protection and Ring of Protection each grant +1.
+///
+/// This lives in `equipment/` (not `character/` or `combat/`) because the
+/// equipment module owns AC calculation end-to-end. The function reads the
+/// character's item references and attunement list but does not mutate —
+/// and the `character::Character` import already exists in this module, so
+/// no new cross-module coupling is introduced.
+pub fn wondrous_ac_bonus(
+    character: &crate::character::Character,
+    items: &std::collections::HashMap<crate::types::ItemId, crate::state::Item>,
+) -> i32 {
+    let mut total = 0;
+    for (id, item) in items {
+        // Skip items not in the character's inventory (items scattered in
+        // the world should not grant AC).
+        if !character.inventory.contains(id) {
+            continue;
+        }
+        let (effect, requires_attune) = match &item.item_type {
+            crate::state::ItemType::Wondrous { effect, requires_attunement, .. } => {
+                (*effect, *requires_attunement)
+            }
+            _ => continue,
+        };
+        if requires_attune && !character.attuned_items.contains(id) {
+            continue;
+        }
+        match effect {
+            WondrousEffect::CloakOfProtection | WondrousEffect::RingOfProtection => {
+                total += 1;
+            }
+            _ => {}
+        }
+    }
+    total
+}
+
+/// Sum saving-throw bonuses from wondrous items contributing to saves.
+/// Same attunement-gating rules as `wondrous_ac_bonus`.
+pub fn wondrous_save_bonus(
+    character: &crate::character::Character,
+    items: &std::collections::HashMap<crate::types::ItemId, crate::state::Item>,
+) -> i32 {
+    let mut total = 0;
+    for (id, item) in items {
+        if !character.inventory.contains(id) {
+            continue;
+        }
+        let (effect, requires_attune) = match &item.item_type {
+            crate::state::ItemType::Wondrous { effect, requires_attunement, .. } => {
+                (*effect, *requires_attunement)
+            }
+            _ => continue,
+        };
+        if requires_attune && !character.attuned_items.contains(id) {
+            continue;
+        }
+        match effect {
+            WondrousEffect::CloakOfProtection | WondrousEffect::RingOfProtection => {
+                total += 1;
+            }
+            _ => {}
+        }
+    }
+    total
+}
+
 /// Look up a magic-item definition by name across all SRD tables.
 pub fn find_magic_item(name: &str) -> Option<&'static MagicItemDef> {
     SRD_MAGIC_WEAPONS.iter()

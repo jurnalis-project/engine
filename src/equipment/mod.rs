@@ -122,6 +122,10 @@ pub const SRD_ARMOR: &[ArmorDef] = &[
 pub fn calculate_ac(character: &Character, items: &HashMap<ItemId, Item>) -> i32 {
     let dex_mod = character.ability_modifier(Ability::Dexterity);
 
+    // Body slot: mundane Armor or MagicArmor both contribute. MagicArmor adds
+    // its `ac_bonus` on top of the base. `requires_attunement`-gated magic
+    // armor only grants the bonus while attuned; base armor mechanics still
+    // apply regardless (you're wearing it).
     let base_ac = match character.equipped.body {
         Some(body_id) => {
             match items.get(&body_id).map(|i| &i.item_type) {
@@ -132,6 +136,17 @@ pub fn calculate_ac(character: &Character, items: &HashMap<ItemId, Item>) -> i32
                         Some(cap) => dex_mod.min(*cap as i32),
                     };
                     *base_ac as i32 + dex_contribution
+                }
+                Some(ItemType::MagicArmor { base_ac, max_dex_bonus, ac_bonus, requires_attunement, .. }) => {
+                    let dex_contribution = match max_dex_bonus {
+                        None => dex_mod,
+                        Some(0) => 0,
+                        Some(cap) => dex_mod.min(*cap as i32),
+                    };
+                    let bonus_applies = !requires_attunement
+                        || character.attuned_items.contains(&body_id);
+                    let bonus = if bonus_applies { *ac_bonus } else { 0 };
+                    *base_ac as i32 + dex_contribution + bonus
                 }
                 _ => 10 + dex_mod,
             }
@@ -149,7 +164,9 @@ pub fn calculate_ac(character: &Character, items: &HashMap<ItemId, Item>) -> i32
         None => 0,
     };
 
-    base_ac + shield_bonus
+    let wondrous_bonus = magic::wondrous_ac_bonus(character, items);
+
+    base_ac + shield_bonus + wondrous_bonus
 }
 
 #[cfg(test)]
@@ -329,5 +346,102 @@ mod tests {
         assert!(eq.main_hand.is_none());
         assert!(eq.off_hand.is_none());
         assert!(eq.body.is_none());
+    }
+
+    // ---- Magic armor / wondrous AC bonus ----
+
+    fn make_magic_armor(id: u32, name: &str, base_armor: &str, category: ArmorCategory, base_ac: u32, max_dex: Option<u32>, ac_bonus: i32) -> Item {
+        use crate::equipment::magic::Rarity;
+        Item {
+            id, name: name.to_string(), description: String::new(),
+            item_type: ItemType::MagicArmor {
+                base_armor: base_armor.to_string(),
+                category, base_ac, max_dex_bonus: max_dex,
+                str_requirement: 0, stealth_disadvantage: false,
+                ac_bonus,
+                rarity: Rarity::Rare,
+                requires_attunement: false,
+            },
+            location: None, carried_by_player: true,
+            charges_remaining: None,
+        }
+    }
+
+    fn make_wondrous(id: u32, name: &str, effect: crate::equipment::magic::WondrousEffect, requires_attunement: bool) -> Item {
+        use crate::equipment::magic::Rarity;
+        Item {
+            id, name: name.to_string(), description: String::new(),
+            item_type: ItemType::Wondrous {
+                effect,
+                rarity: Rarity::Uncommon,
+                requires_attunement,
+            },
+            location: None, carried_by_player: true,
+            charges_remaining: None,
+        }
+    }
+
+    #[test]
+    fn test_ac_magic_armor_adds_bonus() {
+        let mut c = test_character(14); // DEX mod +2
+        let mut items = HashMap::new();
+        items.insert(0, make_magic_armor(0, "+2 Chain Mail", "Chain Mail", ArmorCategory::Heavy, 16, Some(0), 2));
+        c.equipped.body = Some(0);
+        // Base 16 heavy (no dex) + 2 bonus = 18
+        assert_eq!(calculate_ac(&c, &items), 18);
+    }
+
+    #[test]
+    fn test_ac_wondrous_cloak_of_protection_when_attuned() {
+        use crate::equipment::magic::WondrousEffect;
+        let mut c = test_character(14); // DEX mod +2
+        let mut items = HashMap::new();
+        items.insert(5, make_wondrous(5, "Cloak of Protection", WondrousEffect::CloakOfProtection, true));
+        c.inventory.push(5);
+        // Not attuned yet — no bonus.
+        assert_eq!(calculate_ac(&c, &items), 12); // 10 + 2 dex
+        // Attuned — +1 AC.
+        c.attuned_items.push(5);
+        assert_eq!(calculate_ac(&c, &items), 13);
+    }
+
+    #[test]
+    fn test_ac_wondrous_ring_of_protection_stacks_with_cloak() {
+        use crate::equipment::magic::WondrousEffect;
+        let mut c = test_character(14); // DEX mod +2
+        let mut items = HashMap::new();
+        items.insert(5, make_wondrous(5, "Cloak of Protection", WondrousEffect::CloakOfProtection, true));
+        items.insert(6, make_wondrous(6, "Ring of Protection", WondrousEffect::RingOfProtection, true));
+        c.inventory.push(5);
+        c.inventory.push(6);
+        c.attuned_items.push(5);
+        c.attuned_items.push(6);
+        // 10 + 2 dex + 1 cloak + 1 ring = 14
+        assert_eq!(calculate_ac(&c, &items), 14);
+    }
+
+    #[test]
+    fn test_ac_wondrous_requires_attunement_when_flagged() {
+        use crate::equipment::magic::WondrousEffect;
+        let mut c = test_character(14);
+        let mut items = HashMap::new();
+        // Flag as not requiring attunement — bonus should apply without attuning.
+        items.insert(5, make_wondrous(5, "Cloak of Protection", WondrousEffect::CloakOfProtection, false));
+        // Even without attuning, if requires_attunement is false the bonus applies
+        // (while item is in inventory).
+        // For MVP, bonus only applies while attuned OR item doesn't require attunement
+        // AND the item is in the character inventory.
+        c.inventory.push(5);
+        assert_eq!(calculate_ac(&c, &items), 13);
+    }
+
+    #[test]
+    fn test_ac_magic_armor_medium_respects_dex_cap() {
+        let mut c = test_character(18); // DEX mod +4
+        let mut items = HashMap::new();
+        items.insert(0, make_magic_armor(0, "+1 Breastplate", "Breastplate", ArmorCategory::Medium, 14, Some(2), 1));
+        c.equipped.body = Some(0);
+        // 14 + min(4, 2) + 1 bonus = 17
+        assert_eq!(calculate_ac(&c, &items), 17);
     }
 }
