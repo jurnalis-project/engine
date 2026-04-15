@@ -107,6 +107,11 @@ pub struct CombatStats {
     pub ability_scores: HashMap<crate::types::Ability, i32>,
     pub attacks: Vec<NpcAttack>,
     pub proficiency_bonus: i32,
+    /// SRD challenge rating, persisted on the NPC so the orchestrator can
+    /// award XP on combat victory (see `leveling::xp_for_cr`). Defaults to
+    /// 0.0 for older saves that pre-date this field; CR 0 maps to 10 XP.
+    #[serde(default)]
+    pub cr: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -3338,6 +3338,7 @@ mod tests {
                     range_normal: 0, range_long: 0,
                 }],
                 proficiency_bonus: 2,
+                cr: 0.25,
             }),
             conditions: Vec::new(),
         });
@@ -4502,6 +4503,7 @@ mod tests {
                 ability_scores: HashMap::new(),
                 attacks: vec![],
                 proficiency_bonus: 2,
+                cr: 1.0,
             }),
             conditions: vec![],
         });
@@ -4625,6 +4627,7 @@ mod tests {
                 ability_scores: HashMap::new(),
                 attacks: vec![],
                 proficiency_bonus: 2,
+                cr: 1.0,
             }),
             conditions: vec![],
         });
@@ -4835,6 +4838,7 @@ mod tests {
                 ability_scores: HashMap::new(),
                 attacks: vec![],
                 proficiency_bonus: 2,
+                cr: 0.25,
             }),
             conditions: vec![],
         });

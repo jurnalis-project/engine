@@ -245,6 +245,7 @@ pub fn monster_to_combat_stats(def: &MonsterDef) -> CombatStats {
         ability_scores,
         attacks,
         proficiency_bonus: def.proficiency_bonus,
+        cr: def.cr,
     }
 }
 
