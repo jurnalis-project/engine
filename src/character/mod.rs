@@ -135,21 +135,28 @@ pub fn create_character(
     let hp = calculate_hp(class, con_mod, 1);
     let save_profs = class.saving_throw_proficiencies();
     let traits = race.traits().iter().map(|s| s.to_string()).collect();
-    let (spell_slots_max, spell_slots_remaining, known_spells) = match class {
-        Class::Wizard => {
-            let slots = vec![2]; // Level 1 Wizard: 2 first-level slots
-            let known = vec![
-                "Fire Bolt".to_string(),
-                "Prestidigitation".to_string(),
-                "Magic Missile".to_string(),
-                "Burning Hands".to_string(),
-                "Sleep".to_string(),
-                "Shield".to_string(),
-            ];
-            (slots.clone(), slots, known)
-        }
-        _ => (Vec::new(), Vec::new(), Vec::new()),
+
+    // Wizard MVP starts knowing the canonical spell list. Other casters
+    // currently start with empty `known_spells` until #27 wires per-class
+    // spell catalogs. Spell slots come from `Class::starting_spell_slots()`.
+    let known_spells = match class {
+        Class::Wizard => vec![
+            "Fire Bolt".to_string(),
+            "Prestidigitation".to_string(),
+            "Magic Missile".to_string(),
+            "Burning Hands".to_string(),
+            "Sleep".to_string(),
+            "Shield".to_string(),
+        ],
+        _ => Vec::new(),
     };
+    let spell_slots_max = class.starting_spell_slots();
+    let spell_slots_remaining = spell_slots_max.clone();
+
+    // Initialize per-class feature state. Defaults fill the rest.
+    let mut class_features = ClassFeatureState::default();
+    let cha_mod = Ability::modifier(*final_scores.get(&Ability::Charisma).unwrap_or(&10));
+    init_class_features(&mut class_features, class, /* level */ 1, cha_mod, &known_spells);
 
     Character {
         name, race, class, level: 1,
@@ -162,13 +169,67 @@ pub fn create_character(
         spell_slots_remaining,
         known_spells,
         hit_dice_remaining: 1, // level 1 starts with 1 hit die
-        class_features: ClassFeatureState::default(),
+        class_features,
         exhaustion: 0,
         xp: 0,
         asi_credits: 0,
         background: Background::default(),
         tool_proficiencies: Vec::new(),
         languages: vec!["Common".to_string()],
+    }
+}
+
+/// Populate per-class feature counters at character creation. Mutates the
+/// already-default-initialized `ClassFeatureState`. Centralized here so the
+/// orchestrator and any future entry points (level-up, respec) can call it.
+pub(crate) fn init_class_features(
+    features: &mut ClassFeatureState,
+    class: Class,
+    level: u32,
+    cha_mod: i32,
+    known_spells: &[String],
+) {
+    match class {
+        Class::Barbarian => {
+            features.rage_uses_remaining = match level {
+                0..=2 => 2,
+                3..=5 => 3,
+                6..=11 => 4,
+                12..=16 => 5,
+                _ => 6,
+            };
+            features.rage_active = false;
+        }
+        Class::Bard => {
+            features.bardic_inspiration_remaining = cha_mod.max(1) as u32;
+        }
+        Class::Cleric => {
+            features.channel_divinity_remaining = match level {
+                0..=1 => 0,
+                2..=5 => 1,
+                6..=17 => 2,
+                _ => 3,
+            };
+        }
+        Class::Paladin => {
+            features.lay_on_hands_pool = 5 * level.max(1);
+            features.channel_divinity_remaining = match level {
+                0..=2 => 0,
+                3..=10 => 1,
+                11..=19 => 2,
+                _ => 3,
+            };
+        }
+        Class::Monk => {
+            // Ki/Focus unlocks at level 2 in the SRD; level 1 monks have none.
+            features.ki_points_remaining = if level < 2 { 0 } else { level };
+        }
+        Class::Wizard => {
+            features.prepared_spells = known_spells.to_vec();
+        }
+        // Other classes use the all-defaults state.
+        Class::Fighter | Class::Druid | Class::Ranger
+        | Class::Rogue | Class::Sorcerer | Class::Warlock => {}
     }
 }
 
@@ -310,6 +371,86 @@ mod tests {
         assert_eq!(loaded.background, Background::Acolyte);
         assert!(loaded.tool_proficiencies.is_empty());
         assert!(loaded.languages.is_empty(), "legacy saves default to empty Vec<String>");
+    }
+
+    // ---- Creation for new SRD classes ----
+
+    #[test]
+    fn test_bard_gets_level_one_spell_slot() {
+        let c = create_character("Vira".to_string(), Race::Human, Class::Bard, test_scores(), vec![]);
+        assert_eq!(c.spell_slots_max, vec![2]);
+        assert_eq!(c.spell_slots_remaining, vec![2]);
+        // CHA for our test_scores is 8 -> mod -1 -> min 1 inspiration.
+        // Human +1 to all -> 9 -> mod -1 still. So expected 1.
+        assert_eq!(c.class_features.bardic_inspiration_remaining, 1);
+    }
+
+    #[test]
+    fn test_cleric_druid_sorcerer_get_slots() {
+        let c = create_character("Prie".to_string(), Race::Human, Class::Cleric, test_scores(), vec![]);
+        assert_eq!(c.spell_slots_max, vec![2]);
+        let c = create_character("Gaia".to_string(), Race::Human, Class::Druid, test_scores(), vec![]);
+        assert_eq!(c.spell_slots_max, vec![2]);
+        let c = create_character("Sorc".to_string(), Race::Human, Class::Sorcerer, test_scores(), vec![]);
+        assert_eq!(c.spell_slots_max, vec![2]);
+    }
+
+    #[test]
+    fn test_warlock_gets_single_slot() {
+        let c = create_character("Patr".to_string(), Race::Human, Class::Warlock, test_scores(), vec![]);
+        assert_eq!(c.spell_slots_max, vec![1]);
+        assert_eq!(c.spell_slots_remaining, vec![1]);
+    }
+
+    #[test]
+    fn test_paladin_ranger_no_slots_at_level_one() {
+        let c = create_character("Pally".to_string(), Race::Human, Class::Paladin, test_scores(), vec![]);
+        assert!(c.spell_slots_max.is_empty());
+        assert!(c.spell_slots_remaining.is_empty());
+        let c = create_character("Aran".to_string(), Race::Human, Class::Ranger, test_scores(), vec![]);
+        assert!(c.spell_slots_max.is_empty());
+        assert!(c.spell_slots_remaining.is_empty());
+    }
+
+    #[test]
+    fn test_barbarian_starts_with_two_rage_uses() {
+        let c = create_character("Krom".to_string(), Race::Human, Class::Barbarian, test_scores(), vec![]);
+        assert_eq!(c.class_features.rage_uses_remaining, 2);
+        assert!(!c.class_features.rage_active);
+    }
+
+    #[test]
+    fn test_paladin_starts_with_lay_on_hands_pool() {
+        let c = create_character("Pally".to_string(), Race::Human, Class::Paladin, test_scores(), vec![]);
+        // 5 * paladin level = 5 at level 1
+        assert_eq!(c.class_features.lay_on_hands_pool, 5);
+    }
+
+    #[test]
+    fn test_monk_starts_with_no_ki() {
+        // Monks unlock Ki at level 2 per SRD; level 1 pool is 0.
+        let c = create_character("Pax".to_string(), Race::Human, Class::Monk, test_scores(), vec![]);
+        assert_eq!(c.class_features.ki_points_remaining, 0);
+    }
+
+    #[test]
+    fn test_cleric_level_one_has_no_channel_divinity() {
+        let c = create_character("Prie".to_string(), Race::Human, Class::Cleric, test_scores(), vec![]);
+        assert_eq!(c.class_features.channel_divinity_remaining, 0);
+    }
+
+    #[test]
+    fn test_wizard_prepared_spells_mirror_known() {
+        let c = create_character("Gan".to_string(), Race::Human, Class::Wizard, test_scores(), vec![]);
+        assert_eq!(c.class_features.prepared_spells, c.known_spells);
+    }
+
+    #[test]
+    fn test_barbarian_hp_uses_d12() {
+        // Fighter with same scores -> d10, so max_hp = 10 + con_mod (test_scores CON 13 + human +1 => 14 => +2 -> 12).
+        // Barbarian d12 -> 12 + con_mod = 14.
+        let c = create_character("Krom".to_string(), Race::Human, Class::Barbarian, test_scores(), vec![]);
+        assert_eq!(c.max_hp, 14);
     }
 
     #[test]
