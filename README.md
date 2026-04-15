@@ -1,10 +1,9 @@
 <div align="center">
   <img src="assets/wordmark.png" alt="jurnalis-engine" width="444" />
-</div>
 
-[![Crates.io](https://img.shields.io/crates/v/jurnalis-engine.svg)](https://crates.io/crates/jurnalis-engine)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![CI](https://github.com/jurnalis-project/engine/actions/workflows/ci.yml/badge.svg)](https://github.com/jurnalis-project/engine/actions)
+  [![Crates.io](https://img.shields.io/crates/v/jurnalis-engine.svg)](https://crates.io/crates/jurnalis-engine)
+  [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+</div>
 
 A stateless, deterministic text-based CRPG engine implementing SRD 5.1 (d20) mechanics. The engine is a standalone Rust library crate — it carries no server, no persistent state, and no runtime dependencies beyond `serde` and `rand`. Embed it in any application or run it directly via the included `jurnalis-cli` binary.
 
