@@ -54,6 +54,7 @@ pub fn generate_items(
                         range_normal: w.range_normal, range_long: w.range_long,
                     },
                     location: Some(location), carried_by_player: false,
+                    charges_remaining: None,
                 }
             }
             1 => {
@@ -80,6 +81,7 @@ pub fn generate_items(
                         stealth_disadvantage: a.stealth_disadvantage,
                     },
                     location: Some(location), carried_by_player: false,
+                    charges_remaining: None,
                 }
             }
             2 => {
@@ -88,6 +90,7 @@ pub fn generate_items(
                     id, name: c.0.to_string(), description: c.1.to_string(),
                     item_type: ItemType::Consumable { effect: c.2.to_string() },
                     location: Some(location), carried_by_player: false,
+                    charges_remaining: None,
                 }
             }
             _ => {
@@ -96,6 +99,7 @@ pub fn generate_items(
                     id, name: m.0.to_string(), description: m.1.to_string(),
                     item_type: ItemType::Misc,
                     location: Some(location), carried_by_player: false,
+                    charges_remaining: None,
                 }
             }
         };

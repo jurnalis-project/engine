@@ -197,6 +197,24 @@ pub struct Item {
     pub item_type: ItemType,
     pub location: Option<LocationId>,
     pub carried_by_player: bool,
+    /// Remaining charges for `ItemType::Wand` items. `None` for all
+    /// non-wand items. Defaults to `None` for back-compat with older saves.
+    #[serde(default)]
+    pub charges_remaining: Option<u32>,
+}
+
+impl Default for Item {
+    fn default() -> Self {
+        Item {
+            id: 0,
+            name: String::new(),
+            description: String::new(),
+            item_type: ItemType::Misc,
+            location: None,
+            carried_by_player: false,
+            charges_remaining: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -266,6 +284,63 @@ pub enum ItemType {
     Consumable { effect: String },
     Key { unlocks: String },
     Misc,
+    // --- Magic item variants (added 2026-04-15, feat/magic-items). ---
+    // All additive; pre-existing variants above are untouched so older saves
+    // round-trip without modification.
+    /// A magical weapon. Carries the base weapon's mechanical fields (so
+    /// `resolve_player_attack` can treat it uniformly) plus flat
+    /// attack/damage bonuses applied by the `lib.rs` orchestrator.
+    MagicWeapon {
+        base_weapon: String,
+        damage_dice: u32,
+        damage_die: u32,
+        damage_type: DamageType,
+        properties: u16,
+        category: WeaponCategory,
+        versatile_die: u32,
+        range_normal: u32,
+        range_long: u32,
+        attack_bonus: i32,
+        damage_bonus: i32,
+        rarity: crate::equipment::magic::Rarity,
+        requires_attunement: bool,
+    },
+    /// A magical armor. Carries the base armor's fields plus an additive
+    /// AC bonus applied in `equipment::calculate_ac`.
+    MagicArmor {
+        base_armor: String,
+        category: ArmorCategory,
+        base_ac: u32,
+        max_dex_bonus: Option<u32>,
+        str_requirement: u32,
+        stealth_disadvantage: bool,
+        ac_bonus: i32,
+        rarity: crate::equipment::magic::Rarity,
+        requires_attunement: bool,
+    },
+    /// A wondrous item (no slot; effect gated by attunement).
+    Wondrous {
+        effect: crate::equipment::magic::WondrousEffect,
+        rarity: crate::equipment::magic::Rarity,
+        requires_attunement: bool,
+    },
+    /// A one-shot potion.
+    Potion {
+        effect: crate::equipment::magic::PotionEffect,
+        rarity: crate::equipment::magic::Rarity,
+    },
+    /// A spell scroll.
+    Scroll {
+        spell_name: String,
+        spell_level: u32,
+        rarity: crate::equipment::magic::Rarity,
+    },
+    /// A charged wand. Remaining charges live on `Item::charges_remaining`.
+    Wand {
+        spell_name: String,
+        rarity: crate::equipment::magic::Rarity,
+        requires_attunement: bool,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -462,6 +537,149 @@ mod tests {
 
         let loaded = load_game(&json.to_string()).unwrap();
         assert!(!loaded.progress.first_victory);
+    }
+
+    #[test]
+    fn test_item_charges_remaining_defaults_none_when_missing() {
+        // Older saves without the `charges_remaining` field should
+        // deserialize to None. Constructs a minimal Item JSON without the
+        // field.
+        let json = r#"{
+            "id": 42,
+            "name": "Old Trinket",
+            "description": "",
+            "item_type": "Misc",
+            "location": null,
+            "carried_by_player": true
+        }"#;
+        let item: Item = serde_json::from_str(json).unwrap();
+        assert_eq!(item.charges_remaining, None);
+    }
+
+    #[test]
+    fn test_item_charges_remaining_roundtrips_some() {
+        let item = Item {
+            id: 7,
+            name: "Wand of Magic Missiles".to_string(),
+            description: "A slim wand.".to_string(),
+            item_type: ItemType::Wand {
+                spell_name: "Magic Missile".to_string(),
+                rarity: crate::equipment::magic::Rarity::Uncommon,
+                requires_attunement: false,
+            },
+            location: None,
+            carried_by_player: true,
+            charges_remaining: Some(5),
+        };
+        let json = serde_json::to_string(&item).unwrap();
+        let loaded: Item = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded.charges_remaining, Some(5));
+        match loaded.item_type {
+            ItemType::Wand { ref spell_name, requires_attunement, .. } => {
+                assert_eq!(spell_name, "Magic Missile");
+                assert!(!requires_attunement);
+            }
+            _ => panic!("expected Wand"),
+        }
+    }
+
+    #[test]
+    fn test_magic_weapon_item_type_roundtrips() {
+        use crate::equipment::magic::Rarity;
+        let item = Item {
+            id: 3,
+            name: "+2 Longsword".to_string(),
+            description: "A magic sword.".to_string(),
+            item_type: ItemType::MagicWeapon {
+                base_weapon: "Longsword".to_string(),
+                damage_dice: 1, damage_die: 8,
+                damage_type: DamageType::Slashing,
+                properties: 0,
+                category: WeaponCategory::Martial,
+                versatile_die: 10,
+                range_normal: 0, range_long: 0,
+                attack_bonus: 2, damage_bonus: 2,
+                rarity: Rarity::Rare,
+                requires_attunement: false,
+            },
+            location: None,
+            carried_by_player: true,
+            charges_remaining: None,
+        };
+        let json = serde_json::to_string(&item).unwrap();
+        let loaded: Item = serde_json::from_str(&json).unwrap();
+        match loaded.item_type {
+            ItemType::MagicWeapon { attack_bonus, damage_bonus, rarity, .. } => {
+                assert_eq!(attack_bonus, 2);
+                assert_eq!(damage_bonus, 2);
+                assert_eq!(rarity, Rarity::Rare);
+            }
+            _ => panic!("expected MagicWeapon"),
+        }
+    }
+
+    #[test]
+    fn test_magic_armor_item_type_roundtrips() {
+        use crate::equipment::magic::Rarity;
+        let item = Item {
+            id: 4,
+            name: "+1 Chain Mail".to_string(),
+            description: "Enchanted chain.".to_string(),
+            item_type: ItemType::MagicArmor {
+                base_armor: "Chain Mail".to_string(),
+                category: ArmorCategory::Heavy,
+                base_ac: 16,
+                max_dex_bonus: Some(0),
+                str_requirement: 13,
+                stealth_disadvantage: true,
+                ac_bonus: 1,
+                rarity: Rarity::Rare,
+                requires_attunement: false,
+            },
+            location: None,
+            carried_by_player: true,
+            charges_remaining: None,
+        };
+        let json = serde_json::to_string(&item).unwrap();
+        let loaded: Item = serde_json::from_str(&json).unwrap();
+        match loaded.item_type {
+            ItemType::MagicArmor { ac_bonus, base_ac, .. } => {
+                assert_eq!(ac_bonus, 1);
+                assert_eq!(base_ac, 16);
+            }
+            _ => panic!("expected MagicArmor"),
+        }
+    }
+
+    #[test]
+    fn test_potion_item_type_roundtrips() {
+        use crate::equipment::magic::{Rarity, PotionEffect};
+        let item = Item {
+            id: 5,
+            name: "Potion of Greater Healing".to_string(),
+            description: "Vial of potent brew.".to_string(),
+            item_type: ItemType::Potion {
+                effect: PotionEffect::Healing { dice: 4, die: 4, bonus: 4 },
+                rarity: Rarity::Uncommon,
+            },
+            location: None,
+            carried_by_player: true,
+            charges_remaining: None,
+        };
+        let json = serde_json::to_string(&item).unwrap();
+        let loaded: Item = serde_json::from_str(&json).unwrap();
+        match loaded.item_type {
+            ItemType::Potion { effect, rarity } => {
+                assert_eq!(rarity, Rarity::Uncommon);
+                match effect {
+                    PotionEffect::Healing { dice, die, bonus } => {
+                        assert_eq!(dice, 4); assert_eq!(die, 4); assert_eq!(bonus, 4);
+                    }
+                    _ => panic!("expected Healing"),
+                }
+            }
+            _ => panic!("expected Potion"),
+        }
     }
 
     #[test]

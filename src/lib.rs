@@ -493,6 +493,7 @@ fn grant_starting_equipment(state: &mut GameState) {
             },
             location: None,
             carried_by_player: true,
+            charges_remaining: None,
         })
     };
 
@@ -511,6 +512,7 @@ fn grant_starting_equipment(state: &mut GameState) {
             },
             location: None,
             carried_by_player: true,
+            charges_remaining: None,
         })
     };
 
@@ -646,6 +648,7 @@ fn grant_background_equipment(state: &mut GameState) {
             },
             location: None,
             carried_by_player: true,
+            charges_remaining: None,
         })
     };
 
@@ -663,6 +666,7 @@ fn grant_background_equipment(state: &mut GameState) {
             },
             location: None,
             carried_by_player: true,
+            charges_remaining: None,
         })
     };
 
@@ -4304,6 +4308,7 @@ mod tests {
                 max_dex_bonus: None, str_requirement: 0, stealth_disadvantage: false,
             },
             location: None, carried_by_player: true,
+            charges_remaining: None,
         });
         state.character.inventory.push(armor_id);
 
@@ -4327,6 +4332,7 @@ mod tests {
                 versatile_die: 0, range_normal: 0, range_long: 0,
             },
             location: None, carried_by_player: true,
+            charges_remaining: None,
         });
         state.world.items.insert(id2, state::Item {
             id: id2, name: "Longsword".to_string(), description: "A long sword.".to_string(),
@@ -4336,6 +4342,7 @@ mod tests {
                 versatile_die: 10, range_normal: 0, range_long: 0,
             },
             location: None, carried_by_player: true,
+            charges_remaining: None,
         });
         state.character.inventory.push(id1);
         state.character.inventory.push(id2);
@@ -4442,6 +4449,7 @@ mod tests {
             },
             location: None,
             carried_by_player: true,
+            charges_remaining: None,
         });
         state.character.inventory.push(weapon_id);
         state.character.equipped.main_hand = Some(weapon_id);
@@ -4756,6 +4764,7 @@ mod tests {
             },
             location: None,
             carried_by_player: true,
+            charges_remaining: None,
         });
         state.character.inventory.push(bow_id);
         state.character.equipped.main_hand = Some(bow_id);
@@ -4798,6 +4807,7 @@ mod tests {
             },
             location: None,
             carried_by_player: true,
+            charges_remaining: None,
         });
         state.character.inventory.push(bow_id);
         state.character.equipped.main_hand = Some(bow_id);
@@ -4882,6 +4892,7 @@ mod tests {
             },
             location: None,
             carried_by_player: true,
+            charges_remaining: None,
         });
         state.character.inventory.push(bow_id);
         state.character.equipped.main_hand = Some(bow_id);
@@ -5254,6 +5265,7 @@ mod tests {
             },
             location: None,
             carried_by_player: true,
+            charges_remaining: None,
         });
         state.character.equipped.main_hand = Some(glaive_id);
 
@@ -5291,6 +5303,7 @@ mod tests {
             },
             location: None,
             carried_by_player: true,
+            charges_remaining: None,
         });
         state.character.equipped.main_hand = Some(glaive_id);
 
@@ -5371,6 +5384,7 @@ mod tests {
             },
             location: None,
             carried_by_player: true,
+            charges_remaining: None,
         });
         state.character.inventory.push(main_id);
         state.character.equipped.main_hand = Some(main_id);
@@ -5389,6 +5403,7 @@ mod tests {
             },
             location: None,
             carried_by_player: true,
+            charges_remaining: None,
         });
         state.character.inventory.push(off_id);
         state.character.equipped.off_hand = Some(off_id);
@@ -5737,6 +5752,7 @@ mod tests {
             item_type: state::ItemType::Consumable { effect: effect.to_string() },
             location: None,
             carried_by_player: true,
+            charges_remaining: None,
         };
         state.world.items.insert(item_id, item);
         state.character.inventory.push(item_id);
@@ -5841,6 +5857,7 @@ mod tests {
             item_type: state::ItemType::Misc,
             location: None,
             carried_by_player: true,
+            charges_remaining: None,
         };
         state.world.items.insert(item_id, item);
         state.character.inventory.push(item_id);
@@ -5949,6 +5966,7 @@ mod tests {
             item_type: state::ItemType::Misc,
             location: Some(state.current_location),
             carried_by_player: false,
+            charges_remaining: None,
         });
         if let Some(loc) = state.world.locations.get_mut(&state.current_location) {
             loc.items.push(artifact_id);

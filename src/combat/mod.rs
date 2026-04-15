@@ -1226,6 +1226,7 @@ mod tests {
             },
             location: None,
             carried_by_player: true,
+            charges_remaining: None,
         });
         character.equipped.main_hand = Some(500);
         assert_eq!(player_melee_reach(&character, &items), 5,
@@ -1250,6 +1251,7 @@ mod tests {
             },
             location: None,
             carried_by_player: true,
+            charges_remaining: None,
         });
         character.equipped.main_hand = Some(501);
         assert_eq!(player_melee_reach(&character, &items), 10,
@@ -1276,6 +1278,7 @@ mod tests {
             },
             location: None,
             carried_by_player: true,
+            charges_remaining: None,
         });
         character.equipped.main_hand = Some(502);
         assert_eq!(player_melee_reach(&character, &items), 5,
@@ -1316,6 +1319,7 @@ mod tests {
             },
             location: None,
             carried_by_player: true,
+            charges_remaining: None,
         });
         state.character.equipped.main_hand = Some(700);
 
@@ -2136,6 +2140,7 @@ mod tests {
                 },
                 location: None,
                 carried_by_player: true,
+                charges_remaining: None,
             };
             state_adv.world.items.insert(9999, club.clone());
             state_adv.character.inventory.push(9999);
@@ -2198,6 +2203,7 @@ mod tests {
                     versatile_die: 0, range_normal: 0, range_long: 0,
                 },
                 location: None, carried_by_player: true,
+                charges_remaining: None,
             };
             state.world.items.insert(9999, club);
             state.character.inventory.push(9999);

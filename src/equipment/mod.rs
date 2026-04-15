@@ -179,6 +179,7 @@ mod tests {
                 str_requirement: 0, stealth_disadvantage: false,
             },
             location: None, carried_by_player: true,
+            charges_remaining: None,
         }
     }
 
