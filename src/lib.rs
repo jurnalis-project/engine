@@ -3148,6 +3148,29 @@ fn resolve_use_item(
             let name = state.world.items.get(&item_id).map(|i| i.name.clone()).unwrap_or_else(|| item_name.to_string());
             let item_type = state.world.items.get(&item_id).map(|i| i.item_type.clone());
             match item_type {
+                Some(state::ItemType::Potion { effect, .. }) => {
+                    let result = use_magic_potion(state, rng, &name, effect);
+                    // Potions (mechanical or flavor) are always consumed on use.
+                    state.character.inventory.retain(|&id| id != item_id);
+                    state.world.items.remove(&item_id);
+                    return (result, true);
+                }
+                Some(state::ItemType::Wand { ref spell_name, requires_attunement, .. }) => {
+                    let result = use_magic_wand(state, &name, spell_name, requires_attunement, item_id);
+                    // Wands are NEVER consumed — charges track their uses.
+                    // We always report "action consumed" so the pipeline treats
+                    // wand invocation as a regular action, even when blocked on
+                    // attunement / zero charges (player still chose to try).
+                    return (result, true);
+                }
+                Some(state::ItemType::Scroll { ref spell_name, spell_level, .. }) => {
+                    let (lines, consumed) = use_magic_scroll(state, rng, &name, spell_name, spell_level);
+                    if consumed {
+                        state.character.inventory.retain(|&id| id != item_id);
+                        state.world.items.remove(&item_id);
+                    }
+                    return (lines, consumed);
+                }
                 Some(state::ItemType::Consumable { ref effect }) => {
                     let result = match effect.as_str() {
                         "heal_1d8" => {
@@ -3216,6 +3239,170 @@ fn resolve_use_item(
         ResolveResult::Ambiguous(matches) => (resolver::format_disambiguation(&matches), false),
         ResolveResult::NotFound => (vec![format!("You don't have any \"{}\".", item_name)], false),
     }
+}
+
+/// Apply a magic potion's mechanical effect and return the narration lines.
+/// Caller is responsible for removing the potion from inventory/world.
+///
+/// Healing potions roll `dice`d`die` + `bonus` and heal (capped at max_hp).
+/// Flavor-only effects (Speed, Invisibility, Climbing) return a narrator
+/// line but don't alter character state — full mechanical support is
+/// deferred (see docs/specs/magic-items.md).
+fn use_magic_potion(
+    state: &mut GameState,
+    rng: &mut StdRng,
+    item_name: &str,
+    effect: equipment::magic::PotionEffect,
+) -> Vec<String> {
+    use equipment::magic::PotionEffect;
+    match effect {
+        PotionEffect::Healing { dice, die, bonus } => {
+            let rolls = rules::dice::roll_dice(rng, dice, die);
+            let roll_total: i32 = rolls.iter().sum::<i32>() + bonus;
+            let old_hp = state.character.current_hp;
+            state.character.current_hp = (state.character.current_hp + roll_total)
+                .min(state.character.max_hp);
+            let healed = state.character.current_hp - old_hp;
+            if healed > 0 {
+                vec![narration::templates::USE_HEAL
+                    .replace("{item}", item_name)
+                    .replace("{roll}", &healed.to_string())
+                    .replace("{current}", &state.character.current_hp.to_string())
+                    .replace("{max}", &state.character.max_hp.to_string())]
+            } else {
+                vec![narration::templates::USE_HEAL_FULL
+                    .replace("{item}", item_name)
+                    .replace("{current}", &state.character.current_hp.to_string())
+                    .replace("{max}", &state.character.max_hp.to_string())]
+            }
+        }
+        PotionEffect::Speed => {
+            vec![format!(
+                "You quaff the {}. A rush of quickened blood pulses through you — \
+                 the world seems to slow for a moment. (Haste-like effect is flavor only.)",
+                item_name)]
+        }
+        PotionEffect::Invisibility => {
+            vec![format!(
+                "You quaff the {}. Your form shimmers and fades from sight. \
+                 (Invisibility is flavor only.)",
+                item_name)]
+        }
+        PotionEffect::Climbing => {
+            vec![format!(
+                "You quaff the {}. Your hands and feet feel unnaturally sticky, \
+                 ready to grip any surface. (Climbing is flavor only.)",
+                item_name)]
+        }
+    }
+}
+
+/// Expend one charge from a wand and narrate its invocation. Returns the
+/// narration. The wand is NEVER removed from inventory (re-chargeable).
+///
+/// Attunement is validated first: if the wand requires attunement and the
+/// player is not attuned, nothing is consumed and a rejection line is
+/// returned. If charges are depleted (`0`), a no-charge line is returned.
+///
+/// Full spell resolution is deferred — MVP narrates the invocation only
+/// (see docs/specs/magic-items.md "Deferred / Out of Scope").
+fn use_magic_wand(
+    state: &mut GameState,
+    item_name: &str,
+    spell_name: &str,
+    requires_attunement: bool,
+    item_id: types::ItemId,
+) -> Vec<String> {
+    if requires_attunement && !state.character.attuned_items.contains(&item_id) {
+        return vec![format!(
+            "The {} hums faintly but its power does not answer. You must attune to it first.",
+            item_name)];
+    }
+    let charges = state.world.items.get(&item_id)
+        .and_then(|i| i.charges_remaining).unwrap_or(0);
+    if charges == 0 {
+        return vec![format!(
+            "The {} lies dormant in your hand; its charges are spent.",
+            item_name)];
+    }
+    // Decrement charge (saturating at 0 defensively).
+    if let Some(item) = state.world.items.get_mut(&item_id) {
+        item.charges_remaining = Some(charges.saturating_sub(1));
+    }
+    let remaining = charges.saturating_sub(1);
+    vec![format!(
+        "You channel the {} — its runes flare as {} manifests. ({} charge{} remaining)",
+        item_name,
+        spell_name,
+        remaining,
+        if remaining == 1 { "" } else { "s" })]
+}
+
+/// Attempt to cast a spell scroll. Returns (narration, consumed).
+///
+/// Spellcaster classes (Bard/Cleric/Druid/Paladin/Ranger/Sorcerer/Warlock/
+/// Wizard) read the scroll normally and consume it on any attempt. Non-casters
+/// must pass a DC 10 Arcana check to cast successfully; on a failure the
+/// scroll is still consumed (SRD 5.1 spell scroll rules).
+///
+/// Full spell resolution is deferred — MVP narrates the invocation only.
+fn use_magic_scroll(
+    state: &mut GameState,
+    rng: &mut StdRng,
+    item_name: &str,
+    spell_name: &str,
+    spell_level: u32,
+) -> (Vec<String>, bool) {
+    let _ = spell_level; // future: gate scroll level on caster level
+    let is_caster = character_is_spellcaster(&state.character);
+    if is_caster {
+        return (
+            vec![format!(
+                "You unfurl the {} and intone its arcane script — {} surges forth, \
+                 then the parchment crumbles to dust.",
+                item_name, spell_name)],
+            true,
+        );
+    }
+    // Non-caster: DC 10 Arcana check.
+    let result = rules::checks::skill_check(
+        rng,
+        types::Skill::Arcana,
+        &state.character.ability_scores,
+        &state.character.skill_proficiencies,
+        state.character.proficiency_bonus(),
+        10,
+        false, false,
+    );
+    let mut lines = Vec::new();
+    lines.push(format!(
+        "The {} requires arcane training you lack — you attempt a DC 10 Arcana check.",
+        item_name));
+    lines.push(format!(
+        "Arcana check: rolled {} + {} = {} vs DC 10.",
+        result.roll, result.modifier, result.total));
+    if result.success {
+        lines.push(format!(
+            "You decipher the script — {} flares forth before the scroll crumbles.",
+            spell_name));
+    } else {
+        lines.push(format!(
+            "The glyphs unravel before you. The {} disintegrates, its power wasted.",
+            item_name));
+    }
+    (lines, true)
+}
+
+/// Return true if the character has spellcasting at class level 1+ (SRD 5.1
+/// full and half-casters are listed; Fighter/Rogue/Monk/Barbarian are not).
+/// Multi-class and subclass-granted casting are out of scope for this MVP.
+fn character_is_spellcaster(c: &character::Character) -> bool {
+    use character::class::Class;
+    matches!(
+        c.class,
+        Class::Bard | Class::Cleric | Class::Druid | Class::Paladin
+        | Class::Ranger | Class::Sorcerer | Class::Warlock | Class::Wizard
+    )
 }
 
 fn seed_objectives(state: &mut GameState) {
@@ -7372,5 +7559,307 @@ mod tests {
             "Expected cloak listed. Got: {:?}", output.text);
         assert!(output.text.iter().any(|t| t.contains("1") && t.contains("3")),
             "Expected slot count (1/3). Got: {:?}", output.text);
+    }
+
+    // ==== Potion use tests (feat/magic-items) ====
+
+    /// Helper: place a magic-item Potion in the player's inventory.
+    fn give_potion_to_player(
+        state: &mut GameState,
+        name: &str,
+        effect: equipment::magic::PotionEffect,
+        rarity: equipment::magic::Rarity,
+    ) -> u32 {
+        let item_id = (state.world.items.len() as u32) + 2200;
+        let item = state::Item {
+            id: item_id,
+            name: name.to_string(),
+            description: String::new(),
+            item_type: state::ItemType::Potion { effect, rarity },
+            location: None,
+            carried_by_player: true,
+            charges_remaining: None,
+        };
+        state.world.items.insert(item_id, item);
+        state.character.inventory.push(item_id);
+        item_id
+    }
+
+    /// Helper: place a magic-item Scroll in the player's inventory.
+    fn give_scroll_to_player(
+        state: &mut GameState,
+        name: &str,
+        spell_name: &str,
+        spell_level: u32,
+        rarity: equipment::magic::Rarity,
+    ) -> u32 {
+        let item_id = (state.world.items.len() as u32) + 2300;
+        let item = state::Item {
+            id: item_id,
+            name: name.to_string(),
+            description: String::new(),
+            item_type: state::ItemType::Scroll {
+                spell_name: spell_name.to_string(),
+                spell_level,
+                rarity,
+            },
+            location: None,
+            carried_by_player: true,
+            charges_remaining: None,
+        };
+        state.world.items.insert(item_id, item);
+        state.character.inventory.push(item_id);
+        item_id
+    }
+
+    /// Helper: place a magic-item Wand in the player's inventory with initial charges.
+    fn give_wand_to_player(
+        state: &mut GameState,
+        name: &str,
+        spell_name: &str,
+        rarity: equipment::magic::Rarity,
+        requires_attunement: bool,
+        charges: u32,
+    ) -> u32 {
+        let item_id = (state.world.items.len() as u32) + 2400;
+        let item = state::Item {
+            id: item_id,
+            name: name.to_string(),
+            description: String::new(),
+            item_type: state::ItemType::Wand {
+                spell_name: spell_name.to_string(),
+                rarity,
+                requires_attunement,
+            },
+            location: None,
+            carried_by_player: true,
+            charges_remaining: Some(charges),
+        };
+        state.world.items.insert(item_id, item);
+        state.character.inventory.push(item_id);
+        item_id
+    }
+
+    #[test]
+    fn test_use_potion_of_healing_restores_hp() {
+        use equipment::magic::{PotionEffect, Rarity};
+        let mut state = create_test_exploration_state();
+        // Damage the player first.
+        state.character.max_hp = 30;
+        state.character.current_hp = 10;
+        let id = give_potion_to_player(&mut state, "Potion of Healing",
+            PotionEffect::Healing { dice: 2, die: 4, bonus: 2 }, Rarity::Common);
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "use potion of healing");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+
+        // Potion is consumed.
+        assert!(!new_state.character.inventory.contains(&id),
+            "Potion should be removed from inventory. Got: {:?}", new_state.character.inventory);
+        assert!(!new_state.world.items.contains_key(&id),
+            "Potion should be removed from world items");
+        // HP went up (2d4+2 is 4..=10).
+        assert!(new_state.character.current_hp > 10,
+            "Expected HP to increase. Got {}", new_state.character.current_hp);
+        assert!(new_state.character.current_hp <= 30, "Must not exceed max_hp");
+        // Narration mentions healing.
+        assert!(output.text.iter().any(|t| t.to_lowercase().contains("heal")
+            || t.to_lowercase().contains("recover")
+            || t.to_lowercase().contains("hp")),
+            "Expected healing narration. Got: {:?}", output.text);
+    }
+
+    #[test]
+    fn test_use_potion_of_healing_caps_at_max_hp() {
+        use equipment::magic::{PotionEffect, Rarity};
+        let mut state = create_test_exploration_state();
+        state.character.max_hp = 30;
+        state.character.current_hp = 29; // Nearly full.
+        give_potion_to_player(&mut state, "Potion of Healing",
+            PotionEffect::Healing { dice: 2, die: 4, bonus: 2 }, Rarity::Common);
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "use potion of healing");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(new_state.character.current_hp, 30,
+            "HP must cap at max_hp. Got {}", new_state.character.current_hp);
+        assert!(!output.text.is_empty());
+    }
+
+    #[test]
+    fn test_use_flavor_potion_is_consumed_with_narration() {
+        use equipment::magic::{PotionEffect, Rarity};
+        let mut state = create_test_exploration_state();
+        let id = give_potion_to_player(&mut state, "Potion of Invisibility",
+            PotionEffect::Invisibility, Rarity::VeryRare);
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "use potion of invisibility");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        // Even flavor-only potions consume on use.
+        assert!(!new_state.character.inventory.contains(&id),
+            "Flavor potion should still be consumed. Got: {:?}", new_state.character.inventory);
+        assert!(!output.text.is_empty());
+    }
+
+    // ==== Wand charges tests ====
+
+    #[test]
+    fn test_use_wand_decrements_charges() {
+        use equipment::magic::Rarity;
+        let mut state = create_test_exploration_state();
+        let id = give_wand_to_player(&mut state, "Wand of Magic Missiles",
+            "Magic Missile", Rarity::Uncommon, false, 7);
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "use wand of magic missiles");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+
+        let remaining = new_state.world.items.get(&id)
+            .and_then(|i| i.charges_remaining).expect("wand still exists");
+        assert_eq!(remaining, 6, "One charge should be spent. Got {}", remaining);
+        // Wand is NOT consumed (unlike potions/scrolls).
+        assert!(new_state.character.inventory.contains(&id),
+            "Wand should remain in inventory after use");
+        assert!(!output.text.is_empty());
+    }
+
+    #[test]
+    fn test_use_wand_with_zero_charges_fails() {
+        use equipment::magic::Rarity;
+        let mut state = create_test_exploration_state();
+        let id = give_wand_to_player(&mut state, "Wand of Magic Missiles",
+            "Magic Missile", Rarity::Uncommon, false, 0);
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "use wand of magic missiles");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+
+        // Still at 0.
+        let remaining = new_state.world.items.get(&id)
+            .and_then(|i| i.charges_remaining).unwrap();
+        assert_eq!(remaining, 0);
+        // Wand still in inventory.
+        assert!(new_state.character.inventory.contains(&id));
+        // Narration mentions no charges.
+        assert!(output.text.iter().any(|t| t.to_lowercase().contains("no charges")
+            || t.to_lowercase().contains("spent")
+            || t.to_lowercase().contains("depleted")),
+            "Expected no-charges narration. Got: {:?}", output.text);
+    }
+
+    #[test]
+    fn test_use_wand_requires_attunement_when_gated() {
+        use equipment::magic::Rarity;
+        let mut state = create_test_exploration_state();
+        let id = give_wand_to_player(&mut state, "Wand of Fireballs",
+            "Fireball", Rarity::Rare, true, 7);
+        // Player is NOT attuned.
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "use wand of fireballs");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        // Charges unchanged.
+        let remaining = new_state.world.items.get(&id)
+            .and_then(|i| i.charges_remaining).unwrap();
+        assert_eq!(remaining, 7, "Charges must not decrement when not attuned");
+        // Narration mentions attunement requirement.
+        assert!(output.text.iter().any(|t| t.to_lowercase().contains("attune")),
+            "Expected attunement-required narration. Got: {:?}", output.text);
+    }
+
+    // ==== Scroll tests ====
+
+    #[test]
+    fn test_use_scroll_by_spellcaster_consumes_scroll() {
+        use equipment::magic::Rarity;
+        use crate::character::class::Class;
+        let mut state = create_test_exploration_state();
+        // Make the player a Wizard so they cast scrolls without a check.
+        state.character.class = Class::Wizard;
+        let id = give_scroll_to_player(&mut state, "Scroll of Fireball",
+            "Fireball", 3, Rarity::Uncommon);
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "use scroll of fireball");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert!(!new_state.character.inventory.contains(&id),
+            "Scroll should be consumed by a spellcaster. Got: {:?}", new_state.character.inventory);
+        assert!(!output.text.is_empty());
+    }
+
+    #[test]
+    fn test_use_scroll_by_nonspellcaster_rolls_arcana_check() {
+        use equipment::magic::Rarity;
+        use crate::character::class::Class;
+        let mut state = create_test_exploration_state();
+        // Fighter is the non-spellcaster baseline.
+        state.character.class = Class::Fighter;
+        give_scroll_to_player(&mut state, "Scroll of Fireball",
+            "Fireball", 3, Rarity::Uncommon);
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "use scroll of fireball");
+        // Narration MUST mention the check (arcana / DC 10).
+        let full = output.text.join(" ").to_lowercase();
+        assert!(full.contains("arcana") || full.contains("dc 10") || full.contains("check"),
+            "Expected DC 10 Arcana-check narration. Got: {:?}", output.text);
+    }
+
+    // ==== World loot magic item spawn ====
+
+    #[test]
+    fn test_world_generates_some_magic_items_with_deterministic_seed() {
+        use rand::SeedableRng;
+        use rand::rngs::StdRng;
+        // Generate a large batch and ensure SOME magic items appear.
+        // Each item has ~5% magic spawn chance, so 1000 items → binomial mean 50.
+        let mut rng = StdRng::seed_from_u64(12345);
+        let items = crate::world::item::generate_items(&mut rng, &[0, 1, 2, 3, 4], 1000);
+        let magic_count = items.values().filter(|i| matches!(
+            i.item_type,
+            state::ItemType::MagicWeapon { .. }
+            | state::ItemType::MagicArmor { .. }
+            | state::ItemType::Wondrous { .. }
+            | state::ItemType::Potion { .. }
+            | state::ItemType::Scroll { .. }
+            | state::ItemType::Wand { .. }
+        )).count();
+        assert!(magic_count > 0,
+            "Expected some magic items in 1000 spawns. Got 0");
+    }
+
+    #[test]
+    fn test_world_magic_item_rarity_weighted_common_dominates() {
+        // Over a large sample, Common rarity should dominate Legendary.
+        use rand::SeedableRng;
+        use rand::rngs::StdRng;
+        use equipment::magic::Rarity;
+
+        fn item_rarity(it: &state::ItemType) -> Option<Rarity> {
+            match it {
+                state::ItemType::MagicWeapon { rarity, .. }
+                | state::ItemType::MagicArmor { rarity, .. }
+                | state::ItemType::Wondrous { rarity, .. }
+                | state::ItemType::Potion { rarity, .. }
+                | state::ItemType::Scroll { rarity, .. }
+                | state::ItemType::Wand { rarity, .. } => Some(*rarity),
+                _ => None,
+            }
+        }
+
+        let mut rng = StdRng::seed_from_u64(99);
+        let items = crate::world::item::generate_items(&mut rng, &[0, 1, 2, 3, 4], 5000);
+        let mut common = 0usize;
+        let mut legendary = 0usize;
+        for i in items.values() {
+            match item_rarity(&i.item_type) {
+                Some(Rarity::Common) => common += 1,
+                Some(Rarity::Legendary) => legendary += 1,
+                _ => {}
+            }
+        }
+        assert!(common > legendary,
+            "Expected Common ({}) > Legendary ({}) over 5000 spawns", common, legendary);
     }
 }
