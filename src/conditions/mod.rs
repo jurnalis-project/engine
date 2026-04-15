@@ -159,17 +159,37 @@ pub fn get_save_auto_fail(conditions: &[ActiveCondition], ability: Ability) -> b
     false
 }
 
-/// Check if the combatant can take actions
-pub fn can_take_actions(conditions: &[ActiveCondition]) -> bool {
-    // Stunned and Paralyzed are incapacitated
-    !has_condition(conditions, ConditionType::Stunned)
-        && !has_condition(conditions, ConditionType::Paralyzed)
+/// Check if a combatant is incapacitated (directly or via a derived condition).
+///
+/// Stunned, Paralyzed, Petrified, and Unconscious all include the Incapacitated
+/// condition per SRD. This helper centralizes that derivation so callers don't
+/// have to enumerate every trigger.
+pub fn is_incapacitated(conditions: &[ActiveCondition]) -> bool {
+    has_condition(conditions, ConditionType::Incapacitated)
+        || has_condition(conditions, ConditionType::Stunned)
+        || has_condition(conditions, ConditionType::Paralyzed)
+        || has_condition(conditions, ConditionType::Petrified)
+        || has_condition(conditions, ConditionType::Unconscious)
 }
 
-/// Check if the combatant can take reactions
+/// Check if the combatant can take actions.
+pub fn can_take_actions(conditions: &[ActiveCondition]) -> bool {
+    !is_incapacitated(conditions)
+}
+
+/// Check if the combatant can take reactions.
 pub fn can_take_reactions(conditions: &[ActiveCondition]) -> bool {
-    // Same as actions for MVP
-    can_take_actions(conditions)
+    !is_incapacitated(conditions)
+}
+
+/// Check if the combatant can take bonus actions.
+pub fn can_take_bonus_actions(conditions: &[ActiveCondition]) -> bool {
+    !is_incapacitated(conditions)
+}
+
+/// Check if the combatant can speak. Incapacitated blocks speech per SRD.
+pub fn can_speak(conditions: &[ActiveCondition]) -> bool {
+    !is_incapacitated(conditions)
 }
 
 /// Get movement speed multiplier
@@ -405,6 +425,74 @@ mod tests {
             ActiveCondition::new(ConditionType::Stunned, ConditionDuration::Rounds(1)),
         ];
         assert!(!is_auto_crit_target(&stunned));
+    }
+
+    // --- Incapacitated stacking ---
+
+    #[test]
+    fn test_is_incapacitated_detects_direct_condition() {
+        let incap = vec![
+            ActiveCondition::new(ConditionType::Incapacitated, ConditionDuration::Rounds(1)),
+        ];
+        assert!(is_incapacitated(&incap));
+    }
+
+    #[test]
+    fn test_is_incapacitated_detects_derived_conditions() {
+        // Stunned, Paralyzed, Petrified, Unconscious all imply Incapacitated.
+        for condition in [
+            ConditionType::Stunned,
+            ConditionType::Paralyzed,
+            ConditionType::Petrified,
+            ConditionType::Unconscious,
+        ] {
+            let conds = vec![ActiveCondition::new(condition, ConditionDuration::Rounds(1))];
+            assert!(
+                is_incapacitated(&conds),
+                "{:?} should imply incapacitated",
+                condition
+            );
+        }
+    }
+
+    #[test]
+    fn test_is_incapacitated_false_without_trigger() {
+        let poisoned = vec![
+            ActiveCondition::new(ConditionType::Poisoned, ConditionDuration::Rounds(2)),
+        ];
+        assert!(!is_incapacitated(&poisoned));
+        let empty: Vec<ActiveCondition> = vec![];
+        assert!(!is_incapacitated(&empty));
+    }
+
+    #[test]
+    fn test_incapacitated_cannot_take_bonus_actions_or_speak() {
+        let incap = vec![
+            ActiveCondition::new(ConditionType::Incapacitated, ConditionDuration::Rounds(1)),
+        ];
+        assert!(!can_take_actions(&incap));
+        assert!(!can_take_reactions(&incap));
+        assert!(!can_take_bonus_actions(&incap));
+        assert!(!can_speak(&incap));
+    }
+
+    #[test]
+    fn test_unconscious_cannot_act() {
+        let unconscious = vec![
+            ActiveCondition::new(ConditionType::Unconscious, ConditionDuration::Permanent),
+        ];
+        assert!(!can_take_actions(&unconscious));
+        assert!(!can_take_reactions(&unconscious));
+        assert!(!can_take_bonus_actions(&unconscious));
+    }
+
+    #[test]
+    fn test_petrified_cannot_act() {
+        let petrified = vec![
+            ActiveCondition::new(ConditionType::Petrified, ConditionDuration::Permanent),
+        ];
+        assert!(!can_take_actions(&petrified));
+        assert!(!can_take_bonus_actions(&petrified));
     }
 
     #[test]
