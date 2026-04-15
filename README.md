@@ -1,4 +1,6 @@
-# jurnalis-engine
+<div align="center">
+  <img src="assets/wordmark.png" alt="jurnalis-engine" width="444" />
+</div>
 
 [![Crates.io](https://img.shields.io/crates/v/jurnalis-engine.svg)](https://crates.io/crates/jurnalis-engine)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
