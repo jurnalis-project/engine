@@ -126,42 +126,66 @@ fn handle_creation(state: &mut GameState, input: &str, step: CreationStep) -> Ve
             };
             state.character.race = race;
             state.game_phase = GamePhase::CharacterCreation(CreationStep::ChooseClass);
-            vec![
-                format!("Race: {}. Now choose your class:", race),
-                "  1. Fighter (d10 HP, STR/CON saves)".to_string(),
-                "  2. Rogue (d8 HP, DEX/INT saves, 4 skills)".to_string(),
-                "  3. Wizard (d6 HP, INT/WIS saves)".to_string(),
-            ]
+            let mut lines = vec![format!("Race: {}. Now choose your class:", race)];
+            for (i, &class) in Class::all().iter().enumerate() {
+                let saves = class.saving_throw_proficiencies();
+                lines.push(format!(
+                    "  {}. {} (d{} HP, {}/{} saves)",
+                    i + 1, class, class.hit_die(), saves[0], saves[1],
+                ));
+            }
+            lines.push("Enter a number or class name.".to_string());
+            lines
         }
         CreationStep::ChooseClass => {
-            let class = match input {
-                "1" | "fighter" => Class::Fighter,
-                "2" | "rogue" => Class::Rogue,
-                "3" | "wizard" => Class::Wizard,
-                _ => return vec!["Please choose 1 (Fighter), 2 (Rogue), or 3 (Wizard).".to_string()],
+            let input_lower = input.to_lowercase();
+            let all_classes = Class::all();
+            let selected = input.parse::<usize>().ok()
+                .and_then(|n| if (1..=all_classes.len()).contains(&n) { Some(all_classes[n - 1]) } else { None })
+                .or_else(|| all_classes.iter().copied().find(|c| c.to_string().to_lowercase() == input_lower));
+
+            let class = match selected {
+                Some(c) => c,
+                None => {
+                    let names: Vec<String> = all_classes.iter().map(|c| c.to_string()).collect();
+                    return vec![format!(
+                        "Please choose a class 1-{} or type its name (e.g., {}).",
+                        all_classes.len(),
+                        names.join(", "),
+                    )];
+                }
             };
             state.character.class = class;
             state.character.save_proficiencies = class.saving_throw_proficiencies();
-            // Set spell fields based on class
-            match class {
-                Class::Wizard => {
-                    state.character.spell_slots_max = vec![2];
-                    state.character.spell_slots_remaining = vec![2];
-                    state.character.known_spells = vec![
-                        "Fire Bolt".to_string(),
-                        "Prestidigitation".to_string(),
-                        "Magic Missile".to_string(),
-                        "Burning Hands".to_string(),
-                        "Sleep".to_string(),
-                        "Shield".to_string(),
-                    ];
-                }
-                _ => {
-                    state.character.spell_slots_max = Vec::new();
-                    state.character.spell_slots_remaining = Vec::new();
-                    state.character.known_spells = Vec::new();
-                }
-            }
+
+            // Initialize spell slots and known spells based on class. Wizard
+            // gets the canonical MVP spell list; other casters start known-empty
+            // (catalog populated by #27).
+            state.character.spell_slots_max = class.starting_spell_slots();
+            state.character.spell_slots_remaining = state.character.spell_slots_max.clone();
+            state.character.known_spells = match class {
+                Class::Wizard => vec![
+                    "Fire Bolt".to_string(),
+                    "Prestidigitation".to_string(),
+                    "Magic Missile".to_string(),
+                    "Burning Hands".to_string(),
+                    "Sleep".to_string(),
+                    "Shield".to_string(),
+                ],
+                _ => Vec::new(),
+            };
+            // Initialize per-class feature state. CHA mod uses the current ability
+            // scores (which may be unset at this point — defaults to 10 -> +0 mod
+            // -> 1 inspiration min for Bard).
+            let cha_mod = state.character.ability_modifier(Ability::Charisma);
+            character::init_class_features(
+                &mut state.character.class_features,
+                class,
+                /* level */ 1,
+                cha_mod,
+                &state.character.known_spells,
+            );
+
             state.game_phase = GamePhase::CharacterCreation(CreationStep::ChooseBackground);
             let mut lines = vec![
                 format!("Class: {}. Choose your background:", class),
@@ -3237,6 +3261,61 @@ mod tests {
     }
 
     #[test]
+    fn test_choose_class_menu_lists_all_twelve_classes() {
+        // After race selection, the menu should list every SRD class.
+        let output = new_game(42, false);
+        let output = process_input(&output.state_json, "1"); // Human
+        let joined = output.text.join("\n");
+        for class in Class::all() {
+            assert!(
+                joined.contains(&class.to_string()),
+                "Expected ChooseClass menu to mention {}. Got: {}",
+                class, joined,
+            );
+        }
+    }
+
+    #[test]
+    fn test_choose_class_accepts_class_name_input() {
+        let output = new_game(42, false);
+        let output = process_input(&output.state_json, "1"); // Human
+        // Pick Paladin by name.
+        let output = process_input(&output.state_json, "Paladin");
+        let state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(state.character.class, Class::Paladin);
+        assert!(matches!(state.game_phase, GamePhase::CharacterCreation(CreationStep::ChooseBackground)));
+    }
+
+    #[test]
+    fn test_choose_class_rejects_invalid_input() {
+        let output = new_game(42, false);
+        let output = process_input(&output.state_json, "1"); // Human
+        let output = process_input(&output.state_json, "99");
+        // Should still be on ChooseClass and produce a helpful error.
+        let state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert!(matches!(state.game_phase, GamePhase::CharacterCreation(CreationStep::ChooseClass)));
+        assert!(output.text.iter().any(|l| l.to_lowercase().contains("class")
+            || l.contains("1")), "Got: {:?}", output.text);
+    }
+
+    #[test]
+    fn test_choose_class_numeric_index_matches_class_all_ordering() {
+        // The numeric index used in the prompt must match `Class::all()` ordering.
+        let all = Class::all();
+        for (i, &expected_class) in all.iter().enumerate() {
+            let output = new_game(42, false);
+            let output = process_input(&output.state_json, "1"); // Human
+            let output = process_input(&output.state_json, &(i + 1).to_string());
+            let state: GameState = serde_json::from_str(&output.state_json).unwrap();
+            assert_eq!(
+                state.character.class, expected_class,
+                "Selecting input '{}' should pick {} (got {})",
+                i + 1, expected_class, state.character.class,
+            );
+        }
+    }
+
+    #[test]
     fn test_full_character_creation_flow() {
         let output = new_game(42, false);
         let state = &output.state_json;
@@ -3245,8 +3324,9 @@ mod tests {
         let output = process_input(state, "1");
         assert!(output.text.iter().any(|t| t.contains("class")));
 
-        // Choose class
-        let output = process_input(&output.state_json, "1");
+        // Choose class (Fighter — pick by name since the numeric ordering
+        // changed when we expanded to all 12 SRD classes).
+        let output = process_input(&output.state_json, "Fighter");
         assert!(output.text.iter().any(|t| t.contains("background")),
             "Expected background prompt after class. Got: {:?}", output.text);
 
@@ -3290,7 +3370,7 @@ mod tests {
         // Walk a Criminal Rogue through creation and verify prof grants.
         let output = new_game(42, false);
         let output = process_input(&output.state_json, "1"); // Human
-        let output = process_input(&output.state_json, "2"); // Rogue
+        let output = process_input(&output.state_json, "Rogue"); // Class by name
         let output = process_input(&output.state_json, "4"); // Criminal (index 4 in Background::all())
         let output = process_input(&output.state_json, "1"); // +2/+1 pattern (DEX+2, CON+1)
         let output = process_input(&output.state_json, "1"); // Standard array
@@ -3325,7 +3405,7 @@ mod tests {
         //   16, 15+2=17, 14+1=15, 13, 11, 9.
         let output = new_game(42, false);
         let output = process_input(&output.state_json, "1"); // Human
-        let output = process_input(&output.state_json, "2"); // Rogue
+        let output = process_input(&output.state_json, "Rogue");
         let output = process_input(&output.state_json, "4"); // Criminal
         let output = process_input(&output.state_json, "1"); // +2/+1 pattern
         let output = process_input(&output.state_json, "1"); // Standard array
@@ -3349,7 +3429,7 @@ mod tests {
         //   STR 15+1=16, DEX 14+1=15, CON 13+2=15, INT 12+2=14, WIS 10+2=12, CHA 8+1=9.
         let output = new_game(42, false);
         let output = process_input(&output.state_json, "1"); // Human
-        let output = process_input(&output.state_json, "3"); // Wizard
+        let output = process_input(&output.state_json, "Wizard");
         let output = process_input(&output.state_json, "12"); // Sage (index 12 in Background::all())
         let output = process_input(&output.state_json, "2"); // +1/+1/+1 pattern
         let output = process_input(&output.state_json, "1"); // Standard array
@@ -3377,7 +3457,7 @@ mod tests {
         // but we can at least confirm scores don't exceed 20 across the flow.
         let output = new_game(42, false);
         let output = process_input(&output.state_json, "2"); // Elf
-        let output = process_input(&output.state_json, "2"); // Rogue
+        let output = process_input(&output.state_json, "Rogue");
         let output = process_input(&output.state_json, "4"); // Criminal
         let output = process_input(&output.state_json, "1"); // +2/+1 pattern
         let output = process_input(&output.state_json, "1"); // Standard array
@@ -3396,7 +3476,7 @@ mod tests {
         // Choose background by name instead of number.
         let output = new_game(42, false);
         let output = process_input(&output.state_json, "1"); // Human
-        let output = process_input(&output.state_json, "1"); // Fighter
+        let output = process_input(&output.state_json, "Fighter");
         let output = process_input(&output.state_json, "soldier"); // By name (case-insensitive)
         let output = process_input(&output.state_json, "2"); // +1/+1/+1
         let output = process_input(&output.state_json, "1"); // Standard array
@@ -3412,7 +3492,7 @@ mod tests {
     fn test_background_invalid_input_reprompts() {
         let output = new_game(42, false);
         let output = process_input(&output.state_json, "1"); // Human
-        let output = process_input(&output.state_json, "1"); // Fighter
+        let output = process_input(&output.state_json, "Fighter");
         let output = process_input(&output.state_json, "99"); // Invalid number
         let state: GameState = serde_json::from_str(&output.state_json).unwrap();
 
@@ -3443,7 +3523,7 @@ mod tests {
         // Run full character creation as Fighter
         let output = new_game(42, false);
         let output = process_input(&output.state_json, "1"); // Human
-        let output = process_input(&output.state_json, "1"); // Fighter
+        let output = process_input(&output.state_json, "Fighter");
         let output = process_input(&output.state_json, "1"); // Background: Acolyte (no SRD weapon/armor items)
         let output = process_input(&output.state_json, "2"); // Ability pattern: +1/+1/+1 (no STR/DEX/CON change)
         let output = process_input(&output.state_json, "1"); // Standard array
@@ -3487,7 +3567,7 @@ mod tests {
     fn test_rogue_gets_starting_equipment() {
         let output = new_game(42, false);
         let output = process_input(&output.state_json, "1"); // Human
-        let output = process_input(&output.state_json, "2"); // Rogue
+        let output = process_input(&output.state_json, "Rogue");
         let output = process_input(&output.state_json, "1"); // Background: Acolyte
         let output = process_input(&output.state_json, "2"); // Ability pattern: +1/+1/+1
         let output = process_input(&output.state_json, "1"); // Standard array
@@ -3522,7 +3602,7 @@ mod tests {
     fn test_wizard_gets_starting_equipment() {
         let output = new_game(42, false);
         let output = process_input(&output.state_json, "1"); // Human
-        let output = process_input(&output.state_json, "3"); // Wizard
+        let output = process_input(&output.state_json, "Wizard");
         let output = process_input(&output.state_json, "1"); // Background: Acolyte
         let output = process_input(&output.state_json, "2"); // Ability pattern: +1/+1/+1
         let output = process_input(&output.state_json, "1"); // Standard array
@@ -3554,7 +3634,7 @@ mod tests {
     fn test_starting_equipment_ids_dont_collide_with_world_items() {
         let output = new_game(42, false);
         let output = process_input(&output.state_json, "1"); // Human
-        let output = process_input(&output.state_json, "1"); // Fighter
+        let output = process_input(&output.state_json, "Fighter");
         let output = process_input(&output.state_json, "1"); // Background: Acolyte
         let output = process_input(&output.state_json, "2"); // Ability pattern: +1/+1/+1
         let output = process_input(&output.state_json, "1"); // Standard array
@@ -3582,7 +3662,7 @@ mod tests {
     fn test_fighter_starting_ac() {
         let output = new_game(42, false);
         let output = process_input(&output.state_json, "1"); // Human
-        let output = process_input(&output.state_json, "1"); // Fighter
+        let output = process_input(&output.state_json, "Fighter");
         let output = process_input(&output.state_json, "1"); // Background: Acolyte
         let output = process_input(&output.state_json, "2"); // Ability pattern: +1/+1/+1
         let output = process_input(&output.state_json, "1"); // Standard array
@@ -5511,7 +5591,7 @@ mod tests {
         // Complete a full character creation flow and verify objectives are seeded
         let output = new_game(42, false);
         let output = process_input(&output.state_json, "1"); // race
-        let output = process_input(&output.state_json, "1"); // class
+        let output = process_input(&output.state_json, "Fighter"); // class
         let output = process_input(&output.state_json, "1"); // background: Acolyte
         let output = process_input(&output.state_json, "2"); // ability pattern
         let output = process_input(&output.state_json, "1"); // standard array

@@ -11,7 +11,7 @@ fn create_exploration_state_json() -> String {
 
     // Race, Class, Background, Background ability pattern, Ability method,
     // Assign scores, Choose skills, Name
-    for input in ["1", "1", "1", "2", "1", "15 14 13 12 10 8", "1 2", "Aria"] {
+    for input in ["1", "Fighter", "1", "2", "1", "15 14 13 12 10 8", "1 2", "Aria"] {
         output = process_input(&output.state_json, input);
     }
 
