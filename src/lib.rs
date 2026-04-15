@@ -1395,6 +1395,9 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
             vec![format!("You spend a Ki point on {}. ({} Ki remaining)",
                 ability, state.character.class_features.ki_points_remaining)]
         }
+        Command::Attune(target) => handle_attune_command(state, &target),
+        Command::Unattune(target) => handle_unattune_command(state, &target),
+        Command::ListAttunements => handle_list_attunements(state),
         Command::Unknown(s) => {
             if s.is_empty() {
                 vec![]
@@ -3456,6 +3459,121 @@ fn handle_unequip_command(state: &mut GameState, target_str: &str) -> Vec<String
         ResolveResult::Ambiguous(matches) => resolver::format_disambiguation(&matches),
         ResolveResult::NotFound => vec![narration::templates::UNEQUIP_NOT_EQUIPPED.replace("{name}", target_str)],
     }
+}
+
+/// Return true if the item requires attunement. Non-magic items return false.
+fn item_requires_attunement(item: &state::Item) -> bool {
+    match &item.item_type {
+        state::ItemType::MagicWeapon { requires_attunement, .. } => *requires_attunement,
+        state::ItemType::MagicArmor { requires_attunement, .. } => *requires_attunement,
+        state::ItemType::Wondrous { requires_attunement, .. } => *requires_attunement,
+        state::ItemType::Wand { requires_attunement, .. } => *requires_attunement,
+        _ => false,
+    }
+}
+
+/// Return true if the item is magical in any form (any MagicItemKind).
+fn item_is_magical(item: &state::Item) -> bool {
+    matches!(
+        item.item_type,
+        state::ItemType::MagicWeapon { .. }
+            | state::ItemType::MagicArmor { .. }
+            | state::ItemType::Wondrous { .. }
+            | state::ItemType::Potion { .. }
+            | state::ItemType::Scroll { .. }
+            | state::ItemType::Wand { .. }
+    )
+}
+
+fn handle_attune_command(state: &mut GameState, target_str: &str) -> Vec<String> {
+    let target = target_str.trim();
+    if target.is_empty() {
+        return vec!["Attune to what?".to_string()];
+    }
+
+    let owned_candidates = inventory_item_candidates(state);
+    let candidates: Vec<(usize, &str)> = owned_candidates.iter()
+        .map(|(id, name)| (*id, name.as_str()))
+        .collect();
+
+    match resolver::resolve_target(target, &candidates) {
+        ResolveResult::Found(id) => {
+            let item_id = id as u32;
+            let item = match state.world.items.get(&item_id) {
+                Some(i) => i.clone(),
+                None => return vec![format!("You don't have any \"{}\".", target)],
+            };
+            if !item_is_magical(&item) {
+                return vec![format!("The {} is not a magic item. Only magic items can be attuned.", item.name)];
+            }
+            if !item_requires_attunement(&item) {
+                return vec![format!("The {} does not require attunement.", item.name)];
+            }
+            if state.character.attuned_items.contains(&item_id) {
+                return vec![format!("You are already attuned to {}.", item.name)];
+            }
+            if state.character.attuned_items.len() >= equipment::magic::MAX_ATTUNED_ITEMS {
+                return vec![format!(
+                    "You are already attuned to {} items (max {}). Unattune one first.",
+                    state.character.attuned_items.len(),
+                    equipment::magic::MAX_ATTUNED_ITEMS,
+                )];
+            }
+            state.character.attuned_items.push(item_id);
+            vec![format!("You attune to the {}. You feel its power resonate with you.", item.name)]
+        }
+        ResolveResult::Ambiguous(matches) => resolver::format_disambiguation(&matches),
+        ResolveResult::NotFound => vec![format!("You don't have any \"{}\".", target)],
+    }
+}
+
+fn handle_unattune_command(state: &mut GameState, target_str: &str) -> Vec<String> {
+    let target = target_str.trim();
+    if target.is_empty() {
+        return vec!["Unattune what?".to_string()];
+    }
+    // Candidates: only items currently attuned (and findable).
+    let attuned_candidates: Vec<(usize, String)> = state.character.attuned_items.iter()
+        .filter_map(|id| {
+            state.world.items.get(id).map(|i| (*id as usize, i.name.clone()))
+        })
+        .collect();
+    let candidates: Vec<(usize, &str)> = attuned_candidates.iter()
+        .map(|(id, name)| (*id, name.as_str()))
+        .collect();
+
+    match resolver::resolve_target(target, &candidates) {
+        ResolveResult::Found(id) => {
+            let item_id = id as u32;
+            let name = state.world.items.get(&item_id)
+                .map(|i| i.name.clone())
+                .unwrap_or_else(|| target.to_string());
+            state.character.attuned_items.retain(|&i| i != item_id);
+            vec![format!("You release your attunement to the {}.", name)]
+        }
+        ResolveResult::Ambiguous(matches) => resolver::format_disambiguation(&matches),
+        ResolveResult::NotFound => vec![format!("You are not attuned to any \"{}\".", target)],
+    }
+}
+
+fn handle_list_attunements(state: &GameState) -> Vec<String> {
+    if state.character.attuned_items.is_empty() {
+        return vec![format!(
+            "You are not attuned to any items. (0 / {} slots used)",
+            equipment::magic::MAX_ATTUNED_ITEMS,
+        )];
+    }
+    let mut lines = vec![format!(
+        "Attuned items ({} / {} slots used):",
+        state.character.attuned_items.len(),
+        equipment::magic::MAX_ATTUNED_ITEMS,
+    )];
+    for &id in &state.character.attuned_items {
+        if let Some(item) = state.world.items.get(&id) {
+            lines.push(format!("  - {}", item.name));
+        }
+    }
+    lines
 }
 
 // Helper methods on NPC for narration
@@ -6917,5 +7035,156 @@ mod tests {
         // known_spells list so the no-spells branch fires.
         assert!(text.contains("You don't know any spells"),
             "Paladin L1 should have no spells. Got:\n{}", text);
+    }
+
+    // ---- Magic item orchestration (feat/magic-items, 2026-04-15) ----
+
+    fn give_wondrous_to_player(state: &mut GameState, name: &str, effect: equipment::magic::WondrousEffect, rarity: equipment::magic::Rarity, requires_attunement: bool) -> u32 {
+        let item_id = (state.world.items.len() as u32) + 2000;
+        let item = state::Item {
+            id: item_id,
+            name: name.to_string(),
+            description: String::new(),
+            item_type: state::ItemType::Wondrous { effect, rarity, requires_attunement },
+            location: None,
+            carried_by_player: true,
+            charges_remaining: None,
+        };
+        state.world.items.insert(item_id, item);
+        state.character.inventory.push(item_id);
+        item_id
+    }
+
+    fn give_magic_weapon_to_player(state: &mut GameState, name: &str, base: &str, attack_bonus: i32, damage_bonus: i32) -> u32 {
+        use equipment::magic::Rarity;
+        let item_id = (state.world.items.len() as u32) + 2100;
+        // Look up the base weapon for fields.
+        let w = equipment::SRD_WEAPONS.iter().find(|w| w.name == base).expect("base weapon");
+        let item = state::Item {
+            id: item_id,
+            name: name.to_string(),
+            description: String::new(),
+            item_type: state::ItemType::MagicWeapon {
+                base_weapon: base.to_string(),
+                damage_dice: w.damage_dice, damage_die: w.damage_die,
+                damage_type: w.damage_type, properties: w.properties,
+                category: w.category, versatile_die: w.versatile_die,
+                range_normal: w.range_normal, range_long: w.range_long,
+                attack_bonus, damage_bonus,
+                rarity: Rarity::Uncommon,
+                requires_attunement: false,
+            },
+            location: None,
+            carried_by_player: true,
+            charges_remaining: None,
+        };
+        state.world.items.insert(item_id, item);
+        state.character.inventory.push(item_id);
+        item_id
+    }
+
+    #[test]
+    fn test_attune_to_wondrous_item_succeeds() {
+        use equipment::magic::{Rarity, WondrousEffect};
+        let mut state = create_test_exploration_state();
+        let id = give_wondrous_to_player(&mut state, "Cloak of Protection",
+            WondrousEffect::CloakOfProtection, Rarity::Uncommon, true);
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "attune cloak of protection");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert!(new_state.character.attuned_items.contains(&id),
+            "Expected attuned_items to contain id {}, got: {:?}", id, new_state.character.attuned_items);
+        assert!(output.text.iter().any(|t| t.to_lowercase().contains("attune") || t.to_lowercase().contains("resonate")),
+            "Expected attunement narration. Got: {:?}", output.text);
+    }
+
+    #[test]
+    fn test_attune_cap_blocks_fourth_attunement() {
+        use equipment::magic::{Rarity, WondrousEffect};
+        let mut state = create_test_exploration_state();
+        let a = give_wondrous_to_player(&mut state, "Cloak of Protection",
+            WondrousEffect::CloakOfProtection, Rarity::Uncommon, true);
+        let b = give_wondrous_to_player(&mut state, "Ring of Protection",
+            WondrousEffect::RingOfProtection, Rarity::Rare, true);
+        let c = give_wondrous_to_player(&mut state, "Gauntlets of Ogre Power",
+            WondrousEffect::GauntletsOfOgrePower, Rarity::Uncommon, true);
+        // Fourth item — adding should fail.
+        let d = give_wondrous_to_player(&mut state, "Belt of Giant Strength",
+            WondrousEffect::BeltOfGiantStrength(21), Rarity::Rare, true);
+        // Pre-fill the attuned vec with the first three IDs (skip actually running attune commands for brevity).
+        state.character.attuned_items = vec![a, b, c];
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "attune belt");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert!(!new_state.character.attuned_items.contains(&d),
+            "Fourth attunement must not be added. Got: {:?}", new_state.character.attuned_items);
+        assert!(output.text.iter().any(|t| t.to_lowercase().contains("already attuned") || t.to_lowercase().contains("unattune") || t.to_lowercase().contains("max")),
+            "Expected cap-exceeded narration. Got: {:?}", output.text);
+    }
+
+    #[test]
+    fn test_attune_non_attunement_item_rejects() {
+        // +1 Longsword does NOT require attunement.
+        let mut state = create_test_exploration_state();
+        let id = give_magic_weapon_to_player(&mut state, "+1 Longsword", "Longsword", 1, 1);
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "attune longsword");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert!(!new_state.character.attuned_items.contains(&id));
+        assert!(output.text.iter().any(|t| t.to_lowercase().contains("does not require")),
+            "Expected 'does not require attunement' narration. Got: {:?}", output.text);
+    }
+
+    #[test]
+    fn test_attune_non_magic_item_rejects() {
+        let mut state = create_test_exploration_state();
+        // A mundane consumable (not magical).
+        give_consumable_to_player(&mut state, "Rations", "dried food", "nourish");
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "attune rations");
+        assert!(output.text.iter().any(|t| t.to_lowercase().contains("not a magic item")),
+            "Expected 'not a magic item' narration. Got: {:?}", output.text);
+    }
+
+    #[test]
+    fn test_unattune_removes_from_list() {
+        use equipment::magic::{Rarity, WondrousEffect};
+        let mut state = create_test_exploration_state();
+        let id = give_wondrous_to_player(&mut state, "Cloak of Protection",
+            WondrousEffect::CloakOfProtection, Rarity::Uncommon, true);
+        state.character.attuned_items.push(id);
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "unattune cloak");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert!(!new_state.character.attuned_items.contains(&id));
+        assert!(output.text.iter().any(|t| t.to_lowercase().contains("release")),
+            "Expected release narration. Got: {:?}", output.text);
+    }
+
+    #[test]
+    fn test_list_attunements_empty() {
+        let state = create_test_exploration_state();
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "attunement");
+        assert!(output.text.iter().any(|t| t.to_lowercase().contains("not attuned") && t.contains("0")),
+            "Expected 'not attuned' narration. Got: {:?}", output.text);
+    }
+
+    #[test]
+    fn test_list_attunements_shows_items() {
+        use equipment::magic::{Rarity, WondrousEffect};
+        let mut state = create_test_exploration_state();
+        let id = give_wondrous_to_player(&mut state, "Cloak of Protection",
+            WondrousEffect::CloakOfProtection, Rarity::Uncommon, true);
+        state.character.attuned_items.push(id);
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "attunement");
+        assert!(output.text.iter().any(|t| t.contains("Cloak of Protection")),
+            "Expected cloak listed. Got: {:?}", output.text);
+        assert!(output.text.iter().any(|t| t.contains("1") && t.contains("3")),
+            "Expected slot count (1/3). Got: {:?}", output.text);
     }
 }

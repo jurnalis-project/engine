@@ -66,6 +66,14 @@ pub enum Command {
     /// Monk: spend a Ki / Focus point. The argument names the ability invoked
     /// (e.g. "flurry", "patient defense"). Treated as free-form for MVP.
     Ki(String),
+    // Magic item commands (feat/magic-items, 2026-04-15).
+    /// Attune to a magic item in inventory. Argument is the free-form item name.
+    /// Orchestrator resolves it via fuzzy matching.
+    Attune(String),
+    /// Release attunement on an item. Argument is the free-form item name.
+    Unattune(String),
+    /// List the character's currently attuned items.
+    ListAttunements,
     Unknown(String),
 }
 
@@ -204,6 +212,14 @@ pub fn parse(input: &str) -> Command {
                     Command::BardicInspiration(rest)
                 };
             }
+            // Magic items: "bond with <item>" attunes.
+            "bond with" => {
+                return if rest.is_empty() {
+                    Command::Unknown("Attune to what?".to_string())
+                } else {
+                    Command::Attune(rest)
+                };
+            }
             _ => {}
         }
     }
@@ -325,6 +341,31 @@ pub fn parse(input: &str) -> Command {
                 Command::Ki(args)
             }
         }
+        // Magic items: attune / unattune / list attunements.
+        "attune" => {
+            if args.is_empty() {
+                Command::Unknown("Attune to what? (e.g. 'attune cloak')".to_string())
+            } else {
+                Command::Attune(args)
+            }
+        }
+        "unattune" => {
+            if args.is_empty() {
+                Command::Unknown("Unattune what?".to_string())
+            } else {
+                Command::Unattune(args)
+            }
+        }
+        "release" => {
+            // `release` is a narrow alias for unattune; requires an argument
+            // so we don't clash with generic "release" gestures.
+            if args.is_empty() {
+                Command::Unknown("Release what?".to_string())
+            } else {
+                Command::Unattune(args)
+            }
+        }
+        "attunement" | "attunements" => Command::ListAttunements,
         _ => Command::Unknown(input.to_string()),
     }
 }
@@ -618,6 +659,45 @@ mod tests {
     #[test]
     fn test_help_aliases() {
         assert_eq!(parse("commands"), Command::Help(None));
+    }
+
+    #[test]
+    fn test_attune_command() {
+        assert_eq!(parse("attune cloak"), Command::Attune("cloak".to_string()));
+        assert_eq!(parse("attune cloak of protection"), Command::Attune("cloak of protection".to_string()));
+    }
+
+    #[test]
+    fn test_attune_bare_is_unknown_with_help() {
+        match parse("attune") { Command::Unknown(s) => assert!(s.to_lowercase().contains("attune"), "got: {}", s),
+            other => panic!("Expected Unknown, got {:?}", other) }
+    }
+
+    #[test]
+    fn test_unattune_command() {
+        assert_eq!(parse("unattune cloak"), Command::Unattune("cloak".to_string()));
+    }
+
+    #[test]
+    fn test_unattune_bare_is_unknown_with_help() {
+        match parse("unattune") { Command::Unknown(s) => assert!(s.to_lowercase().contains("unattune") || s.to_lowercase().contains("what"), "got: {}", s),
+            other => panic!("Expected Unknown, got {:?}", other) }
+    }
+
+    #[test]
+    fn test_list_attunements_command() {
+        assert_eq!(parse("attunement"), Command::ListAttunements);
+        assert_eq!(parse("attunements"), Command::ListAttunements);
+    }
+
+    #[test]
+    fn test_attune_phrase_bond_with() {
+        assert_eq!(parse("bond with ring"), Command::Attune("ring".to_string()));
+    }
+
+    #[test]
+    fn test_unattune_alias_release() {
+        assert_eq!(parse("release ring"), Command::Unattune("ring".to_string()));
     }
 
     #[test]
