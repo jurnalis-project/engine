@@ -92,30 +92,51 @@ pub fn has_condition(conditions: &[ActiveCondition], condition: ConditionType) -
     conditions.iter().any(|c| c.condition == condition)
 }
 
-/// Get attack roll advantage/disadvantage from conditions
-/// Returns Some(true) for advantage, Some(false) for disadvantage, None for no effect
+/// Get attack roll advantage/disadvantage from conditions on the attacker.
+///
+/// Returns `Some(true)` for advantage, `Some(false)` for disadvantage, `None` for
+/// no net effect. Per SRD, advantage and disadvantage from any source cancel to
+/// neither.
+///
+/// Note: Stunned/Paralyzed/Petrified/Unconscious prevent attacks entirely via
+/// incapacitation; that gating is enforced at the orchestrator level, not here.
 pub fn get_attack_advantage(conditions: &[ActiveCondition]) -> Option<bool> {
-    let mut has_disadvantage = false;
-
-    // Poisoned and Blinded impose disadvantage on attacks
-    if has_condition(conditions, ConditionType::Poisoned)
+    let has_disadvantage = has_condition(conditions, ConditionType::Poisoned)
         || has_condition(conditions, ConditionType::Blinded)
-    {
-        has_disadvantage = true;
-    }
+        || has_condition(conditions, ConditionType::Prone)
+        || has_condition(conditions, ConditionType::Frightened)
+        || has_condition(conditions, ConditionType::Restrained);
 
-    // Prone imposes disadvantage on attacks
-    if has_condition(conditions, ConditionType::Prone) {
-        has_disadvantage = true;
-    }
+    let has_advantage = has_condition(conditions, ConditionType::Invisible);
 
-    // Stunned/Paralyzed are incapacitated - can't attack at all (handled separately)
-
-    if has_disadvantage {
-        Some(false) // disadvantage
-    } else {
-        None
+    match (has_advantage, has_disadvantage) {
+        (true, false) => Some(true),
+        (false, true) => Some(false),
+        _ => None, // Both present cancel to none; neither present is none.
     }
+}
+
+/// Check whether an attacker can legally target a specific creature given their
+/// conditions. Charmed attackers cannot target their charmer. Frightened
+/// attackers can still attack their fear source (they just roll with disadvantage).
+///
+/// `source_name` on the active condition is matched against `target_name` for
+/// charmer identification. Matching is case-insensitive and trims whitespace.
+pub fn can_attack_target(
+    attacker_conditions: &[ActiveCondition],
+    target_name: &str,
+) -> bool {
+    let needle = target_name.trim().to_lowercase();
+    for c in attacker_conditions {
+        if c.condition == ConditionType::Charmed {
+            if let Some(source) = c.source.as_deref() {
+                if source.trim().to_lowercase() == needle {
+                    return false;
+                }
+            }
+        }
+    }
+    true
 }
 
 /// Get defense advantage/disadvantage from conditions
@@ -312,6 +333,71 @@ mod tests {
     fn test_no_condition_no_attack_effect() {
         let empty: Vec<ActiveCondition> = vec![];
         assert_eq!(get_attack_advantage(&empty), None);
+    }
+
+    #[test]
+    fn test_frightened_imposes_attack_disadvantage() {
+        let frightened = vec![
+            ActiveCondition::new(ConditionType::Frightened, ConditionDuration::Rounds(2)),
+        ];
+        assert_eq!(get_attack_advantage(&frightened), Some(false));
+    }
+
+    #[test]
+    fn test_restrained_imposes_attack_disadvantage() {
+        let restrained = vec![
+            ActiveCondition::new(ConditionType::Restrained, ConditionDuration::Permanent),
+        ];
+        assert_eq!(get_attack_advantage(&restrained), Some(false));
+    }
+
+    #[test]
+    fn test_invisible_grants_attack_advantage() {
+        let invisible = vec![
+            ActiveCondition::new(ConditionType::Invisible, ConditionDuration::Rounds(5)),
+        ];
+        assert_eq!(get_attack_advantage(&invisible), Some(true));
+    }
+
+    // --- Charmed targeting ---
+
+    #[test]
+    fn test_charmed_cannot_target_charmer() {
+        let charmed = vec![
+            ActiveCondition::new(ConditionType::Charmed, ConditionDuration::Rounds(5))
+                .with_source("Hypnotist"),
+        ];
+        assert!(!can_attack_target(&charmed, "Hypnotist"));
+        // Case-insensitive match.
+        assert!(!can_attack_target(&charmed, "hypnotist"));
+        // Other targets are still legal.
+        assert!(can_attack_target(&charmed, "Goblin"));
+    }
+
+    #[test]
+    fn test_charmed_without_source_restricts_nobody() {
+        // Degenerate: Charmed with no source recorded can attack anyone.
+        // Caller is responsible for recording the source when applying.
+        let charmed = vec![
+            ActiveCondition::new(ConditionType::Charmed, ConditionDuration::Rounds(5)),
+        ];
+        assert!(can_attack_target(&charmed, "Hypnotist"));
+    }
+
+    #[test]
+    fn test_no_charmed_means_no_restriction() {
+        let empty: Vec<ActiveCondition> = vec![];
+        assert!(can_attack_target(&empty, "Anyone"));
+    }
+
+    #[test]
+    fn test_advantage_and_disadvantage_cancel_returns_none() {
+        // Invisible grants advantage, Poisoned imposes disadvantage -- cancel.
+        let mixed = vec![
+            ActiveCondition::new(ConditionType::Invisible, ConditionDuration::Rounds(3)),
+            ActiveCondition::new(ConditionType::Poisoned, ConditionDuration::Rounds(3)),
+        ];
+        assert_eq!(get_attack_advantage(&mixed), None);
     }
 
     #[test]
