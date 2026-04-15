@@ -436,6 +436,18 @@ pub fn apply_condition(
     true
 }
 
+/// Per 2024 SRD, applying Unconscious drops whatever the creature is holding.
+/// Returns true if the given condition triggers a drop-held-items side effect
+/// on apply. Orchestrators that manage equipped-item state query this and
+/// perform the actual unequip + drop when the flag is true.
+///
+/// This is kept as a predicate on the conditions module so the rule lives in
+/// one place, while the equipment mutation stays in the orchestrator (per the
+/// module-isolation architecture rule).
+pub fn drops_held_items_on_apply(condition: ConditionType) -> bool {
+    matches!(condition, ConditionType::Unconscious)
+}
+
 /// Decrement round-based durations, returning true if condition expired
 pub fn tick_duration(condition: &mut ActiveCondition) -> bool {
     match &mut condition.duration {
@@ -1307,5 +1319,39 @@ mod tests {
         );
         assert!(applied);
         assert!(has_condition(&conditions, ConditionType::Poisoned));
+    }
+
+    // --- Unconscious: drops held items on apply ---
+
+    #[test]
+    fn test_unconscious_drops_held_items_on_apply() {
+        assert!(drops_held_items_on_apply(ConditionType::Unconscious));
+    }
+
+    #[test]
+    fn test_other_conditions_do_not_drop_items_on_apply() {
+        // Only Unconscious triggers the drop-items side effect per SRD.
+        for c in [
+            ConditionType::Blinded,
+            ConditionType::Charmed,
+            ConditionType::Deafened,
+            ConditionType::Frightened,
+            ConditionType::Grappled,
+            ConditionType::Incapacitated,
+            ConditionType::Invisible,
+            ConditionType::Paralyzed,
+            ConditionType::Petrified,
+            ConditionType::Poisoned,
+            ConditionType::Prone,
+            ConditionType::Restrained,
+            ConditionType::Stunned,
+            ConditionType::Exhaustion,
+        ] {
+            assert!(
+                !drops_held_items_on_apply(c),
+                "{:?} should NOT trigger drop-held-items",
+                c
+            );
+        }
     }
 }
