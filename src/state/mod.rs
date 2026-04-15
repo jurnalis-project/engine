@@ -3,7 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use crate::types::{LocationId, NpcId, ItemId, TriggerId, Direction};
 use crate::character::Character;
-use crate::conditions::ActiveCondition;
+use crate::conditions::{ActiveCondition, ConditionType};
+use crate::combat::monsters::{CreatureType, Size, Alignment, default_multiattack};
 
 pub const SAVE_VERSION: &str = "0.1.0";
 
@@ -117,6 +118,56 @@ pub struct CombatStats {
     /// 0.0 for older saves that pre-date this field; CR 0 maps to 10 XP.
     #[serde(default)]
     pub cr: f32,
+    /// Full SRD stat-block fields (see `docs/specs/monster-stat-blocks.md`).
+    /// All `#[serde(default)]` for backwards compatibility with older saves
+    /// that pre-date these fields.
+    #[serde(default)]
+    pub creature_type: CreatureType,
+    #[serde(default)]
+    pub size: Size,
+    #[serde(default)]
+    pub alignment: Alignment,
+    #[serde(default)]
+    pub damage_resistances: Vec<DamageType>,
+    #[serde(default)]
+    pub damage_immunities: Vec<DamageType>,
+    #[serde(default)]
+    pub condition_immunities: Vec<ConditionType>,
+    #[serde(default)]
+    pub senses: Vec<String>,
+    #[serde(default)]
+    pub languages: Vec<String>,
+    /// Number of attacks per Attack action. Defaults to 1 for older saves.
+    #[serde(default = "default_multiattack")]
+    pub multiattack: u32,
+    /// Free-form special traits as `(name, description)` pairs.
+    #[serde(default)]
+    pub special_traits: Vec<(String, String)>,
+}
+
+impl Default for CombatStats {
+    fn default() -> Self {
+        CombatStats {
+            max_hp: 0,
+            current_hp: 0,
+            ac: 0,
+            speed: 0,
+            ability_scores: HashMap::new(),
+            attacks: Vec::new(),
+            proficiency_bonus: 0,
+            cr: 0.0,
+            creature_type: CreatureType::default(),
+            size: Size::default(),
+            alignment: Alignment::default(),
+            damage_resistances: Vec::new(),
+            damage_immunities: Vec::new(),
+            condition_immunities: Vec::new(),
+            senses: Vec::new(),
+            languages: Vec::new(),
+            multiattack: default_multiattack(),
+            special_traits: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -148,8 +199,24 @@ pub struct Item {
     pub carried_by_player: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum DamageType { Slashing, Piercing, Bludgeoning, Fire, Force }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum DamageType {
+    Slashing,
+    Piercing,
+    Bludgeoning,
+    Fire,
+    Force,
+    // Added 2026-04-15 (monster-stat-blocks): full SRD damage-type set so
+    // monster damage immunities/resistances can express the canonical types.
+    Acid,
+    Cold,
+    Lightning,
+    Necrotic,
+    Poison,
+    Psychic,
+    Radiant,
+    Thunder,
+}
 
 impl std::fmt::Display for DamageType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -159,6 +226,14 @@ impl std::fmt::Display for DamageType {
             DamageType::Bludgeoning => write!(f, "bludgeoning"),
             DamageType::Fire => write!(f, "fire"),
             DamageType::Force => write!(f, "force"),
+            DamageType::Acid => write!(f, "acid"),
+            DamageType::Cold => write!(f, "cold"),
+            DamageType::Lightning => write!(f, "lightning"),
+            DamageType::Necrotic => write!(f, "necrotic"),
+            DamageType::Poison => write!(f, "poison"),
+            DamageType::Psychic => write!(f, "psychic"),
+            DamageType::Radiant => write!(f, "radiant"),
+            DamageType::Thunder => write!(f, "thunder"),
         }
     }
 }

@@ -3836,6 +3836,7 @@ mod tests {
                 }],
                 proficiency_bonus: 2,
                 cr: 0.25,
+                ..Default::default()
             }),
             conditions: Vec::new(),
         });
@@ -5329,6 +5330,7 @@ mod tests {
                 attacks: vec![],
                 proficiency_bonus: 2,
                 cr: 1.0,
+                ..Default::default()
             }),
             conditions: vec![],
         });
@@ -5457,6 +5459,7 @@ mod tests {
                 attacks: vec![],
                 proficiency_bonus: 2,
                 cr: 1.0,
+                ..Default::default()
             }),
             conditions: vec![],
         });
@@ -5671,6 +5674,7 @@ mod tests {
                 attacks: vec![],
                 proficiency_bonus: 2,
                 cr: 0.25,
+                ..Default::default()
             }),
             conditions: vec![],
         });
@@ -5921,6 +5925,7 @@ mod tests {
                 attacks: vec![],
                 proficiency_bonus: 2,
                 cr,
+                ..Default::default()
             }),
             conditions: vec![],
         });
@@ -5976,6 +5981,7 @@ mod tests {
                     attacks: vec![],
                     proficiency_bonus: 2,
                     cr: 0.25,
+                    ..Default::default()
                 }),
                 conditions: vec![],
             });
@@ -6026,6 +6032,7 @@ mod tests {
                 attacks: vec![],
                 proficiency_bonus: 2,
                 cr: 2.0,
+                ..Default::default()
             }),
             conditions: vec![],
         });
@@ -6064,6 +6071,7 @@ mod tests {
                 attacks: vec![],
                 proficiency_bonus: 2,
                 cr: 2.0, // 450 XP
+                ..Default::default()
             }),
             conditions: vec![],
         });

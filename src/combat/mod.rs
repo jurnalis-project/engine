@@ -1030,6 +1030,7 @@ mod tests {
             ],
             proficiency_bonus: 2,
             cr: 0.25,
+            ..Default::default()
         }
     }
 
@@ -1722,6 +1723,7 @@ mod tests {
                 attacks: vec![],
                 proficiency_bonus: 2,
                 cr: 0.25,
+                ..Default::default()
             }),
             conditions: Vec::new(),
         });
