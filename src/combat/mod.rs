@@ -1188,7 +1188,7 @@ mod tests {
         let mut saw_miss = false;
         for seed in 0..200 {
             let mut rng = StdRng::seed_from_u64(seed);
-            let result = resolve_player_attack(&mut rng, &player, 100, false, None, &items, 5, true, false, &[]);
+            let result = resolve_player_attack(&mut rng, &player, 100, false, None, &items, 5, true, false, &[], false);
             assert_eq!(result.weapon_name, "Unarmed");
             assert!(result.attack_roll >= 1 && result.attack_roll <= 20,
                 "Attack roll must be a real d20 (seed={}, roll={})", seed, result.attack_roll);
@@ -1217,7 +1217,7 @@ mod tests {
         let mut crit_damage_seen = false;
         for seed in 0..200 {
             let mut rng = StdRng::seed_from_u64(seed);
-            let result = resolve_player_attack(&mut rng, &player, 1, false, None, &items, 5, true, false, &[]);
+            let result = resolve_player_attack(&mut rng, &player, 1, false, None, &items, 5, true, false, &[], false);
             assert_eq!(result.weapon_name, "Unarmed");
             assert_eq!(result.damage_type, DamageType::Bludgeoning);
             if result.hit {
@@ -1256,8 +1256,8 @@ mod tests {
         for seed in 0..1000 {
             let mut rng1 = StdRng::seed_from_u64(seed);
             let mut rng2 = StdRng::seed_from_u64(seed);
-            let normal = resolve_player_attack(&mut rng1, &player, 15, false, None, &items, 5, true, false, &[]);
-            let poisoned = resolve_player_attack(&mut rng2, &poisoned_player, 15, false, None, &items, 5, true, false, &[]);
+            let normal = resolve_player_attack(&mut rng1, &player, 15, false, None, &items, 5, true, false, &[], false);
+            let poisoned = resolve_player_attack(&mut rng2, &poisoned_player, 15, false, None, &items, 5, true, false, &[], false);
             if normal.hit { normal_hits += 1; }
             if poisoned.hit { poisoned_hits += 1; }
         }
