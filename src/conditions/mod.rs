@@ -139,32 +139,34 @@ pub fn can_attack_target(
     true
 }
 
-/// Get defense advantage/disadvantage from conditions
-/// attacker_conditions: conditions on the one making the attack
-/// defender_conditions: conditions on the one being attacked
+/// Get advantage/disadvantage on the attacker's roll based on conditions on the
+/// defender (and, for Invisible, the attacker). Returns `Some(true)` for
+/// advantage, `Some(false)` for disadvantage, `None` for no net effect.
+///
+/// Prone is handled here as "defaults to advantage"; the caller must downgrade
+/// to disadvantage when the attacker is beyond 5 ft (see `combat/mod.rs`).
 pub fn get_defense_advantage(
     _attacker_conditions: &[ActiveCondition],
     defender_conditions: &[ActiveCondition],
 ) -> Option<bool> {
-    // Attacking a prone target: advantage if within 5ft, disadvantage otherwise
-    if has_condition(defender_conditions, ConditionType::Prone) {
-        // Within 5ft check is done at call site, default to advantage for now
-        return Some(true);
-    }
-
-    // Attacking a stunned or paralyzed target: advantage
-    if has_condition(defender_conditions, ConditionType::Stunned)
+    // Defenders that grant attackers advantage:
+    let grants_advantage = has_condition(defender_conditions, ConditionType::Prone)
+        || has_condition(defender_conditions, ConditionType::Stunned)
         || has_condition(defender_conditions, ConditionType::Paralyzed)
-    {
-        return Some(true);
-    }
+        || has_condition(defender_conditions, ConditionType::Petrified)
+        || has_condition(defender_conditions, ConditionType::Restrained)
+        || has_condition(defender_conditions, ConditionType::Unconscious)
+        || has_condition(defender_conditions, ConditionType::Blinded);
 
-    // Attacking a blinded target: advantage (they can't see you)
-    if has_condition(defender_conditions, ConditionType::Blinded) {
-        return Some(true);
-    }
+    // Invisible defenders impose disadvantage on the attacker's rolls.
+    let grants_disadvantage = has_condition(defender_conditions, ConditionType::Invisible);
 
-    None
+    match (grants_advantage, grants_disadvantage) {
+        (true, false) => Some(true),
+        (false, true) => Some(false),
+        (true, true) => None, // advantage and disadvantage cancel
+        (false, false) => None,
+    }
 }
 
 /// Check if conditions cause auto-fail on a saving throw
@@ -434,6 +436,56 @@ mod tests {
         ];
         let empty: Vec<ActiveCondition> = vec![];
         assert_eq!(get_defense_advantage(&empty, &blinded), Some(true));
+    }
+
+    #[test]
+    fn test_restrained_grants_defense_advantage() {
+        let restrained = vec![
+            ActiveCondition::new(ConditionType::Restrained, ConditionDuration::Permanent),
+        ];
+        let empty: Vec<ActiveCondition> = vec![];
+        assert_eq!(get_defense_advantage(&empty, &restrained), Some(true));
+    }
+
+    #[test]
+    fn test_petrified_grants_defense_advantage() {
+        let petrified = vec![
+            ActiveCondition::new(ConditionType::Petrified, ConditionDuration::Permanent),
+        ];
+        let empty: Vec<ActiveCondition> = vec![];
+        assert_eq!(get_defense_advantage(&empty, &petrified), Some(true));
+    }
+
+    #[test]
+    fn test_unconscious_grants_defense_advantage() {
+        let unconscious = vec![
+            ActiveCondition::new(ConditionType::Unconscious, ConditionDuration::Permanent),
+        ];
+        let empty: Vec<ActiveCondition> = vec![];
+        assert_eq!(get_defense_advantage(&empty, &unconscious), Some(true));
+    }
+
+    #[test]
+    fn test_invisible_defender_grants_attacker_disadvantage() {
+        let invisible = vec![
+            ActiveCondition::new(ConditionType::Invisible, ConditionDuration::Rounds(5)),
+        ];
+        let empty: Vec<ActiveCondition> = vec![];
+        assert_eq!(get_defense_advantage(&empty, &invisible), Some(false));
+    }
+
+    #[test]
+    fn test_invisible_attacker_vs_visible_target_cancels_disadvantage_from_defender_blinded() {
+        // Invisible attacker gains attack advantage already via get_attack_advantage.
+        // Defender Blinded grants advantage too -- not stacked, still single advantage.
+        let attacker = vec![
+            ActiveCondition::new(ConditionType::Invisible, ConditionDuration::Rounds(3)),
+        ];
+        let defender = vec![
+            ActiveCondition::new(ConditionType::Blinded, ConditionDuration::Rounds(3)),
+        ];
+        // Defense advantage path: invisible attacker does not change defender-side result.
+        assert_eq!(get_defense_advantage(&attacker, &defender), Some(true));
     }
 
     #[test]
