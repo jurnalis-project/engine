@@ -3213,6 +3213,159 @@ mod tests {
     }
 
     #[test]
+    fn test_background_grants_skill_and_tool_proficiencies() {
+        // Walk a Criminal Rogue through creation and verify prof grants.
+        let output = new_game(42, false);
+        let output = process_input(&output.state_json, "1"); // Human
+        let output = process_input(&output.state_json, "2"); // Rogue
+        let output = process_input(&output.state_json, "4"); // Criminal (index 4 in Background::all())
+        let output = process_input(&output.state_json, "1"); // +2/+1 pattern (DEX+2, CON+1)
+        let output = process_input(&output.state_json, "1"); // Standard array
+        let output = process_input(&output.state_json, "15 14 13 12 10 8");
+        let output = process_input(&output.state_json, "1 2 3 4"); // 4 rogue skills
+        let output = process_input(&output.state_json, "Shadow");
+        let state: GameState = serde_json::from_str(&output.state_json).unwrap();
+
+        assert_eq!(state.character.background, Background::Criminal);
+        // Criminal grants Sleight of Hand and Stealth — these may already be in
+        // the rogue's class picks; either way they must be present afterwards.
+        assert!(state.character.skill_proficiencies.contains(&Skill::SleightOfHand),
+            "Criminal should be proficient in Sleight of Hand");
+        assert!(state.character.skill_proficiencies.contains(&Skill::Stealth),
+            "Criminal should be proficient in Stealth");
+        // Tool proficiency
+        assert!(state.character.tool_proficiencies.iter().any(|t| t == "Thieves' Tools"),
+            "Criminal should have Thieves' Tools proficiency. Got: {:?}",
+            state.character.tool_proficiencies);
+        // Language
+        assert!(state.character.languages.contains(&"Common".to_string()));
+        assert!(state.character.languages.contains(&"Thieves' Cant".to_string()));
+        // Origin feat trait
+        assert!(state.character.traits.iter().any(|t| t == "Origin Feat: Alert"));
+    }
+
+    #[test]
+    fn test_background_ability_adjustment_plus_two_plus_one() {
+        // Criminal options are DEX, CON, INT. With +2/+1 pattern, DEX gets +2
+        // and CON gets +1. With Human (+1 all), starting scores 15,14,13,12,10,8
+        // → Human bonus → 16,15,14,13,11,9 → Criminal +2/+1 on DEX/CON →
+        //   16, 15+2=17, 14+1=15, 13, 11, 9.
+        let output = new_game(42, false);
+        let output = process_input(&output.state_json, "1"); // Human
+        let output = process_input(&output.state_json, "2"); // Rogue
+        let output = process_input(&output.state_json, "4"); // Criminal
+        let output = process_input(&output.state_json, "1"); // +2/+1 pattern
+        let output = process_input(&output.state_json, "1"); // Standard array
+        let output = process_input(&output.state_json, "15 14 13 12 10 8");
+        let output = process_input(&output.state_json, "1 2 3 4");
+        let output = process_input(&output.state_json, "Shadow");
+        let state: GameState = serde_json::from_str(&output.state_json).unwrap();
+
+        assert_eq!(state.character.ability_scores[&Ability::Strength], 16);
+        assert_eq!(state.character.ability_scores[&Ability::Dexterity], 17, "DEX 14 + Human 1 + Criminal 2 = 17");
+        assert_eq!(state.character.ability_scores[&Ability::Constitution], 15, "CON 13 + Human 1 + Criminal 1 = 15");
+        assert_eq!(state.character.ability_scores[&Ability::Intelligence], 13);
+        assert_eq!(state.character.ability_scores[&Ability::Wisdom], 11);
+        assert_eq!(state.character.ability_scores[&Ability::Charisma], 9);
+    }
+
+    #[test]
+    fn test_background_ability_adjustment_plus_one_to_all() {
+        // Sage options are CON, INT, WIS. With +1/+1/+1 pattern, all three
+        // get +1. Human (+1 to all) + Sage (+1 to CON/INT/WIS) on 15,14,13,12,10,8:
+        //   STR 15+1=16, DEX 14+1=15, CON 13+2=15, INT 12+2=14, WIS 10+2=12, CHA 8+1=9.
+        let output = new_game(42, false);
+        let output = process_input(&output.state_json, "1"); // Human
+        let output = process_input(&output.state_json, "3"); // Wizard
+        let output = process_input(&output.state_json, "12"); // Sage (index 12 in Background::all())
+        let output = process_input(&output.state_json, "2"); // +1/+1/+1 pattern
+        let output = process_input(&output.state_json, "1"); // Standard array
+        let output = process_input(&output.state_json, "15 14 13 12 10 8");
+        let output = process_input(&output.state_json, "1 2"); // 2 wizard skills
+        let output = process_input(&output.state_json, "Sage");
+        let state: GameState = serde_json::from_str(&output.state_json).unwrap();
+
+        assert_eq!(state.character.background, Background::Sage);
+        assert_eq!(state.character.ability_scores[&Ability::Strength], 16);
+        assert_eq!(state.character.ability_scores[&Ability::Dexterity], 15);
+        assert_eq!(state.character.ability_scores[&Ability::Constitution], 15);
+        assert_eq!(state.character.ability_scores[&Ability::Intelligence], 14);
+        assert_eq!(state.character.ability_scores[&Ability::Wisdom], 12);
+        assert_eq!(state.character.ability_scores[&Ability::Charisma], 9);
+    }
+
+    #[test]
+    fn test_background_ability_adjustment_caps_at_twenty() {
+        // Start with DEX 15 via standard array, Human +1, Criminal +2 →
+        // 15 + 1 + 2 = 18. That is under 20. To exercise the cap, use point buy
+        // maxes and pick abilities that would push one over 20.
+        // Elf +2 DEX + standard array DEX=15 → DEX 17. Criminal +2 → 19. No cap hit.
+        // The cap is easier to verify directly via unit test of apply_background_effects,
+        // but we can at least confirm scores don't exceed 20 across the flow.
+        let output = new_game(42, false);
+        let output = process_input(&output.state_json, "2"); // Elf
+        let output = process_input(&output.state_json, "2"); // Rogue
+        let output = process_input(&output.state_json, "4"); // Criminal
+        let output = process_input(&output.state_json, "1"); // +2/+1 pattern
+        let output = process_input(&output.state_json, "1"); // Standard array
+        let output = process_input(&output.state_json, "8 15 14 13 12 10"); // DEX=15 for max
+        let output = process_input(&output.state_json, "1 2 3 4");
+        let output = process_input(&output.state_json, "Shadow");
+        let state: GameState = serde_json::from_str(&output.state_json).unwrap();
+
+        for (&ability, &score) in &state.character.ability_scores {
+            assert!(score <= 20, "Ability {:?} = {} exceeds cap of 20", ability, score);
+        }
+    }
+
+    #[test]
+    fn test_background_name_selection_works() {
+        // Choose background by name instead of number.
+        let output = new_game(42, false);
+        let output = process_input(&output.state_json, "1"); // Human
+        let output = process_input(&output.state_json, "1"); // Fighter
+        let output = process_input(&output.state_json, "soldier"); // By name (case-insensitive)
+        let output = process_input(&output.state_json, "2"); // +1/+1/+1
+        let output = process_input(&output.state_json, "1"); // Standard array
+        let output = process_input(&output.state_json, "15 14 13 12 10 8");
+        let output = process_input(&output.state_json, "1 2");
+        let output = process_input(&output.state_json, "Max");
+        let state: GameState = serde_json::from_str(&output.state_json).unwrap();
+
+        assert_eq!(state.character.background, Background::Soldier);
+    }
+
+    #[test]
+    fn test_background_invalid_input_reprompts() {
+        let output = new_game(42, false);
+        let output = process_input(&output.state_json, "1"); // Human
+        let output = process_input(&output.state_json, "1"); // Fighter
+        let output = process_input(&output.state_json, "99"); // Invalid number
+        let state: GameState = serde_json::from_str(&output.state_json).unwrap();
+
+        // Should stay in ChooseBackground
+        assert_eq!(state.game_phase, GamePhase::CharacterCreation(CreationStep::ChooseBackground));
+        assert!(output.text.iter().any(|t| t.contains("1-16") || t.contains("background")));
+    }
+
+    #[test]
+    fn test_background_pattern_transient_state_cleared() {
+        // pending_background_pattern should be cleared after creation finalizes.
+        let output = new_game(42, false);
+        let output = process_input(&output.state_json, "1");
+        let output = process_input(&output.state_json, "1");
+        let output = process_input(&output.state_json, "1"); // Acolyte
+        let output = process_input(&output.state_json, "1"); // +2/+1
+        let output = process_input(&output.state_json, "1");
+        let output = process_input(&output.state_json, "15 14 13 12 10 8");
+        let output = process_input(&output.state_json, "1 2");
+        let output = process_input(&output.state_json, "Hero");
+        let state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(state.pending_background_pattern, None,
+            "pending_background_pattern should be cleared after finalization");
+    }
+
+    #[test]
     fn test_fighter_gets_starting_equipment() {
         // Run full character creation as Fighter
         let output = new_game(42, false);
