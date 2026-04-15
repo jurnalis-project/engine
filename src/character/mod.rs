@@ -136,20 +136,11 @@ pub fn create_character(
     let save_profs = class.saving_throw_proficiencies();
     let traits = race.traits().iter().map(|s| s.to_string()).collect();
 
-    // Wizard MVP starts knowing the canonical spell list. Other casters
-    // currently start with empty `known_spells` until #27 wires per-class
-    // spell catalogs. Spell slots come from `Class::starting_spell_slots()`.
-    let known_spells = match class {
-        Class::Wizard => vec![
-            "Fire Bolt".to_string(),
-            "Prestidigitation".to_string(),
-            "Magic Missile".to_string(),
-            "Burning Hands".to_string(),
-            "Sleep".to_string(),
-            "Shield".to_string(),
-        ],
-        _ => Vec::new(),
-    };
+    // Starting known spells per caster class. Non-caster classes have an
+    // empty list. The Wizard retains the MVP canonical list for save
+    // back-compat; other casters receive a small, class-appropriate slice
+    // of their SRD list (see `default_starting_spells`).
+    let known_spells = default_starting_spells(class);
     let spell_slots_max = class.starting_spell_slots();
     let spell_slots_remaining = spell_slots_max.clone();
 
@@ -176,6 +167,54 @@ pub fn create_character(
         background: Background::default(),
         tool_proficiencies: Vec::new(),
         languages: vec!["Common".to_string()],
+    }
+}
+
+/// Starting known-spell list per caster class at level 1.
+///
+/// - Wizard retains the MVP canonical list for save back-compat (6 spells).
+/// - Other full casters (Bard/Cleric/Druid/Sorcerer) and Warlock get a
+///   small, thematic level-1 list drawn from their class spell list.
+/// - Prepared casters (Cleric/Druid/Paladin/Wizard) receive this list as
+///   the default prepared set; Paladin/Ranger still start with empty
+///   prepared lists since they lack slots at level 1 per SRD.
+/// - Non-caster classes return an empty vector.
+///
+/// The exact lists here represent a reasonable "common starter" set. A
+/// future feature will let players choose known/prepared spells at
+/// character creation (see docs/specs/spell-system.md).
+pub fn default_starting_spells(class: Class) -> Vec<String> {
+    fn v(names: &[&str]) -> Vec<String> {
+        names.iter().map(|s| s.to_string()).collect()
+    }
+    match class {
+        Class::Wizard => v(&[
+            "Fire Bolt", "Prestidigitation",
+            "Magic Missile", "Burning Hands", "Sleep", "Shield",
+        ]),
+        Class::Sorcerer => v(&[
+            "Fire Bolt", "Mage Hand",
+            "Magic Missile", "Shield",
+        ]),
+        Class::Bard => v(&[
+            "Vicious Mockery", "Mage Hand",
+            "Charm Person", "Healing Word",
+        ]),
+        Class::Cleric => v(&[
+            "Sacred Flame", "Guidance", "Light",
+            "Cure Wounds", "Guiding Bolt", "Bless", "Healing Word",
+        ]),
+        Class::Druid => v(&[
+            "Druidcraft", "Guidance",
+            "Cure Wounds", "Faerie Fire", "Healing Word",
+        ]),
+        Class::Warlock => v(&[
+            "Eldritch Blast", "Mage Hand",
+            "Charm Person",
+        ]),
+        // Half-casters: level 1 has no slots; they lack known spells until level 2.
+        Class::Paladin | Class::Ranger => Vec::new(),
+        Class::Barbarian | Class::Fighter | Class::Monk | Class::Rogue => Vec::new(),
     }
 }
 
@@ -210,6 +249,12 @@ pub(crate) fn init_class_features(
                 6..=17 => 2,
                 _ => 3,
             };
+            // Cleric is a prepared caster: prepared_spells mirrors known at creation.
+            features.prepared_spells = known_spells.to_vec();
+        }
+        Class::Druid => {
+            // Druid is a prepared caster: prepared_spells mirrors known at creation.
+            features.prepared_spells = known_spells.to_vec();
         }
         Class::Paladin => {
             features.lay_on_hands_pool = 5 * level.max(1);
@@ -219,6 +264,9 @@ pub(crate) fn init_class_features(
                 11..=19 => 2,
                 _ => 3,
             };
+            // Paladin is a prepared caster: prepared_spells mirrors known at
+            // creation (empty until level 2 when spellcasting unlocks).
+            features.prepared_spells = known_spells.to_vec();
         }
         Class::Monk => {
             // Ki/Focus unlocks at level 2 in the SRD; level 1 monks have none.
@@ -227,8 +275,9 @@ pub(crate) fn init_class_features(
         Class::Wizard => {
             features.prepared_spells = known_spells.to_vec();
         }
-        // Other classes use the all-defaults state.
-        Class::Fighter | Class::Druid | Class::Ranger
+        // Known casters (Bard/Ranger/Sorcerer/Warlock) and pure martials:
+        // defaults stand.
+        Class::Fighter | Class::Ranger
         | Class::Rogue | Class::Sorcerer | Class::Warlock => {}
     }
 }
@@ -469,5 +518,98 @@ mod tests {
         assert!(loaded.class_features.action_surge_available);
         assert!(!loaded.class_features.arcane_recovery_used_today);
         assert_eq!(loaded.exhaustion, 0);
+    }
+
+    // ---- Expanded-catalog known-spell initialization ----
+
+    #[test]
+    fn test_wizard_default_known_spells_matches_mvp_catalog() {
+        let c = create_character("Wizmage".to_string(), Race::Human, Class::Wizard, test_scores(), vec![]);
+        assert_eq!(c.known_spells.len(), 6);
+        assert!(c.known_spells.contains(&"Fire Bolt".to_string()));
+        assert!(c.known_spells.contains(&"Shield".to_string()));
+    }
+
+    #[test]
+    fn test_sorcerer_default_known_spells_populated() {
+        let c = create_character("Sorc".to_string(), Race::Human, Class::Sorcerer, test_scores(), vec![]);
+        assert!(!c.known_spells.is_empty(), "Sorcerer should start with known spells");
+        // Must contain at least one cantrip and one leveled spell.
+        let cantrips: Vec<&String> = c.known_spells.iter()
+            .filter(|n| crate::spells::find_spell(n).map(|s| s.level == 0).unwrap_or(false))
+            .collect();
+        let leveled: Vec<&String> = c.known_spells.iter()
+            .filter(|n| crate::spells::find_spell(n).map(|s| s.level >= 1).unwrap_or(false))
+            .collect();
+        assert!(!cantrips.is_empty(), "Sorcerer should know at least one cantrip");
+        assert!(!leveled.is_empty(), "Sorcerer should know at least one leveled spell");
+    }
+
+    #[test]
+    fn test_bard_default_known_spells_populated() {
+        let c = create_character("Virtuoso".to_string(), Race::Human, Class::Bard, test_scores(), vec![]);
+        assert!(!c.known_spells.is_empty());
+        // Every Bard-known spell must be on the Bard spell list.
+        for spell in &c.known_spells {
+            let def = crate::spells::find_spell(spell).expect("known spell exists in catalog");
+            assert!(def.is_class_spell("Bard"), "{} should be on the Bard list", spell);
+        }
+    }
+
+    #[test]
+    fn test_cleric_default_known_spells_populated_and_prepared() {
+        let c = create_character("Priest".to_string(), Race::Human, Class::Cleric, test_scores(), vec![]);
+        assert!(!c.known_spells.is_empty());
+        // Prepared casters mirror known into prepared at creation.
+        assert_eq!(c.class_features.prepared_spells, c.known_spells);
+        for spell in &c.known_spells {
+            let def = crate::spells::find_spell(spell).expect("known spell exists in catalog");
+            assert!(def.is_class_spell("Cleric"), "{} should be on the Cleric list", spell);
+        }
+    }
+
+    #[test]
+    fn test_druid_default_known_spells_populated_and_prepared() {
+        let c = create_character("Gaia".to_string(), Race::Human, Class::Druid, test_scores(), vec![]);
+        assert!(!c.known_spells.is_empty());
+        assert_eq!(c.class_features.prepared_spells, c.known_spells);
+        for spell in &c.known_spells {
+            let def = crate::spells::find_spell(spell).expect("known spell exists in catalog");
+            assert!(def.is_class_spell("Druid"), "{} should be on the Druid list", spell);
+        }
+    }
+
+    #[test]
+    fn test_warlock_default_known_spells_populated() {
+        let c = create_character("Patr".to_string(), Race::Human, Class::Warlock, test_scores(), vec![]);
+        assert!(!c.known_spells.is_empty());
+        for spell in &c.known_spells {
+            let def = crate::spells::find_spell(spell).expect("known spell exists in catalog");
+            assert!(def.is_class_spell("Warlock"), "{} should be on the Warlock list", spell);
+        }
+    }
+
+    #[test]
+    fn test_paladin_level_one_has_empty_known_spells() {
+        // Paladin/Ranger unlock spellcasting at level 2 per SRD; level 1
+        // starts with an empty list.
+        let c = create_character("Pally".to_string(), Race::Human, Class::Paladin, test_scores(), vec![]);
+        assert!(c.known_spells.is_empty());
+        // prepared_spells also empty for Paladin at level 1.
+        assert!(c.class_features.prepared_spells.is_empty());
+    }
+
+    #[test]
+    fn test_ranger_level_one_has_empty_known_spells() {
+        let c = create_character("Aran".to_string(), Race::Human, Class::Ranger, test_scores(), vec![]);
+        assert!(c.known_spells.is_empty());
+    }
+
+    #[test]
+    fn test_non_casters_have_empty_known_spells() {
+        for class in [Class::Barbarian, Class::Fighter, Class::Monk, Class::Rogue] {
+            let c = create_character("T".to_string(), Race::Human, class, test_scores(), vec![]);
+            assert!(c.known_spells.is_empty(), "{:?} should have no known spells", class);
+        }
     }
 }
