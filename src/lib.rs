@@ -11,6 +11,7 @@ pub mod combat;
 pub mod conditions;
 pub mod spells;
 pub mod rest;
+pub mod leveling;
 
 use std::collections::{HashMap, HashSet};
 use rand::SeedableRng;

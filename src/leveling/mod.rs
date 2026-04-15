@@ -1,0 +1,576 @@
+// jurnalis-engine/src/leveling/mod.rs
+// Leveling and XP progression per SRD 5.1.
+//
+// Dependencies: types.rs, state/, character/. This module does NOT depend on
+// combat/, narration/, parser/, world/, or equipment/. Cross-module wiring
+// (combat-victory XP awards, objective bonuses, narration) lives in lib.rs.
+
+use crate::character::class::Class;
+use crate::character::Character;
+use crate::types::Ability;
+
+/// Hard cap on character level per SRD.
+pub const LEVEL_CAP: u32 = 20;
+
+/// Levels at which a character earns an Ability Score Improvement (or feat).
+/// Per SRD core classes (the universal subset; some classes get extras at
+/// 6/14, but the engine MVP doesn't model those yet).
+pub const ASI_LEVELS: &[u32] = &[4, 8, 12, 16, 19];
+
+/// Flat XP bonus awarded when an objective (DefeatNpc or FindItem) is
+/// completed. Stacks on top of monster XP for DefeatNpc objectives.
+pub const OBJECTIVE_XP_REWARD: u32 = 100;
+
+/// Cumulative XP required to reach each level (1..=20). Index 0 = level 1.
+/// Pulled directly from the SRD Character Advancement table.
+const XP_THRESHOLDS: [u32; 20] = [
+    0,        // 1
+    300,      // 2
+    900,      // 3
+    2_700,    // 4
+    6_500,    // 5
+    14_000,   // 6
+    23_000,   // 7
+    34_000,   // 8
+    48_000,   // 9
+    64_000,   // 10
+    85_000,   // 11
+    100_000,  // 12
+    120_000,  // 13
+    140_000,  // 14
+    165_000,  // 15
+    195_000,  // 16
+    225_000,  // 17
+    265_000,  // 18
+    305_000,  // 19
+    355_000,  // 20
+];
+
+/// XP required to reach the given level. Returns 0 for level 0 or 1.
+/// Returns `u32::MAX` for any level above the cap (functionally
+/// unreachable, used as a sentinel for "no further leveling").
+pub fn xp_for_level(level: u32) -> u32 {
+    if level == 0 {
+        return 0;
+    }
+    if level > LEVEL_CAP {
+        return u32::MAX;
+    }
+    XP_THRESHOLDS[(level - 1) as usize]
+}
+
+/// XP required to advance from the given current level to the next.
+/// Returns `u32::MAX` if already at the cap.
+pub fn xp_for_next_level(level: u32) -> u32 {
+    if level >= LEVEL_CAP {
+        return u32::MAX;
+    }
+    xp_for_level(level + 1)
+}
+
+/// Highest level whose threshold is `<= xp`. Capped at `LEVEL_CAP`.
+pub fn level_for_xp(xp: u32) -> u32 {
+    let mut level = 1u32;
+    for (i, &threshold) in XP_THRESHOLDS.iter().enumerate() {
+        if xp >= threshold {
+            level = (i as u32) + 1;
+        } else {
+            break;
+        }
+    }
+    level
+}
+
+/// SRD CR -> XP reward table. Returns 0 for unknown / unsupported CRs.
+///
+/// Floating-point CRs are matched with a small epsilon tolerance to handle
+/// inexact representations (e.g., 0.125, 0.25, 0.5 round-trip exactly in
+/// f32 but the tolerance keeps callers safe).
+pub fn xp_for_cr(cr: f32) -> u32 {
+    const EPS: f32 = 1e-3;
+    const TABLE: &[(f32, u32)] = &[
+        (0.0, 10),
+        (0.125, 25),
+        (0.25, 50),
+        (0.5, 100),
+        (1.0, 200),
+        (2.0, 450),
+        (3.0, 700),
+        (4.0, 1_100),
+        (5.0, 1_800),
+        (6.0, 2_300),
+        (7.0, 2_900),
+        (8.0, 3_900),
+        (9.0, 5_000),
+        (10.0, 5_900),
+    ];
+    if !cr.is_finite() {
+        return 0;
+    }
+    for &(table_cr, xp) in TABLE {
+        if (cr - table_cr).abs() < EPS {
+            return xp;
+        }
+    }
+    0
+}
+
+/// Per-level fixed HP gain for a class (SRD "Fixed Hit Points by Class").
+/// Value is the hit-die-derived constant; the caller adds the CON modifier.
+fn fixed_hp_per_level(class: Class) -> i32 {
+    // Matches existing `calculate_hp` formula: (hit_die / 2) + 1
+    (class.hit_die() as i32 / 2) + 1
+}
+
+/// SRD wizard spell-slot table. Returns slots for spell levels 1..=9 in a
+/// vector indexed from 0. For non-Wizard classes (in the MVP) returns
+/// an empty vector; this is intentional — Fighter/Rogue gain no slots.
+///
+/// For levels above the cap, returns the level-20 row.
+pub fn wizard_spell_slots(level: u32) -> Vec<i32> {
+    // Each row is [lvl1, lvl2, lvl3, lvl4, lvl5, lvl6, lvl7, lvl8, lvl9]
+    // truncated to the highest non-zero entry to keep `Vec` sizes minimal.
+    const TABLE: &[[i32; 9]] = &[
+        [2, 0, 0, 0, 0, 0, 0, 0, 0],   // 1
+        [3, 0, 0, 0, 0, 0, 0, 0, 0],   // 2
+        [4, 2, 0, 0, 0, 0, 0, 0, 0],   // 3
+        [4, 3, 0, 0, 0, 0, 0, 0, 0],   // 4
+        [4, 3, 2, 0, 0, 0, 0, 0, 0],   // 5
+        [4, 3, 3, 0, 0, 0, 0, 0, 0],   // 6
+        [4, 3, 3, 1, 0, 0, 0, 0, 0],   // 7
+        [4, 3, 3, 2, 0, 0, 0, 0, 0],   // 8
+        [4, 3, 3, 3, 1, 0, 0, 0, 0],   // 9
+        [4, 3, 3, 3, 2, 0, 0, 0, 0],   // 10
+        [4, 3, 3, 3, 2, 1, 0, 0, 0],   // 11
+        [4, 3, 3, 3, 2, 1, 0, 0, 0],   // 12
+        [4, 3, 3, 3, 2, 1, 1, 0, 0],   // 13
+        [4, 3, 3, 3, 2, 1, 1, 0, 0],   // 14
+        [4, 3, 3, 3, 2, 1, 1, 1, 0],   // 15
+        [4, 3, 3, 3, 2, 1, 1, 1, 0],   // 16
+        [4, 3, 3, 3, 2, 1, 1, 1, 1],   // 17
+        [4, 3, 3, 3, 3, 1, 1, 1, 1],   // 18
+        [4, 3, 3, 3, 3, 2, 1, 1, 1],   // 19
+        [4, 3, 3, 3, 3, 2, 2, 1, 1],   // 20
+    ];
+    if level == 0 {
+        return Vec::new();
+    }
+    let idx = (level.min(LEVEL_CAP) - 1) as usize;
+    let row = TABLE[idx];
+    // Truncate trailing zeros so Vec lengths grow naturally with level.
+    let last_nonzero = row.iter().rposition(|&n| n > 0).map(|i| i + 1).unwrap_or(0);
+    row[..last_nonzero].to_vec()
+}
+
+/// Result of a single level-up step.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LevelUpReport {
+    pub new_level: u32,
+    pub hp_gained: i32,
+    pub asi_granted: bool,
+    pub new_spell_tier_unlocked: Option<usize>, // spell level index (0 = level 1 spell)
+}
+
+/// Apply a single level-up to the character. Used internally by `award_xp`,
+/// exposed for testing. Caller is responsible for ensuring `character.level`
+/// has not yet been incremented past the cap.
+pub fn perform_level_up(character: &mut Character) -> LevelUpReport {
+    let new_level = character.level + 1;
+
+    // 1. HP and current_hp
+    let con_mod = Ability::modifier(
+        character
+            .ability_scores
+            .get(&Ability::Constitution)
+            .copied()
+            .unwrap_or(10),
+    );
+    let hp_gain = (fixed_hp_per_level(character.class) + con_mod).max(1);
+    character.max_hp += hp_gain;
+    character.current_hp = (character.current_hp + hp_gain).min(character.max_hp);
+
+    // 2. Hit dice
+    if character.hit_dice_remaining < new_level {
+        character.hit_dice_remaining += 1;
+    }
+
+    // 3. ASI credits
+    let asi_granted = ASI_LEVELS.contains(&new_level);
+    if asi_granted {
+        character.asi_credits += 1;
+    }
+
+    // 4. Wizard spell slots — additive: top up `spell_slots_remaining` only
+    // for newly added slot tiers; leave already-spent slots un-refilled
+    // (level-up is not a long rest).
+    let mut new_spell_tier_unlocked: Option<usize> = None;
+    if character.class == Class::Wizard {
+        let new_max = wizard_spell_slots(new_level);
+        let old_len = character.spell_slots_max.len();
+        // Pad remaining if it was shorter than max (defensive).
+        while character.spell_slots_remaining.len() < old_len {
+            character.spell_slots_remaining.push(0);
+        }
+        // For each new slot tier (index >= old_len), add to remaining.
+        for i in old_len..new_max.len() {
+            character.spell_slots_remaining.push(new_max[i]);
+        }
+        if new_max.len() > old_len {
+            new_spell_tier_unlocked = Some(old_len);
+        }
+        character.spell_slots_max = new_max;
+    }
+
+    // 5. Refresh class-feature flags (newly available features at this level
+    // are exposed; existing ones are also refreshed as a courtesy on level-up).
+    character.class_features.second_wind_available = true;
+    character.class_features.action_surge_available = true;
+    character.class_features.arcane_recovery_used_today = false;
+
+    // 6. Increment the level last so the report reflects the new level.
+    character.level = new_level;
+
+    LevelUpReport {
+        new_level,
+        hp_gained: hp_gain,
+        asi_granted,
+        new_spell_tier_unlocked,
+    }
+}
+
+/// Award XP to the character and apply any resulting level-ups. Returns
+/// narration lines describing what changed (XP gained + any level-ups).
+///
+/// Caller (orchestrator in lib.rs) is responsible for emitting these lines
+/// to the player.
+pub fn award_xp(character: &mut Character, amount: u32) -> Vec<String> {
+    let mut lines = Vec::new();
+    if amount == 0 {
+        return lines;
+    }
+    character.xp = character.xp.saturating_add(amount);
+    lines.push(format!("You gain {} XP.", amount));
+
+    while character.level < LEVEL_CAP
+        && character.xp >= xp_for_next_level(character.level)
+    {
+        let report = perform_level_up(character);
+        lines.push(format!(
+            "*** You reached level {}! HP +{} (now {}/{}). Hit dice: {}/{}. ***",
+            report.new_level,
+            report.hp_gained,
+            character.current_hp,
+            character.max_hp,
+            character.hit_dice_remaining,
+            character.level,
+        ));
+        if report.asi_granted {
+            lines.push(format!(
+                "You earn an Ability Score Improvement! (You have {} unspent ASI credit{}.)",
+                character.asi_credits,
+                if character.asi_credits == 1 { "" } else { "s" },
+            ));
+        }
+        if let Some(tier) = report.new_spell_tier_unlocked {
+            lines.push(format!(
+                "You unlock level {} spell slots!",
+                tier + 1,
+            ));
+        }
+    }
+
+    lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::character::race::Race;
+    use crate::character::{create_character, Character};
+    use crate::types::{Ability, Skill};
+    use std::collections::HashMap;
+
+    fn fighter_con13() -> Character {
+        let mut scores = HashMap::new();
+        scores.insert(Ability::Strength, 15);
+        scores.insert(Ability::Dexterity, 14);
+        scores.insert(Ability::Constitution, 13);
+        scores.insert(Ability::Intelligence, 12);
+        scores.insert(Ability::Wisdom, 10);
+        scores.insert(Ability::Charisma, 8);
+        create_character(
+            "Test".to_string(),
+            Race::Human,
+            Class::Fighter,
+            scores,
+            Vec::<Skill>::new(),
+        )
+    }
+
+    fn wizard_con13() -> Character {
+        let mut scores = HashMap::new();
+        scores.insert(Ability::Strength, 8);
+        scores.insert(Ability::Dexterity, 14);
+        scores.insert(Ability::Constitution, 13);
+        scores.insert(Ability::Intelligence, 15);
+        scores.insert(Ability::Wisdom, 12);
+        scores.insert(Ability::Charisma, 10);
+        create_character(
+            "Wiz".to_string(),
+            Race::Human,
+            Class::Wizard,
+            scores,
+            Vec::<Skill>::new(),
+        )
+    }
+
+    // ---- XP threshold table ----
+
+    #[test]
+    fn xp_for_level_known_thresholds() {
+        assert_eq!(xp_for_level(1), 0);
+        assert_eq!(xp_for_level(2), 300);
+        assert_eq!(xp_for_level(3), 900);
+        assert_eq!(xp_for_level(4), 2_700);
+        assert_eq!(xp_for_level(5), 6_500);
+        assert_eq!(xp_for_level(20), 355_000);
+    }
+
+    #[test]
+    fn xp_for_level_zero_and_above_cap() {
+        assert_eq!(xp_for_level(0), 0);
+        assert_eq!(xp_for_level(21), u32::MAX);
+        assert_eq!(xp_for_level(100), u32::MAX);
+    }
+
+    #[test]
+    fn xp_for_next_level_returns_threshold_for_next() {
+        assert_eq!(xp_for_next_level(1), 300);
+        assert_eq!(xp_for_next_level(4), 6_500);
+        assert_eq!(xp_for_next_level(19), 355_000);
+        assert_eq!(xp_for_next_level(20), u32::MAX);
+    }
+
+    #[test]
+    fn level_for_xp_lookup() {
+        assert_eq!(level_for_xp(0), 1);
+        assert_eq!(level_for_xp(299), 1);
+        assert_eq!(level_for_xp(300), 2);
+        assert_eq!(level_for_xp(899), 2);
+        assert_eq!(level_for_xp(900), 3);
+        assert_eq!(level_for_xp(6_499), 4);
+        assert_eq!(level_for_xp(6_500), 5);
+        assert_eq!(level_for_xp(355_000), 20);
+        assert_eq!(level_for_xp(u32::MAX), 20);
+    }
+
+    // ---- CR -> XP table ----
+
+    #[test]
+    fn cr_to_xp_known_values() {
+        assert_eq!(xp_for_cr(0.0), 10);
+        assert_eq!(xp_for_cr(0.125), 25);
+        assert_eq!(xp_for_cr(0.25), 50);
+        assert_eq!(xp_for_cr(0.5), 100);
+        assert_eq!(xp_for_cr(1.0), 200);
+        assert_eq!(xp_for_cr(2.0), 450);
+        assert_eq!(xp_for_cr(10.0), 5_900);
+    }
+
+    #[test]
+    fn cr_to_xp_unknown_returns_zero() {
+        assert_eq!(xp_for_cr(1.7), 0);
+        assert_eq!(xp_for_cr(-1.0), 0);
+        assert_eq!(xp_for_cr(f32::NAN), 0);
+        assert_eq!(xp_for_cr(f32::INFINITY), 0);
+    }
+
+    // ---- Wizard spell slots ----
+
+    #[test]
+    fn wizard_slots_at_known_levels() {
+        assert_eq!(wizard_spell_slots(1), vec![2]);
+        assert_eq!(wizard_spell_slots(2), vec![3]);
+        assert_eq!(wizard_spell_slots(3), vec![4, 2]);
+        assert_eq!(wizard_spell_slots(5), vec![4, 3, 2]);
+        assert_eq!(wizard_spell_slots(11), vec![4, 3, 3, 3, 2, 1]);
+        assert_eq!(wizard_spell_slots(17), vec![4, 3, 3, 3, 2, 1, 1, 1, 1]);
+        assert_eq!(wizard_spell_slots(20), vec![4, 3, 3, 3, 3, 2, 2, 1, 1]);
+    }
+
+    #[test]
+    fn wizard_slots_zero_level_empty() {
+        assert!(wizard_spell_slots(0).is_empty());
+    }
+
+    // ---- Level-up: HP and hit dice ----
+
+    #[test]
+    fn level_up_fighter_increases_hp_and_hit_dice() {
+        let mut c = fighter_con13();
+        let starting_hp = c.max_hp;
+        let starting_hd = c.hit_dice_remaining;
+        let report = perform_level_up(&mut c);
+        // Human +1 to all -> CON 14 (mod +2). Fighter d10 -> +6 + 2 = +8.
+        assert_eq!(report.hp_gained, 8);
+        assert_eq!(c.max_hp, starting_hp + 8);
+        assert_eq!(c.current_hp, c.max_hp); // partial heal up to new max
+        assert_eq!(c.hit_dice_remaining, starting_hd + 1);
+        assert_eq!(c.level, 2);
+        assert!(!report.asi_granted);
+    }
+
+    #[test]
+    fn level_up_wizard_increases_hp() {
+        let mut c = wizard_con13();
+        // Human +1 -> CON 14 (mod +2). Wizard d6 -> +4 + 2 = +6.
+        let report = perform_level_up(&mut c);
+        assert_eq!(report.hp_gained, 6);
+    }
+
+    #[test]
+    fn level_up_negative_con_grants_at_least_one_hp() {
+        let mut c = fighter_con13();
+        c.ability_scores.insert(Ability::Constitution, 4); // CON mod -3
+        // Fighter d10 -> +6 + (-3) = +3, still > 1 so OK.
+        // Force a worse case: very weak class
+        c.class = Class::Wizard;
+        // Wizard +4 + (-3) = +1
+        let report = perform_level_up(&mut c);
+        assert_eq!(report.hp_gained, 1);
+    }
+
+    #[test]
+    fn level_up_grants_asi_at_level_4() {
+        let mut c = fighter_con13();
+        // Bump to level 3 first
+        c.level = 3;
+        let report = perform_level_up(&mut c);
+        assert_eq!(c.level, 4);
+        assert!(report.asi_granted);
+        assert_eq!(c.asi_credits, 1);
+    }
+
+    #[test]
+    fn level_up_no_asi_at_non_asi_level() {
+        let mut c = fighter_con13();
+        for _ in 0..6 {
+            // Walk up to level 7, ASI should fire only at 4
+            perform_level_up(&mut c);
+        }
+        assert_eq!(c.level, 7);
+        assert_eq!(c.asi_credits, 1); // only from the level-4 hop
+    }
+
+    #[test]
+    fn level_up_wizard_adds_new_spell_tier() {
+        let mut c = wizard_con13();
+        // L1 wizard has [2]
+        assert_eq!(c.spell_slots_max, vec![2]);
+        // Level up to 2: still just one tier but more
+        let _ = perform_level_up(&mut c);
+        assert_eq!(c.spell_slots_max, vec![3]);
+        // Spending one slot to test that additive behavior preserves spent slots
+        c.spell_slots_remaining[0] = 1;
+        // Level up to 3: gains a tier
+        let report = perform_level_up(&mut c);
+        assert_eq!(c.spell_slots_max, vec![4, 2]);
+        assert_eq!(report.new_spell_tier_unlocked, Some(1));
+        // Existing spent slots are NOT topped back up
+        assert_eq!(c.spell_slots_remaining[0], 1);
+        // New tier is fully populated
+        assert_eq!(c.spell_slots_remaining[1], 2);
+    }
+
+    #[test]
+    fn level_up_fighter_does_not_gain_spell_slots() {
+        let mut c = fighter_con13();
+        for _ in 0..5 {
+            perform_level_up(&mut c);
+        }
+        assert!(c.spell_slots_max.is_empty());
+        assert!(c.spell_slots_remaining.is_empty());
+    }
+
+    // ---- award_xp: thresholds and level-up triggering ----
+
+    #[test]
+    fn award_xp_below_threshold_no_level_up() {
+        let mut c = fighter_con13();
+        let lines = award_xp(&mut c, 100);
+        assert_eq!(c.xp, 100);
+        assert_eq!(c.level, 1);
+        assert!(lines.iter().any(|l| l.contains("100 XP")));
+        assert!(!lines.iter().any(|l| l.contains("level")));
+    }
+
+    #[test]
+    fn award_xp_zero_amount_is_noop() {
+        let mut c = fighter_con13();
+        let lines = award_xp(&mut c, 0);
+        assert!(lines.is_empty());
+        assert_eq!(c.xp, 0);
+    }
+
+    #[test]
+    fn award_xp_crosses_one_threshold() {
+        let mut c = fighter_con13();
+        let lines = award_xp(&mut c, 300);
+        assert_eq!(c.level, 2);
+        assert!(lines.iter().any(|l| l.contains("level 2")));
+    }
+
+    #[test]
+    fn award_xp_crosses_multiple_thresholds_in_one_award() {
+        let mut c = fighter_con13();
+        // 7000 XP — level 1 -> 5 (300/900/2700/6500 thresholds).
+        let lines = award_xp(&mut c, 7_000);
+        assert_eq!(c.level, 5);
+        // Should mention each level reached.
+        assert!(lines.iter().any(|l| l.contains("level 2")));
+        assert!(lines.iter().any(|l| l.contains("level 3")));
+        assert!(lines.iter().any(|l| l.contains("level 4")));
+        assert!(lines.iter().any(|l| l.contains("level 5")));
+    }
+
+    #[test]
+    fn award_xp_caps_at_level_20() {
+        let mut c = fighter_con13();
+        // Bump XP into the stratosphere — level should cap at 20.
+        let _ = award_xp(&mut c, 1_000_000);
+        assert_eq!(c.level, 20);
+        // A second huge award changes nothing about level.
+        let prior_hp = c.max_hp;
+        let prior_hd = c.hit_dice_remaining;
+        let prior_asi = c.asi_credits;
+        let _ = award_xp(&mut c, 1_000_000);
+        assert_eq!(c.level, 20);
+        assert_eq!(c.max_hp, prior_hp);
+        assert_eq!(c.hit_dice_remaining, prior_hd);
+        assert_eq!(c.asi_credits, prior_asi);
+    }
+
+    // ---- Save/load ----
+
+    #[test]
+    fn xp_field_save_load_roundtrip() {
+        let mut c = fighter_con13();
+        c.xp = 4_321;
+        c.asi_credits = 2;
+        let json = serde_json::to_string(&c).unwrap();
+        let loaded: Character = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded.xp, 4_321);
+        assert_eq!(loaded.asi_credits, 2);
+    }
+
+    #[test]
+    fn legacy_save_missing_xp_defaults_to_zero() {
+        let c = fighter_con13();
+        let mut v: serde_json::Value = serde_json::to_value(&c).unwrap();
+        v.as_object_mut().unwrap().remove("xp");
+        v.as_object_mut().unwrap().remove("asi_credits");
+        let loaded: Character = serde_json::from_value(v).unwrap();
+        assert_eq!(loaded.xp, 0);
+        assert_eq!(loaded.asi_credits, 0);
+    }
+}

@@ -45,6 +45,15 @@ pub struct Character {
     /// Exhaustion level (0..=6 per SRD 5.1). Long rest reduces by 1.
     #[serde(default)]
     pub exhaustion: u32,
+    /// Total accumulated experience points. Drives level advancement
+    /// (see `leveling/`). Defaults to 0 for save back-compat.
+    #[serde(default)]
+    pub xp: u32,
+    /// Number of unspent Ability Score Improvement (or feat) credits earned
+    /// at SRD-mandated levels (4/8/12/16/19). Consumed by the future feat
+    /// system (#28). Defaults to 0.
+    #[serde(default)]
+    pub asi_credits: u32,
 }
 
 impl Character {
@@ -141,6 +150,8 @@ pub fn create_character(
         hit_dice_remaining: 1, // level 1 starts with 1 hit die
         class_features: ClassFeatureState::default(),
         exhaustion: 0,
+        xp: 0,
+        asi_credits: 0,
     }
 }
 
