@@ -2110,7 +2110,6 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                     }
 
                     combat.action_used = true;
-                    should_end_turn = combat.player_movement_remaining <= 0;
                 }
                 ResolveResult::Ambiguous(matches) => {
                     state.active_combat = Some(combat);
@@ -2163,7 +2162,6 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
             }
             combat.player_dodging = true;
             combat.action_used = true;
-            should_end_turn = combat.player_movement_remaining <= 0;
             lines.push("You take the Dodge action. Attacks against you have disadvantage until your next turn.".to_string());
         }
         Command::Disengage => {
@@ -2173,7 +2171,6 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
             }
             combat.player_disengaging = true;
             combat.action_used = true;
-            should_end_turn = combat.player_movement_remaining <= 0;
             lines.push("You take the Disengage action. You can retreat without provoking opportunity attacks.".to_string());
         }
         Command::Dash => {
@@ -2183,7 +2180,6 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
             }
             combat.player_movement_remaining += state.character.speed;
             combat.action_used = true;
-            should_end_turn = false;
             lines.push(format!("You take the Dash action. Movement this turn: {} ft.", combat.player_movement_remaining));
         }
         Command::BonusDash => {
@@ -2193,7 +2189,6 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
             }
             combat.player_movement_remaining += state.character.speed;
             combat.bonus_action_used = true;
-            should_end_turn = false;
             lines.push(format!(
                 "You dash as a bonus action. Movement this turn: {} ft.",
                 combat.player_movement_remaining
@@ -2399,7 +2394,6 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                     }
 
                     combat.bonus_action_used = true;
-                    should_end_turn = combat.player_movement_remaining <= 0;
                 }
                 ResolveResult::Ambiguous(matches) => {
                     state.active_combat = Some(combat);
@@ -2418,7 +2412,6 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
             }
             lines.extend(handle_equip_command(state, &target_str));
             combat.action_used = true;
-            should_end_turn = combat.player_movement_remaining <= 0;
         }
         Command::Unequip(target_str) => {
             if combat.action_used {
@@ -2427,7 +2420,6 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
             }
             lines.extend(handle_unequip_command(state, &target_str));
             combat.action_used = true;
-            should_end_turn = combat.player_movement_remaining <= 0;
         }
         Command::Use(item_name) => {
             if combat.action_used {
@@ -2439,7 +2431,6 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
             if consumed_action {
                 combat.action_used = true;
             }
-            should_end_turn = combat.player_movement_remaining <= 0;
         }
         Command::EndTurn => {
             lines.push("You end your turn.".to_string());
@@ -2546,7 +2537,6 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                                 }
                             }
                             combat.action_used = true;
-                            should_end_turn = combat.player_movement_remaining <= 0;
                         }
                         ResolveResult::Ambiguous(matches) => {
                             state.active_combat = Some(combat);
@@ -2561,7 +2551,6 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                 "Prestidigitation" => {
                     lines.push(narration::templates::CAST_PRESTIDIGITATION.to_string());
                     combat.action_used = true;
-                    should_end_turn = combat.player_movement_remaining <= 0;
                 }
                 "Magic Missile" => {
                     // Needs a target
@@ -2616,7 +2605,6 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                                 }
                             }
                             combat.action_used = true;
-                            should_end_turn = combat.player_movement_remaining <= 0;
                         }
                         ResolveResult::Ambiguous(matches) => {
                             state.character.spell_slots_remaining[0] += 1; // refund
@@ -2690,7 +2678,6 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                         }
                     }
                     combat.action_used = true;
-                    should_end_turn = combat.player_movement_remaining <= 0;
                 }
                 "Sleep" => {
                     // AoE by HP pool, targets weakest first
@@ -2729,7 +2716,6 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                             .replace("{level}", "1"));
                     }
                     combat.action_used = true;
-                    should_end_turn = combat.player_movement_remaining <= 0;
                 }
                 "Shield" => {
                     let outcome = spells::resolve_shield();
@@ -2749,7 +2735,6 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                         combat.player_shield_ac_bonus = 5;
                     }
                     combat.action_used = true;
-                    should_end_turn = combat.player_movement_remaining <= 0;
                 }
                 _ => {
                     lines.push("That spell is not implemented yet.".to_string());
@@ -4036,6 +4021,90 @@ mod tests {
 
         assert!(combat.is_player_turn());
         assert!(!combat.action_used);
+    }
+
+    #[test]
+    fn test_attack_with_zero_movement_keeps_turn_open_until_end_turn() {
+        // Regression: attack action with zero movement remaining should NOT
+        // auto-advance to NPC turns. The turn stays open until the player
+        // explicitly types `end turn`, so bonus actions / movement grants
+        // from Dash etc. remain possible.
+        let mut state = create_test_combat_state();
+        force_player_turn(&mut state);
+        if let Some(ref mut combat) = state.active_combat {
+            combat.distances.insert(100, 5); // in melee
+            combat.player_movement_remaining = 0; // exhausted movement
+            combat.action_used = false;
+        }
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "attack test goblin");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        let combat = new_state.active_combat.as_ref().unwrap();
+
+        assert!(combat.is_player_turn(),
+            "Attack with no movement remaining should not auto-end the turn. Got: {:?}",
+            output.text);
+        assert!(combat.action_used, "Attack should still consume action");
+        assert!(output.text.iter().any(|t| t.contains("Your turn!")),
+            "Expected player turn prompt to continue, got: {:?}", output.text);
+    }
+
+    #[test]
+    fn test_dodge_with_zero_movement_keeps_turn_open_until_end_turn() {
+        // Regression: Dodge with zero movement should not auto-end the turn.
+        let mut state = create_test_combat_state();
+        force_player_turn(&mut state);
+        if let Some(ref mut combat) = state.active_combat {
+            combat.player_movement_remaining = 0;
+            combat.action_used = false;
+        }
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "dodge");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        let combat = new_state.active_combat.as_ref().unwrap();
+
+        assert!(combat.is_player_turn(),
+            "Dodge with 0 movement should still keep the player's turn open.");
+        assert!(combat.action_used);
+        assert!(output.text.iter().any(|t| t.contains("Your turn!")),
+            "Expected turn prompt, got: {:?}", output.text);
+    }
+
+    #[test]
+    fn test_attack_then_bonus_dash_allowed_on_same_turn() {
+        // Attack consumes action; movement goes to zero; player can still
+        // spend a bonus action (e.g. bonus dash) before ending the turn.
+        let mut state = create_test_combat_state();
+        force_player_turn(&mut state);
+        if let Some(ref mut combat) = state.active_combat {
+            combat.distances.insert(100, 5);
+            combat.player_movement_remaining = 0;
+            combat.action_used = false;
+            combat.bonus_action_used = false;
+        }
+
+        // Attack first — consume action, 0 movement
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "attack test goblin");
+        let after_attack: GameState = serde_json::from_str(&output.state_json).unwrap();
+        {
+            let combat = after_attack.active_combat.as_ref().unwrap();
+            assert!(combat.is_player_turn(), "Turn should remain with player after attack");
+            assert!(combat.action_used, "Action should be consumed");
+        }
+
+        // Now fire a bonus dash — should succeed because turn was held open.
+        let state_json2 = serde_json::to_string(&after_attack).unwrap();
+        let output2 = process_input(&state_json2, "bonus dash");
+        let after_dash: GameState = serde_json::from_str(&output2.state_json).unwrap();
+        let combat = after_dash.active_combat.as_ref().unwrap();
+        assert!(combat.is_player_turn(),
+            "After bonus dash the player should still be on their turn (no auto-end).");
+        assert!(combat.bonus_action_used, "Bonus action should be consumed");
+        assert!(combat.player_movement_remaining > 0,
+            "Dash should have restored movement");
     }
 
     #[test]
