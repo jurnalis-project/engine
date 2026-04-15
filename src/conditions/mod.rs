@@ -2,25 +2,49 @@
 use serde::{Deserialize, Serialize};
 use crate::types::Ability;
 
-/// SRD 5.1 condition types (MVP subset)
+/// SRD condition types. Covers the full SRD glossary.
+///
+/// `Exhaustion` is listed here for name/narration parity, but exhaustion level is
+/// tracked on `Character.exhaustion` (u32, 0..=6) rather than as an `ActiveCondition`
+/// entry. See `docs/specs/conditions-system.md` for the unified 2024 SRD formula.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ConditionType {
-    Poisoned,
-    Stunned,
-    Paralyzed,
-    Prone,
     Blinded,
+    Charmed,
+    Deafened,
+    Exhaustion,
+    Frightened,
+    Grappled,
+    Incapacitated,
+    Invisible,
+    Paralyzed,
+    Petrified,
+    Poisoned,
+    Prone,
+    Restrained,
+    Stunned,
+    Unconscious,
 }
 
 impl ConditionType {
-    /// Display name for narration
+    /// Display name for narration (lowercase, used in "You are {name}!" templates).
     pub fn name(&self) -> &'static str {
         match self {
-            ConditionType::Poisoned => "poisoned",
-            ConditionType::Stunned => "stunned",
-            ConditionType::Paralyzed => "paralyzed",
-            ConditionType::Prone => "prone",
             ConditionType::Blinded => "blinded",
+            ConditionType::Charmed => "charmed",
+            ConditionType::Deafened => "deafened",
+            ConditionType::Exhaustion => "exhaustion",
+            ConditionType::Frightened => "frightened",
+            ConditionType::Grappled => "grappled",
+            ConditionType::Incapacitated => "incapacitated",
+            ConditionType::Invisible => "invisible",
+            ConditionType::Paralyzed => "paralyzed",
+            ConditionType::Petrified => "petrified",
+            ConditionType::Poisoned => "poisoned",
+            ConditionType::Prone => "prone",
+            ConditionType::Restrained => "restrained",
+            ConditionType::Stunned => "stunned",
+            ConditionType::Unconscious => "unconscious",
         }
     }
 }
@@ -177,14 +201,30 @@ pub fn tick_duration(condition: &mut ActiveCondition) -> bool {
     }
 }
 
-/// Get the save ability and DC for a condition, if applicable
+/// Get the save ability and DC for a condition, if applicable. Most conditions
+/// have no intrinsic save -- they are applied and cleared by specific effects or
+/// mechanics (grapples end on escape attempts, frightened ends when source leaves
+/// LoS, etc.). Callers should override the default DC via `ConditionDuration::SaveEnds`
+/// for source-specific DCs.
 pub fn get_save_for_condition(condition: ConditionType) -> Option<(Ability, i32)> {
     match condition {
-        ConditionType::Poisoned => Some((Ability::Constitution, 10)), // Default, often overridden
-        ConditionType::Stunned => None, // Usually fixed duration
-        ConditionType::Paralyzed => None, // Usually fixed duration
-        ConditionType::Prone => None, // Action to stand up
-        ConditionType::Blinded => None, // Usually fixed duration or special
+        ConditionType::Poisoned => Some((Ability::Constitution, 10)),
+        // All other conditions use fixed duration, save-ends with source DC,
+        // or special recovery (escape grapple, stand up from prone, etc.).
+        ConditionType::Blinded
+        | ConditionType::Charmed
+        | ConditionType::Deafened
+        | ConditionType::Exhaustion
+        | ConditionType::Frightened
+        | ConditionType::Grappled
+        | ConditionType::Incapacitated
+        | ConditionType::Invisible
+        | ConditionType::Paralyzed
+        | ConditionType::Petrified
+        | ConditionType::Prone
+        | ConditionType::Restrained
+        | ConditionType::Stunned
+        | ConditionType::Unconscious => None,
     }
 }
 
@@ -197,6 +237,22 @@ mod tests {
         assert_eq!(ConditionType::Poisoned.name(), "poisoned");
         assert_eq!(ConditionType::Stunned.name(), "stunned");
         assert_eq!(ConditionType::Paralyzed.name(), "paralyzed");
+    }
+
+    #[test]
+    fn test_new_condition_type_names() {
+        // All 10 new conditions should have lowercase display names for narration.
+        assert_eq!(ConditionType::Charmed.name(), "charmed");
+        assert_eq!(ConditionType::Deafened.name(), "deafened");
+        assert_eq!(ConditionType::Frightened.name(), "frightened");
+        assert_eq!(ConditionType::Grappled.name(), "grappled");
+        assert_eq!(ConditionType::Incapacitated.name(), "incapacitated");
+        assert_eq!(ConditionType::Invisible.name(), "invisible");
+        assert_eq!(ConditionType::Petrified.name(), "petrified");
+        assert_eq!(ConditionType::Restrained.name(), "restrained");
+        assert_eq!(ConditionType::Unconscious.name(), "unconscious");
+        // Exhaustion has a display name but is otherwise tracked as u32 on Character.
+        assert_eq!(ConditionType::Exhaustion.name(), "exhaustion");
     }
 
     #[test]
