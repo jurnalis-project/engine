@@ -20,6 +20,9 @@ pub struct MonsterDef {
     pub cha: i32,
     pub proficiency_bonus: i32,
     pub attacks: &'static [MonsterAttackDef],
+    /// SRD challenge rating. Drives XP awarded on defeat (see `leveling::xp_for_cr`).
+    /// Fractional values match SRD: 0, 1/8 = 0.125, 1/4 = 0.25, 1/2 = 0.5, etc.
+    pub cr: f32,
 }
 
 pub struct MonsterAttackDef {
@@ -40,6 +43,7 @@ pub const SRD_MONSTERS: &[MonsterDef] = &[
         name: "Rat", max_hp: 1, ac: 10, speed: 20,
         str_: 2, dex: 11, con: 9, int: 2, wis: 10, cha: 4,
         proficiency_bonus: 2,
+        cr: 0.0,
         attacks: &[MonsterAttackDef {
             name: "Bite", hit_bonus: 0, damage_dice: 1, damage_die: 1, damage_bonus: 0,
             damage_type: DamageType::Piercing, reach: 5, range_normal: 0, range_long: 0,
@@ -49,6 +53,7 @@ pub const SRD_MONSTERS: &[MonsterDef] = &[
         name: "Kobold", max_hp: 5, ac: 12, speed: 30,
         str_: 7, dex: 15, con: 9, int: 8, wis: 7, cha: 8,
         proficiency_bonus: 2,
+        cr: 0.125,
         attacks: &[MonsterAttackDef {
             name: "Dagger", hit_bonus: 4, damage_dice: 1, damage_die: 4, damage_bonus: 2,
             damage_type: DamageType::Piercing, reach: 5, range_normal: 20, range_long: 60,
@@ -58,6 +63,7 @@ pub const SRD_MONSTERS: &[MonsterDef] = &[
         name: "Goblin", max_hp: 7, ac: 15, speed: 30,
         str_: 8, dex: 14, con: 10, int: 10, wis: 8, cha: 8,
         proficiency_bonus: 2,
+        cr: 0.25,
         attacks: &[
             MonsterAttackDef {
                 name: "Scimitar", hit_bonus: 4, damage_dice: 1, damage_die: 6, damage_bonus: 2,
@@ -73,6 +79,7 @@ pub const SRD_MONSTERS: &[MonsterDef] = &[
         name: "Skeleton", max_hp: 13, ac: 13, speed: 30,
         str_: 10, dex: 14, con: 15, int: 6, wis: 8, cha: 5,
         proficiency_bonus: 2,
+        cr: 0.25,
         attacks: &[
             MonsterAttackDef {
                 name: "Shortsword", hit_bonus: 4, damage_dice: 1, damage_die: 6, damage_bonus: 2,
@@ -88,6 +95,7 @@ pub const SRD_MONSTERS: &[MonsterDef] = &[
         name: "Zombie", max_hp: 22, ac: 8, speed: 20,
         str_: 13, dex: 6, con: 16, int: 3, wis: 6, cha: 5,
         proficiency_bonus: 2,
+        cr: 0.25,
         attacks: &[MonsterAttackDef {
             name: "Slam", hit_bonus: 3, damage_dice: 1, damage_die: 6, damage_bonus: 1,
             damage_type: DamageType::Bludgeoning, reach: 5, range_normal: 0, range_long: 0,
@@ -97,6 +105,7 @@ pub const SRD_MONSTERS: &[MonsterDef] = &[
         name: "Guard", max_hp: 11, ac: 16, speed: 30,
         str_: 13, dex: 12, con: 12, int: 10, wis: 11, cha: 10,
         proficiency_bonus: 2,
+        cr: 0.125,
         attacks: &[MonsterAttackDef {
             name: "Spear", hit_bonus: 3, damage_dice: 1, damage_die: 6, damage_bonus: 1,
             damage_type: DamageType::Piercing, reach: 5, range_normal: 20, range_long: 60,
@@ -106,6 +115,7 @@ pub const SRD_MONSTERS: &[MonsterDef] = &[
         name: "Bandit", max_hp: 11, ac: 12, speed: 30,
         str_: 11, dex: 12, con: 12, int: 10, wis: 10, cha: 10,
         proficiency_bonus: 2,
+        cr: 0.125,
         attacks: &[
             MonsterAttackDef {
                 name: "Scimitar", hit_bonus: 3, damage_dice: 1, damage_die: 6, damage_bonus: 1,
@@ -121,6 +131,7 @@ pub const SRD_MONSTERS: &[MonsterDef] = &[
         name: "Orc", max_hp: 15, ac: 13, speed: 30,
         str_: 16, dex: 12, con: 16, int: 7, wis: 11, cha: 10,
         proficiency_bonus: 2,
+        cr: 0.5,
         attacks: &[
             MonsterAttackDef {
                 name: "Greataxe", hit_bonus: 5, damage_dice: 1, damage_die: 12, damage_bonus: 3,
@@ -136,6 +147,7 @@ pub const SRD_MONSTERS: &[MonsterDef] = &[
         name: "Hobgoblin", max_hp: 11, ac: 18, speed: 30,
         str_: 13, dex: 12, con: 12, int: 10, wis: 10, cha: 9,
         proficiency_bonus: 2,
+        cr: 0.5,
         attacks: &[
             MonsterAttackDef {
                 name: "Longsword", hit_bonus: 3, damage_dice: 1, damage_die: 8, damage_bonus: 1,
@@ -151,6 +163,7 @@ pub const SRD_MONSTERS: &[MonsterDef] = &[
         name: "Bugbear", max_hp: 27, ac: 16, speed: 30,
         str_: 15, dex: 14, con: 13, int: 8, wis: 11, cha: 9,
         proficiency_bonus: 2,
+        cr: 1.0,
         attacks: &[
             MonsterAttackDef {
                 name: "Morningstar", hit_bonus: 4, damage_dice: 2, damage_die: 8, damage_bonus: 2,
@@ -166,6 +179,7 @@ pub const SRD_MONSTERS: &[MonsterDef] = &[
         name: "Ghoul", max_hp: 22, ac: 12, speed: 30,
         str_: 13, dex: 15, con: 10, int: 7, wis: 10, cha: 6,
         proficiency_bonus: 2,
+        cr: 1.0,
         attacks: &[
             MonsterAttackDef {
                 name: "Claws", hit_bonus: 4, damage_dice: 2, damage_die: 4, damage_bonus: 2,
@@ -181,6 +195,7 @@ pub const SRD_MONSTERS: &[MonsterDef] = &[
         name: "Ogre", max_hp: 59, ac: 11, speed: 40,
         str_: 19, dex: 8, con: 16, int: 5, wis: 7, cha: 7,
         proficiency_bonus: 2,
+        cr: 2.0,
         attacks: &[
             MonsterAttackDef {
                 name: "Greatclub", hit_bonus: 6, damage_dice: 2, damage_die: 8, damage_bonus: 4,
@@ -393,4 +408,30 @@ mod tests {
             assert!(monster.max_hp > 0, "{} has non-positive HP", monster.name);
         }
     }
+
+    #[test]
+    fn test_all_monsters_have_finite_nonneg_cr() {
+        for monster in SRD_MONSTERS {
+            assert!(monster.cr.is_finite(), "{} has non-finite CR", monster.name);
+            assert!(monster.cr >= 0.0, "{} has negative CR", monster.name);
+        }
+    }
+
+    #[test]
+    fn test_canonical_monster_crs() {
+        // Spot-check: all entries from the leveling spec table.
+        assert_eq!(find_monster("Rat").unwrap().cr, 0.0);
+        assert_eq!(find_monster("Kobold").unwrap().cr, 0.125);
+        assert_eq!(find_monster("Goblin").unwrap().cr, 0.25);
+        assert_eq!(find_monster("Skeleton").unwrap().cr, 0.25);
+        assert_eq!(find_monster("Zombie").unwrap().cr, 0.25);
+        assert_eq!(find_monster("Guard").unwrap().cr, 0.125);
+        assert_eq!(find_monster("Bandit").unwrap().cr, 0.125);
+        assert_eq!(find_monster("Orc").unwrap().cr, 0.5);
+        assert_eq!(find_monster("Hobgoblin").unwrap().cr, 0.5);
+        assert_eq!(find_monster("Bugbear").unwrap().cr, 1.0);
+        assert_eq!(find_monster("Ghoul").unwrap().cr, 1.0);
+        assert_eq!(find_monster("Ogre").unwrap().cr, 2.0);
+    }
+
 }
