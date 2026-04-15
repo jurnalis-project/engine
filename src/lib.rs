@@ -1443,6 +1443,32 @@ fn resolve_single_npc_attack(
 }
 
 fn end_combat(state: &mut GameState, victory: bool) -> Vec<String> {
+    // Snapshot the dead NPCs from the just-ended combat BEFORE clearing
+    // `active_combat`, so we award XP only for foes that were actually in
+    // this fight (not for unrelated dead NPCs elsewhere in the world).
+    let dead_npc_crs: Vec<f32> = if victory {
+        if let Some(combat) = state.active_combat.as_ref() {
+            combat
+                .initiative_order
+                .iter()
+                .filter_map(|(c, _)| match c {
+                    combat::Combatant::Npc(id) => state
+                        .world
+                        .npcs
+                        .get(id)
+                        .and_then(|npc| npc.combat_stats.as_ref())
+                        .filter(|cs| cs.current_hp <= 0)
+                        .map(|cs| cs.cr),
+                    combat::Combatant::Player => None,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        }
+    } else {
+        Vec::new()
+    };
+
     state.active_combat = None;
     if victory {
         let mut lines = vec![
@@ -1450,6 +1476,14 @@ fn end_combat(state: &mut GameState, victory: bool) -> Vec<String> {
             "=== VICTORY ===".to_string(),
             "All enemies have been defeated!".to_string(),
         ];
+
+        // Award monster XP for every defeated foe in this combat.
+        let monster_xp: u32 = dead_npc_crs
+            .iter()
+            .map(|&cr| leveling::xp_for_cr(cr))
+            .sum();
+        lines.extend(leveling::award_xp(&mut state.character, monster_xp));
+
         if !state.progress.first_victory {
             state.progress.first_victory = true;
             // Only show legacy message if no objectives are seeded
@@ -1477,6 +1511,7 @@ fn end_combat(state: &mut GameState, victory: bool) -> Vec<String> {
 
 fn check_defeat_npc_objectives(state: &mut GameState) -> Vec<String> {
     let mut lines = Vec::new();
+    let mut newly_completed = 0u32;
     for i in 0..state.progress.objectives.len() {
         if state.progress.objectives[i].completed {
             continue;
@@ -1489,14 +1524,22 @@ fn check_defeat_npc_objectives(state: &mut GameState) -> Vec<String> {
             if npc_dead {
                 state.progress.objectives[i].completed = true;
                 lines.push(format!("Objective complete: {}", state.progress.objectives[i].title));
+                newly_completed += 1;
             }
         }
+    }
+    if newly_completed > 0 {
+        lines.extend(leveling::award_xp(
+            &mut state.character,
+            leveling::OBJECTIVE_XP_REWARD * newly_completed,
+        ));
     }
     lines
 }
 
 fn check_find_item_objectives(state: &mut GameState, item_id: u32) -> Vec<String> {
     let mut lines = Vec::new();
+    let mut newly_completed = 0u32;
     for i in 0..state.progress.objectives.len() {
         if state.progress.objectives[i].completed {
             continue;
@@ -1505,8 +1548,15 @@ fn check_find_item_objectives(state: &mut GameState, item_id: u32) -> Vec<String
             if *target_id == item_id {
                 state.progress.objectives[i].completed = true;
                 lines.push(format!("Objective complete: {}", state.progress.objectives[i].title));
+                newly_completed += 1;
             }
         }
+    }
+    if newly_completed > 0 {
+        lines.extend(leveling::award_xp(
+            &mut state.character,
+            leveling::OBJECTIVE_XP_REWARD * newly_completed,
+        ));
     }
     lines
 }
@@ -5062,5 +5112,213 @@ mod tests {
             !combat.reaction_used,
             "reaction_used should be false at the start of the player's second turn"
         );
+    }
+
+    // ----- XP / leveling integration -----
+
+    /// Build an active combat where the player has won (one dead hostile NPC
+    /// of the given CR present in the initiative order). Used to verify
+    /// `end_combat` awards XP for the right monster.
+    fn combat_state_with_one_dead_hostile(state: &mut GameState, cr: f32) -> u32 {
+        use crate::combat::{CombatState, Combatant};
+        let npc_id: u32 = 7777;
+        state.world.npcs.insert(npc_id, state::Npc {
+            id: npc_id,
+            name: "Test Foe".to_string(),
+            role: state::NpcRole::Guard,
+            disposition: state::Disposition::Hostile,
+            dialogue_tags: vec![],
+            location: state.current_location,
+            combat_stats: Some(state::CombatStats {
+                max_hp: 7,
+                current_hp: 0, // already dead
+                ac: 13,
+                speed: 30,
+                ability_scores: HashMap::new(),
+                attacks: vec![],
+                proficiency_bonus: 2,
+                cr,
+            }),
+            conditions: vec![],
+        });
+        state.active_combat = Some(CombatState {
+            initiative_order: vec![
+                (Combatant::Player, 15),
+                (Combatant::Npc(npc_id), 10),
+            ],
+            current_turn: 0,
+            round: 1,
+            distances: HashMap::new(),
+            player_movement_remaining: state.character.speed,
+            player_dodging: false,
+            player_disengaging: false,
+            action_used: false,
+            bonus_action_used: false,
+            reaction_used: false,
+            free_interaction_used: false,
+            npc_dodging: HashMap::new(),
+            npc_disengaging: HashMap::new(),
+            player_shield_ac_bonus: 0,
+            pending_reaction: None,
+        });
+        npc_id
+    }
+
+    #[test]
+    fn end_combat_awards_xp_for_dead_hostile() {
+        let mut state = create_test_exploration_state();
+        let _ = combat_state_with_one_dead_hostile(&mut state, 0.25); // Goblin
+        let starting_xp = state.character.xp;
+        let lines = end_combat(&mut state, true);
+        assert_eq!(state.character.xp, starting_xp + 50);
+        assert!(lines.iter().any(|l| l.contains("50 XP")), "Lines: {:?}", lines);
+    }
+
+    #[test]
+    fn end_combat_awards_xp_for_each_dead_hostile() {
+        use crate::combat::{CombatState, Combatant};
+        let mut state = create_test_exploration_state();
+        // Two dead goblins
+        for (npc_id, _) in [(7001u32, 0.25f32), (7002, 0.25)] {
+            state.world.npcs.insert(npc_id, state::Npc {
+                id: npc_id,
+                name: format!("Goblin {}", npc_id),
+                role: state::NpcRole::Guard,
+                disposition: state::Disposition::Hostile,
+                dialogue_tags: vec![],
+                location: state.current_location,
+                combat_stats: Some(state::CombatStats {
+                    max_hp: 7, current_hp: 0, ac: 13, speed: 30,
+                    ability_scores: HashMap::new(),
+                    attacks: vec![],
+                    proficiency_bonus: 2,
+                    cr: 0.25,
+                }),
+                conditions: vec![],
+            });
+        }
+        state.active_combat = Some(CombatState {
+            initiative_order: vec![
+                (Combatant::Player, 15),
+                (Combatant::Npc(7001), 12),
+                (Combatant::Npc(7002), 8),
+            ],
+            current_turn: 0, round: 1, distances: HashMap::new(),
+            player_movement_remaining: state.character.speed,
+            player_dodging: false, player_disengaging: false,
+            action_used: false, bonus_action_used: false,
+            reaction_used: false, free_interaction_used: false,
+            npc_dodging: HashMap::new(), npc_disengaging: HashMap::new(),
+            player_shield_ac_bonus: 0, pending_reaction: None,
+        });
+        let _ = end_combat(&mut state, true);
+        // Two goblins: 50 + 50 = 100 XP.
+        assert_eq!(state.character.xp, 100);
+    }
+
+    #[test]
+    fn end_combat_defeat_awards_no_xp() {
+        let mut state = create_test_exploration_state();
+        let _ = combat_state_with_one_dead_hostile(&mut state, 2.0); // Ogre
+        let starting_xp = state.character.xp;
+        let _ = end_combat(&mut state, false);
+        assert_eq!(state.character.xp, starting_xp);
+    }
+
+    #[test]
+    fn end_combat_skips_living_hostiles() {
+        use crate::combat::{CombatState, Combatant};
+        let mut state = create_test_exploration_state();
+        let npc_id: u32 = 8001;
+        state.world.npcs.insert(npc_id, state::Npc {
+            id: npc_id,
+            name: "Survivor".to_string(),
+            role: state::NpcRole::Guard,
+            disposition: state::Disposition::Hostile,
+            dialogue_tags: vec![],
+            location: state.current_location,
+            combat_stats: Some(state::CombatStats {
+                max_hp: 7, current_hp: 5, ac: 13, speed: 30, // alive
+                ability_scores: HashMap::new(),
+                attacks: vec![],
+                proficiency_bonus: 2,
+                cr: 2.0,
+            }),
+            conditions: vec![],
+        });
+        state.active_combat = Some(CombatState {
+            initiative_order: vec![
+                (Combatant::Player, 15),
+                (Combatant::Npc(npc_id), 10),
+            ],
+            current_turn: 0, round: 1, distances: HashMap::new(),
+            player_movement_remaining: state.character.speed,
+            player_dodging: false, player_disengaging: false,
+            action_used: false, bonus_action_used: false,
+            reaction_used: false, free_interaction_used: false,
+            npc_dodging: HashMap::new(), npc_disengaging: HashMap::new(),
+            player_shield_ac_bonus: 0, pending_reaction: None,
+        });
+        let _ = end_combat(&mut state, true);
+        // No XP should be awarded — the hostile is still alive.
+        assert_eq!(state.character.xp, 0);
+    }
+
+    #[test]
+    fn defeat_objective_completion_awards_quest_xp() {
+        let mut state = create_test_exploration_state();
+        let boss_id: u32 = 9001;
+        state.world.npcs.insert(boss_id, state::Npc {
+            id: boss_id,
+            name: "Boss".to_string(),
+            role: state::NpcRole::Guard,
+            disposition: state::Disposition::Hostile,
+            dialogue_tags: vec![],
+            location: state.current_location,
+            combat_stats: Some(state::CombatStats {
+                max_hp: 30, current_hp: 0, ac: 14, speed: 30,
+                ability_scores: HashMap::new(),
+                attacks: vec![],
+                proficiency_bonus: 2,
+                cr: 2.0, // 450 XP
+            }),
+            conditions: vec![],
+        });
+        state.progress.objectives.push(state::Objective {
+            id: "boss".to_string(),
+            title: "Defeat the Boss".to_string(),
+            description: "Slay the boss.".to_string(),
+            completed: false,
+        });
+        state.progress.objective_triggers.push(state::ObjectiveType::DefeatNpc(boss_id));
+        // Wire combat state so end_combat awards monster XP too
+        let _ = combat_state_with_one_dead_hostile(&mut state, 2.0);
+        // Replace the test foe with the boss in initiative
+        if let Some(c) = state.active_combat.as_mut() {
+            c.initiative_order.push((crate::combat::Combatant::Npc(boss_id), 5));
+        }
+
+        let _ = end_combat(&mut state, true);
+        // 450 (test foe) + 450 (boss) + 100 (quest bonus) = 1000.
+        assert_eq!(state.character.xp, 1000);
+        assert!(state.progress.objectives[0].completed);
+    }
+
+    #[test]
+    fn legacy_save_missing_cr_field_defaults_to_zero() {
+        // Older saves predate the CR field on CombatStats; serde default = 0.0.
+        let cs_json = r#"{
+            "max_hp": 7,
+            "current_hp": 0,
+            "ac": 13,
+            "speed": 30,
+            "ability_scores": {},
+            "attacks": [],
+            "proficiency_bonus": 2
+        }"#;
+        let cs: state::CombatStats = serde_json::from_str(cs_json).unwrap();
+        assert_eq!(cs.cr, 0.0);
+        // CR 0 maps to 10 XP, so legacy NPCs still award something on defeat.
+        assert_eq!(leveling::xp_for_cr(cs.cr), 10);
     }
 }
