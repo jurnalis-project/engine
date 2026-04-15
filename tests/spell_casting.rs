@@ -76,6 +76,7 @@ fn create_wizard_combat_state_json() -> String {
             }],
             proficiency_bonus: 2,
             cr: 0.25,
+            ..Default::default()
         }),
         conditions: vec![],
     };
@@ -134,6 +135,7 @@ fn create_wizard_multi_combat_state_json() -> String {
                 attacks: vec![],
                 proficiency_bonus: 2,
                 cr: 0.25,
+                ..Default::default()
             }),
             conditions: vec![],
         }

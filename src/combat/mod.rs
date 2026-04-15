@@ -679,7 +679,7 @@ pub fn resolve_npc_turn(
 ) -> Vec<String> {
     let mut lines = Vec::new();
 
-    let (npc_name, npc_speed, npc_attacks, _npc_ac) = {
+    let (npc_name, npc_speed, npc_attacks, _npc_ac, npc_multiattack) = {
         let npc = match state.world.npcs.get(&npc_id) {
             Some(n) => n,
             None => return lines,
@@ -688,7 +688,13 @@ pub fn resolve_npc_turn(
             Some(s) if s.current_hp > 0 => s,
             _ => return lines,
         };
-        (npc.name.clone(), stats.speed, stats.attacks.clone(), stats.ac)
+        (
+            npc.name.clone(),
+            stats.speed,
+            stats.attacks.clone(),
+            stats.ac,
+            stats.multiattack.max(1),
+        )
     };
 
     let distance = *combat.distances.get(&npc_id).unwrap_or(&30);
@@ -698,43 +704,50 @@ pub fn resolve_npc_turn(
         Some(n) => n,
         None => return lines,
     };
-    let npc_conditions = &npc_ref.conditions;
-    let player_conditions = &state.character.conditions;
+    let npc_conditions = npc_ref.conditions.clone();
+    let player_conditions = state.character.conditions.clone();
 
     // Priority: melee if in range -> ranged if in range -> move toward player
 
     // Orchestrator-side grappled disadvantage: if the NPC is grappled by
     // someone other than the player, attacking the player is at disadvantage.
     let extra_disadvantage = conditions::grappled_attack_disadvantage(
-        npc_conditions,
+        &npc_conditions,
         &state.character.name,
     );
 
     // Check for melee attack
-    let melee_attack = npc_attacks.iter().find(|a| a.reach > 0 && distance <= a.reach as u32);
+    let melee_attack = npc_attacks.iter().find(|a| a.reach > 0 && distance <= a.reach as u32).cloned();
     if let Some(attack) = melee_attack {
-        let player_ac = crate::equipment::calculate_ac(&state.character, &state.world.items);
-        let player_dodging = combat.player_dodging;
-        let result = resolve_npc_attack(rng, attack, player_ac, player_dodging, distance, npc_conditions, player_conditions, extra_disadvantage);
-        let disadv = if result.disadvantage { " (with disadvantage)" } else { "" };
-
-        if result.hit {
-            state.character.current_hp -= result.damage;
-            if result.natural_20 {
-                lines.push(format!("{} attacks with {} -- CRITICAL HIT! {} {} damage!",
-                    npc_name, result.weapon_name, result.damage, result.damage_type));
-            } else {
-                lines.push(format!("{} attacks with {} ({}+{}={} vs AC {}){} -- hit for {} {} damage.",
-                    npc_name, result.weapon_name, result.attack_roll,
-                    attack.hit_bonus, result.total_attack, player_ac, disadv,
-                    result.damage, result.damage_type));
+        // Multiattack loop: roll `multiattack` separate attacks against the player.
+        // Stops early if the player is reduced to 0 HP mid-action.
+        for _ in 0..npc_multiattack {
+            if state.character.current_hp <= 0 {
+                break;
             }
-        } else if result.natural_1 {
-            lines.push(format!("{} attacks with {} -- natural 1, miss!", npc_name, result.weapon_name));
-        } else {
-            lines.push(format!("{} attacks with {} ({}+{}={} vs AC {}){} -- miss.",
-                npc_name, result.weapon_name, result.attack_roll,
-                attack.hit_bonus, result.total_attack, player_ac, disadv));
+            let player_ac = crate::equipment::calculate_ac(&state.character, &state.world.items);
+            let player_dodging = combat.player_dodging;
+            let result = resolve_npc_attack(rng, &attack, player_ac, player_dodging, distance, &npc_conditions, &player_conditions, extra_disadvantage);
+            let disadv = if result.disadvantage { " (with disadvantage)" } else { "" };
+
+            if result.hit {
+                state.character.current_hp -= result.damage;
+                if result.natural_20 {
+                    lines.push(format!("{} attacks with {} -- CRITICAL HIT! {} {} damage!",
+                        npc_name, result.weapon_name, result.damage, result.damage_type));
+                } else {
+                    lines.push(format!("{} attacks with {} ({}+{}={} vs AC {}){} -- hit for {} {} damage.",
+                        npc_name, result.weapon_name, result.attack_roll,
+                        attack.hit_bonus, result.total_attack, player_ac, disadv,
+                        result.damage, result.damage_type));
+                }
+            } else if result.natural_1 {
+                lines.push(format!("{} attacks with {} -- natural 1, miss!", npc_name, result.weapon_name));
+            } else {
+                lines.push(format!("{} attacks with {} ({}+{}={} vs AC {}){} -- miss.",
+                    npc_name, result.weapon_name, result.attack_roll,
+                    attack.hit_bonus, result.total_attack, player_ac, disadv));
+            }
         }
         return lines;
     }
@@ -742,30 +755,35 @@ pub fn resolve_npc_turn(
     // Check for ranged attack
     let ranged_attack = npc_attacks.iter().find(|a| {
         a.range_long > 0 && distance <= a.range_long as u32
-    });
+    }).cloned();
     if let Some(attack) = ranged_attack {
-        let player_ac = crate::equipment::calculate_ac(&state.character, &state.world.items);
-        let player_dodging = combat.player_dodging;
-        let result = resolve_npc_attack(rng, attack, player_ac, player_dodging, distance, npc_conditions, player_conditions, extra_disadvantage);
-        let disadv = if result.disadvantage { " (with disadvantage)" } else { "" };
-
-        if result.hit {
-            state.character.current_hp -= result.damage;
-            if result.natural_20 {
-                lines.push(format!("{} fires {} -- CRITICAL HIT! {} {} damage!",
-                    npc_name, result.weapon_name, result.damage, result.damage_type));
-            } else {
-                lines.push(format!("{} fires {} ({}+{}={} vs AC {}){} -- hit for {} {} damage.",
-                    npc_name, result.weapon_name, result.attack_roll,
-                    attack.hit_bonus, result.total_attack, player_ac, disadv,
-                    result.damage, result.damage_type));
+        for _ in 0..npc_multiattack {
+            if state.character.current_hp <= 0 {
+                break;
             }
-        } else if result.natural_1 {
-            lines.push(format!("{} fires {} -- natural 1, miss!", npc_name, result.weapon_name));
-        } else {
-            lines.push(format!("{} fires {} ({}+{}={} vs AC {}){} -- miss.",
-                npc_name, result.weapon_name, result.attack_roll,
-                attack.hit_bonus, result.total_attack, player_ac, disadv));
+            let player_ac = crate::equipment::calculate_ac(&state.character, &state.world.items);
+            let player_dodging = combat.player_dodging;
+            let result = resolve_npc_attack(rng, &attack, player_ac, player_dodging, distance, &npc_conditions, &player_conditions, extra_disadvantage);
+            let disadv = if result.disadvantage { " (with disadvantage)" } else { "" };
+
+            if result.hit {
+                state.character.current_hp -= result.damage;
+                if result.natural_20 {
+                    lines.push(format!("{} fires {} -- CRITICAL HIT! {} {} damage!",
+                        npc_name, result.weapon_name, result.damage, result.damage_type));
+                } else {
+                    lines.push(format!("{} fires {} ({}+{}={} vs AC {}){} -- hit for {} {} damage.",
+                        npc_name, result.weapon_name, result.attack_roll,
+                        attack.hit_bonus, result.total_attack, player_ac, disadv,
+                        result.damage, result.damage_type));
+                }
+            } else if result.natural_1 {
+                lines.push(format!("{} fires {} -- natural 1, miss!", npc_name, result.weapon_name));
+            } else {
+                lines.push(format!("{} fires {} ({}+{}={} vs AC {}){} -- miss.",
+                    npc_name, result.weapon_name, result.attack_roll,
+                    attack.hit_bonus, result.total_attack, player_ac, disadv));
+            }
         }
         return lines;
     }
@@ -2542,6 +2560,81 @@ mod tests {
         assert_eq!(apply_damage_modifiers(&stats, 0, DamageType::Fire, "x", &mut narration), 0);
         assert_eq!(apply_damage_modifiers(&stats, -3, DamageType::Fire, "x", &mut narration), 0);
         assert!(narration.is_empty());
+    }
+
+    fn count_lines_with(needle: &str, lines: &[String]) -> usize {
+        lines.iter().filter(|l| l.contains(needle)).count()
+    }
+
+    #[test]
+    fn test_npc_multiattack_makes_two_attacks() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut state = test_state_with_goblin();
+        // Bump goblin to multiattack 2 and give it lots of HP so the player
+        // doesn't drop the goblin (only player can be damaged here anyway).
+        let stats = state.world.npcs.get_mut(&0).unwrap().combat_stats.as_mut().unwrap();
+        stats.multiattack = 2;
+        // Clear the bow attack so we are guaranteed to take the melee branch.
+        stats.attacks.retain(|a| a.name == "Scimitar");
+        // Give the player enough HP to survive 2 hits.
+        state.character.current_hp = 1000;
+        state.character.max_hp = 1000;
+
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        combat.distances.insert(0, 5);
+
+        let lines = resolve_npc_turn(&mut rng, 0, &mut state, &mut combat);
+        // 2 attack lines (hit/miss/crit each emit one line; never zero per attack).
+        let attack_lines = count_lines_with("Scimitar", &lines);
+        assert_eq!(attack_lines, 2,
+            "multiattack=2 should produce 2 Scimitar attack lines, got {}: {:#?}",
+            attack_lines, lines);
+    }
+
+    #[test]
+    fn test_npc_multiattack_one_makes_one_attack_regression() {
+        // multiattack==1 is the default; verify legacy behavior.
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut state = test_state_with_goblin();
+        let stats = state.world.npcs.get_mut(&0).unwrap().combat_stats.as_mut().unwrap();
+        assert_eq!(stats.multiattack, 1, "fixture default should be 1");
+        stats.attacks.retain(|a| a.name == "Scimitar");
+        state.character.current_hp = 1000;
+        state.character.max_hp = 1000;
+
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        combat.distances.insert(0, 5);
+
+        let lines = resolve_npc_turn(&mut rng, 0, &mut state, &mut combat);
+        let attack_lines = count_lines_with("Scimitar", &lines);
+        assert_eq!(attack_lines, 1);
+    }
+
+    #[test]
+    fn test_npc_multiattack_stops_when_player_drops_to_zero() {
+        // If the first attack reduces the player to 0 HP, the second attack
+        // should not fire. We force this by setting player HP very low.
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut state = test_state_with_goblin();
+        let stats = state.world.npcs.get_mut(&0).unwrap().combat_stats.as_mut().unwrap();
+        stats.multiattack = 3;
+        stats.attacks.retain(|a| a.name == "Scimitar");
+        // Give the goblin a large guaranteed-damage attack: bump the bonus huge.
+        // We make the attack always hit by raising hit_bonus to overcome any AC,
+        // and damage_bonus to guarantee the player drops in one hit.
+        stats.attacks[0].hit_bonus = 50;
+        stats.attacks[0].damage_bonus = 100;
+        state.character.current_hp = 1; // dies on the first hit
+
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        combat.distances.insert(0, 5);
+
+        let lines = resolve_npc_turn(&mut rng, 0, &mut state, &mut combat);
+        // Should have stopped after the first attack.
+        let attack_lines = count_lines_with("Scimitar", &lines);
+        assert_eq!(attack_lines, 1,
+            "multiattack should stop when player drops to 0, got {} lines: {:#?}",
+            attack_lines, lines);
     }
 
     #[test]
