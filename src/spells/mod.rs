@@ -8,20 +8,49 @@ use crate::types::Ability;
 use crate::rules::dice::{roll_d20, roll_dice};
 
 /// Identifies a spell in the system.
+///
+/// The `classes` field uses lowercase class-name strings (e.g. `"wizard"`,
+/// `"cleric"`) to avoid a cross-module import of the `Class` enum from
+/// `character/`. Membership queries go through [`SpellDef::is_class_spell`].
+/// The `ritual` and `concentration` flags follow the SRD 5.1 tags.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpellDef {
     pub name: &'static str,
     pub level: u32,          // 0 = cantrip
     pub school: SpellSchool,
     pub casting: CastingMode,
+    /// Requires concentration per SRD 5.1. Casting a new concentration spell
+    /// drops any previous one.
+    pub concentration: bool,
+    /// Has the Ritual tag per SRD 5.1. Can be cast as a ritual (no slot
+    /// consumed) using `cast <spell> ritual` / `cast <spell> as ritual`.
+    pub ritual: bool,
+    /// Lowercase class-name strings (e.g. `"wizard"`). Used for per-class
+    /// spell-list population.
+    pub classes: &'static [&'static str],
+}
+
+impl SpellDef {
+    /// True when this spell appears on the given class's spell list.
+    /// The `class_name` is matched case-insensitively against
+    /// `self.classes`. This avoids a cross-module dependency on the
+    /// `Class` enum in `character/`.
+    pub fn is_class_spell(&self, class_name: &str) -> bool {
+        let lower = class_name.to_lowercase();
+        self.classes.iter().any(|c| *c == lower.as_str())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SpellSchool {
-    Evocation,
-    Transmutation,
-    Enchantment,
     Abjuration,
+    Conjuration,
+    Divination,
+    Enchantment,
+    Evocation,
+    Illusion,
+    Necromancy,
+    Transmutation,
 }
 
 /// How a spell resolves mechanically.
@@ -37,18 +66,373 @@ pub enum CastingMode {
     HpPool,
     /// Self-buff.
     SelfBuff,
-    /// Flavor only, no mechanical effect.
+    /// Ally-target healing/buff (positive effect).
+    Heal,
+    /// Flavor only, no mechanical effect (utility, out-of-scope mechanics).
     Flavor,
 }
 
-/// All MVP spells.
+// ---- Class-list string constants (internal) ----
+//
+// Using &'static [&'static str] avoids a cross-module import of the
+// `Class` enum (module-isolation rule: spells/ depends only on types/ and
+// state/). Class names here are lowercase to match
+// `Class::to_string().to_lowercase()`.
+
+const BARD: &str = "bard";
+const CLERIC: &str = "cleric";
+const DRUID: &str = "druid";
+const PALADIN: &str = "paladin";
+const RANGER: &str = "ranger";
+const SORCERER: &str = "sorcerer";
+const WARLOCK: &str = "warlock";
+const WIZARD: &str = "wizard";
+
+/// Full spell catalog (cantrip through level 3, SRD 5.1 subset). Each entry
+/// carries its SRD tags (ritual, concentration) and class list so the
+/// orchestrator can enforce per-class known-spell populations and the
+/// ritual/concentration flows. Levels 4+ are intentionally out of scope for
+/// the current feature (tracked by a future issue).
 pub const SPELLS: &[SpellDef] = &[
-    SpellDef { name: "Fire Bolt", level: 0, school: SpellSchool::Evocation, casting: CastingMode::SpellAttack },
-    SpellDef { name: "Prestidigitation", level: 0, school: SpellSchool::Transmutation, casting: CastingMode::Flavor },
-    SpellDef { name: "Magic Missile", level: 1, school: SpellSchool::Evocation, casting: CastingMode::AutoHit },
-    SpellDef { name: "Burning Hands", level: 1, school: SpellSchool::Evocation, casting: CastingMode::SaveHalf { save_ability: Ability::Dexterity } },
-    SpellDef { name: "Sleep", level: 1, school: SpellSchool::Enchantment, casting: CastingMode::HpPool },
-    SpellDef { name: "Shield", level: 1, school: SpellSchool::Abjuration, casting: CastingMode::SelfBuff },
+    // ===== Cantrips (level 0) =====
+    SpellDef { name: "Fire Bolt", level: 0, school: SpellSchool::Evocation,
+        casting: CastingMode::SpellAttack, concentration: false, ritual: false,
+        classes: &[SORCERER, WIZARD] },
+    SpellDef { name: "Prestidigitation", level: 0, school: SpellSchool::Transmutation,
+        casting: CastingMode::Flavor, concentration: false, ritual: false,
+        classes: &[BARD, SORCERER, WARLOCK, WIZARD] },
+    SpellDef { name: "Light", level: 0, school: SpellSchool::Evocation,
+        casting: CastingMode::Flavor, concentration: false, ritual: false,
+        classes: &[BARD, CLERIC, SORCERER, WIZARD] },
+    SpellDef { name: "Mage Hand", level: 0, school: SpellSchool::Conjuration,
+        casting: CastingMode::Flavor, concentration: false, ritual: false,
+        classes: &[BARD, SORCERER, WARLOCK, WIZARD] },
+    SpellDef { name: "Minor Illusion", level: 0, school: SpellSchool::Illusion,
+        casting: CastingMode::Flavor, concentration: false, ritual: false,
+        classes: &[BARD, SORCERER, WARLOCK, WIZARD] },
+    SpellDef { name: "Sacred Flame", level: 0, school: SpellSchool::Evocation,
+        casting: CastingMode::SaveHalf { save_ability: Ability::Dexterity },
+        concentration: false, ritual: false, classes: &[CLERIC] },
+    SpellDef { name: "Guidance", level: 0, school: SpellSchool::Divination,
+        casting: CastingMode::Flavor, concentration: true, ritual: false,
+        classes: &[CLERIC, DRUID] },
+    SpellDef { name: "Druidcraft", level: 0, school: SpellSchool::Transmutation,
+        casting: CastingMode::Flavor, concentration: false, ritual: false,
+        classes: &[DRUID] },
+    SpellDef { name: "Eldritch Blast", level: 0, school: SpellSchool::Evocation,
+        casting: CastingMode::SpellAttack, concentration: false, ritual: false,
+        classes: &[WARLOCK] },
+    SpellDef { name: "Vicious Mockery", level: 0, school: SpellSchool::Enchantment,
+        casting: CastingMode::SaveHalf { save_ability: Ability::Wisdom },
+        concentration: false, ritual: false, classes: &[BARD] },
+
+    // ===== Level 1 spells =====
+    SpellDef { name: "Magic Missile", level: 1, school: SpellSchool::Evocation,
+        casting: CastingMode::AutoHit, concentration: false, ritual: false,
+        classes: &[SORCERER, WIZARD] },
+    SpellDef { name: "Burning Hands", level: 1, school: SpellSchool::Evocation,
+        casting: CastingMode::SaveHalf { save_ability: Ability::Dexterity },
+        concentration: false, ritual: false, classes: &[SORCERER, WIZARD] },
+    SpellDef { name: "Sleep", level: 1, school: SpellSchool::Enchantment,
+        casting: CastingMode::HpPool, concentration: false, ritual: false,
+        classes: &[BARD, SORCERER, WIZARD] },
+    SpellDef { name: "Shield", level: 1, school: SpellSchool::Abjuration,
+        casting: CastingMode::SelfBuff, concentration: false, ritual: false,
+        classes: &[SORCERER, WIZARD] },
+    SpellDef { name: "Charm Person", level: 1, school: SpellSchool::Enchantment,
+        casting: CastingMode::SaveHalf { save_ability: Ability::Wisdom },
+        concentration: false, ritual: false,
+        classes: &[BARD, DRUID, SORCERER, WARLOCK, WIZARD] },
+    SpellDef { name: "Cure Wounds", level: 1, school: SpellSchool::Abjuration,
+        casting: CastingMode::Heal, concentration: false, ritual: false,
+        classes: &[BARD, CLERIC, DRUID, PALADIN, RANGER] },
+    SpellDef { name: "Detect Magic", level: 1, school: SpellSchool::Divination,
+        casting: CastingMode::Flavor, concentration: true, ritual: true,
+        classes: &[BARD, CLERIC, DRUID, PALADIN, RANGER, SORCERER, WIZARD] },
+    SpellDef { name: "Disguise Self", level: 1, school: SpellSchool::Illusion,
+        casting: CastingMode::SelfBuff, concentration: false, ritual: false,
+        classes: &[BARD, SORCERER, WIZARD] },
+    SpellDef { name: "Expeditious Retreat", level: 1, school: SpellSchool::Transmutation,
+        casting: CastingMode::SelfBuff, concentration: true, ritual: false,
+        classes: &[SORCERER, WARLOCK, WIZARD] },
+    SpellDef { name: "Faerie Fire", level: 1, school: SpellSchool::Evocation,
+        casting: CastingMode::SaveHalf { save_ability: Ability::Dexterity },
+        concentration: true, ritual: false, classes: &[BARD, DRUID] },
+    SpellDef { name: "Feather Fall", level: 1, school: SpellSchool::Transmutation,
+        casting: CastingMode::SelfBuff, concentration: false, ritual: false,
+        classes: &[BARD, SORCERER, WIZARD] },
+    SpellDef { name: "Find Familiar", level: 1, school: SpellSchool::Conjuration,
+        casting: CastingMode::Flavor, concentration: false, ritual: true,
+        classes: &[WIZARD] },
+    SpellDef { name: "Fog Cloud", level: 1, school: SpellSchool::Conjuration,
+        casting: CastingMode::Flavor, concentration: true, ritual: false,
+        classes: &[DRUID, RANGER, SORCERER, WIZARD] },
+    SpellDef { name: "Goodberry", level: 1, school: SpellSchool::Transmutation,
+        casting: CastingMode::Heal, concentration: false, ritual: false,
+        classes: &[DRUID, RANGER] },
+    SpellDef { name: "Grease", level: 1, school: SpellSchool::Conjuration,
+        casting: CastingMode::SaveHalf { save_ability: Ability::Dexterity },
+        concentration: false, ritual: false, classes: &[WIZARD] },
+    SpellDef { name: "Healing Word", level: 1, school: SpellSchool::Abjuration,
+        casting: CastingMode::Heal, concentration: false, ritual: false,
+        classes: &[BARD, CLERIC, DRUID] },
+    SpellDef { name: "Heroism", level: 1, school: SpellSchool::Enchantment,
+        casting: CastingMode::SelfBuff, concentration: true, ritual: false,
+        classes: &[BARD, PALADIN] },
+    SpellDef { name: "Hideous Laughter", level: 1, school: SpellSchool::Enchantment,
+        casting: CastingMode::SaveHalf { save_ability: Ability::Wisdom },
+        concentration: true, ritual: false, classes: &[BARD, WIZARD] },
+    SpellDef { name: "Hunter's Mark", level: 1, school: SpellSchool::Divination,
+        casting: CastingMode::SelfBuff, concentration: true, ritual: false,
+        classes: &[RANGER] },
+    SpellDef { name: "Identify", level: 1, school: SpellSchool::Divination,
+        casting: CastingMode::Flavor, concentration: false, ritual: true,
+        classes: &[BARD, WIZARD] },
+    SpellDef { name: "Inflict Wounds", level: 1, school: SpellSchool::Necromancy,
+        casting: CastingMode::SpellAttack, concentration: false, ritual: false,
+        classes: &[CLERIC] },
+    SpellDef { name: "Jump", level: 1, school: SpellSchool::Transmutation,
+        casting: CastingMode::SelfBuff, concentration: false, ritual: false,
+        classes: &[DRUID, RANGER, SORCERER, WIZARD] },
+    SpellDef { name: "Longstrider", level: 1, school: SpellSchool::Transmutation,
+        casting: CastingMode::SelfBuff, concentration: false, ritual: false,
+        classes: &[BARD, DRUID, RANGER, WIZARD] },
+    SpellDef { name: "Mage Armor", level: 1, school: SpellSchool::Abjuration,
+        casting: CastingMode::SelfBuff, concentration: false, ritual: false,
+        classes: &[SORCERER, WIZARD] },
+    SpellDef { name: "Protection from Evil and Good", level: 1, school: SpellSchool::Abjuration,
+        casting: CastingMode::SelfBuff, concentration: true, ritual: false,
+        classes: &[CLERIC, PALADIN, WARLOCK, WIZARD] },
+    SpellDef { name: "Sanctuary", level: 1, school: SpellSchool::Abjuration,
+        casting: CastingMode::SelfBuff, concentration: false, ritual: false,
+        classes: &[CLERIC] },
+    SpellDef { name: "Speak with Animals", level: 1, school: SpellSchool::Divination,
+        casting: CastingMode::Flavor, concentration: false, ritual: true,
+        classes: &[BARD, DRUID, RANGER] },
+    SpellDef { name: "Thunderwave", level: 1, school: SpellSchool::Evocation,
+        casting: CastingMode::SaveHalf { save_ability: Ability::Constitution },
+        concentration: false, ritual: false, classes: &[BARD, DRUID, SORCERER, WIZARD] },
+    SpellDef { name: "Unseen Servant", level: 1, school: SpellSchool::Conjuration,
+        casting: CastingMode::Flavor, concentration: false, ritual: true,
+        classes: &[BARD, WARLOCK, WIZARD] },
+    SpellDef { name: "Bless", level: 1, school: SpellSchool::Enchantment,
+        casting: CastingMode::SelfBuff, concentration: true, ritual: false,
+        classes: &[CLERIC, PALADIN] },
+    SpellDef { name: "Guiding Bolt", level: 1, school: SpellSchool::Evocation,
+        casting: CastingMode::SpellAttack, concentration: false, ritual: false,
+        classes: &[CLERIC] },
+
+    // ===== Level 2 spells =====
+    SpellDef { name: "Aid", level: 2, school: SpellSchool::Abjuration,
+        casting: CastingMode::Heal, concentration: false, ritual: false,
+        classes: &[CLERIC, PALADIN] },
+    SpellDef { name: "Alter Self", level: 2, school: SpellSchool::Transmutation,
+        casting: CastingMode::SelfBuff, concentration: true, ritual: false,
+        classes: &[SORCERER, WIZARD] },
+    SpellDef { name: "Augury", level: 2, school: SpellSchool::Divination,
+        casting: CastingMode::Flavor, concentration: false, ritual: true,
+        classes: &[CLERIC] },
+    SpellDef { name: "Barkskin", level: 2, school: SpellSchool::Transmutation,
+        casting: CastingMode::SelfBuff, concentration: true, ritual: false,
+        classes: &[DRUID, RANGER] },
+    SpellDef { name: "Blindness/Deafness", level: 2, school: SpellSchool::Necromancy,
+        casting: CastingMode::SaveHalf { save_ability: Ability::Constitution },
+        concentration: false, ritual: false,
+        classes: &[BARD, CLERIC, SORCERER, WIZARD] },
+    SpellDef { name: "Blur", level: 2, school: SpellSchool::Illusion,
+        casting: CastingMode::SelfBuff, concentration: true, ritual: false,
+        classes: &[SORCERER, WIZARD] },
+    SpellDef { name: "Calm Emotions", level: 2, school: SpellSchool::Enchantment,
+        casting: CastingMode::SaveHalf { save_ability: Ability::Charisma },
+        concentration: true, ritual: false, classes: &[BARD, CLERIC] },
+    SpellDef { name: "Crown of Madness", level: 2, school: SpellSchool::Enchantment,
+        casting: CastingMode::SaveHalf { save_ability: Ability::Wisdom },
+        concentration: true, ritual: false,
+        classes: &[BARD, SORCERER, WARLOCK, WIZARD] },
+    SpellDef { name: "Darkness", level: 2, school: SpellSchool::Evocation,
+        casting: CastingMode::Flavor, concentration: true, ritual: false,
+        classes: &[SORCERER, WARLOCK, WIZARD] },
+    SpellDef { name: "Darkvision", level: 2, school: SpellSchool::Transmutation,
+        casting: CastingMode::SelfBuff, concentration: false, ritual: false,
+        classes: &[DRUID, RANGER, SORCERER, WIZARD] },
+    SpellDef { name: "Detect Thoughts", level: 2, school: SpellSchool::Divination,
+        casting: CastingMode::Flavor, concentration: true, ritual: false,
+        classes: &[BARD, SORCERER, WIZARD] },
+    SpellDef { name: "Enhance Ability", level: 2, school: SpellSchool::Transmutation,
+        casting: CastingMode::SelfBuff, concentration: true, ritual: false,
+        classes: &[BARD, CLERIC, DRUID, SORCERER] },
+    SpellDef { name: "Enlarge/Reduce", level: 2, school: SpellSchool::Transmutation,
+        casting: CastingMode::SaveHalf { save_ability: Ability::Constitution },
+        concentration: true, ritual: false,
+        classes: &[SORCERER, WIZARD] },
+    SpellDef { name: "Find Traps", level: 2, school: SpellSchool::Divination,
+        casting: CastingMode::Flavor, concentration: false, ritual: false,
+        classes: &[CLERIC, DRUID, RANGER] },
+    SpellDef { name: "Flaming Sphere", level: 2, school: SpellSchool::Conjuration,
+        casting: CastingMode::SaveHalf { save_ability: Ability::Dexterity },
+        concentration: true, ritual: false,
+        classes: &[DRUID, WIZARD] },
+    SpellDef { name: "Gentle Repose", level: 2, school: SpellSchool::Necromancy,
+        casting: CastingMode::Flavor, concentration: false, ritual: true,
+        classes: &[CLERIC, WIZARD] },
+    SpellDef { name: "Hold Person", level: 2, school: SpellSchool::Enchantment,
+        casting: CastingMode::SaveHalf { save_ability: Ability::Wisdom },
+        concentration: true, ritual: false,
+        classes: &[BARD, CLERIC, DRUID, SORCERER, WARLOCK, WIZARD] },
+    SpellDef { name: "Invisibility", level: 2, school: SpellSchool::Illusion,
+        casting: CastingMode::SelfBuff, concentration: true, ritual: false,
+        classes: &[BARD, SORCERER, WARLOCK, WIZARD] },
+    SpellDef { name: "Knock", level: 2, school: SpellSchool::Transmutation,
+        casting: CastingMode::Flavor, concentration: false, ritual: false,
+        classes: &[BARD, SORCERER, WIZARD] },
+    SpellDef { name: "Lesser Restoration", level: 2, school: SpellSchool::Abjuration,
+        casting: CastingMode::Heal, concentration: false, ritual: false,
+        classes: &[BARD, CLERIC, DRUID, PALADIN, RANGER] },
+    SpellDef { name: "Levitate", level: 2, school: SpellSchool::Transmutation,
+        casting: CastingMode::SaveHalf { save_ability: Ability::Constitution },
+        concentration: true, ritual: false,
+        classes: &[SORCERER, WIZARD] },
+    SpellDef { name: "Magic Mouth", level: 2, school: SpellSchool::Illusion,
+        casting: CastingMode::Flavor, concentration: false, ritual: true,
+        classes: &[BARD, WIZARD] },
+    SpellDef { name: "Misty Step", level: 2, school: SpellSchool::Conjuration,
+        casting: CastingMode::SelfBuff, concentration: false, ritual: false,
+        classes: &[SORCERER, WARLOCK, WIZARD] },
+    SpellDef { name: "Pass without Trace", level: 2, school: SpellSchool::Abjuration,
+        casting: CastingMode::SelfBuff, concentration: true, ritual: false,
+        classes: &[DRUID, RANGER] },
+    SpellDef { name: "Prayer of Healing", level: 2, school: SpellSchool::Abjuration,
+        casting: CastingMode::Heal, concentration: false, ritual: false,
+        classes: &[CLERIC] },
+    SpellDef { name: "Protection from Poison", level: 2, school: SpellSchool::Abjuration,
+        casting: CastingMode::SelfBuff, concentration: false, ritual: false,
+        classes: &[CLERIC, DRUID, PALADIN, RANGER] },
+    SpellDef { name: "Scorching Ray", level: 2, school: SpellSchool::Evocation,
+        casting: CastingMode::SpellAttack, concentration: false, ritual: false,
+        classes: &[SORCERER, WIZARD] },
+    SpellDef { name: "See Invisibility", level: 2, school: SpellSchool::Divination,
+        casting: CastingMode::SelfBuff, concentration: false, ritual: false,
+        classes: &[BARD, SORCERER, WIZARD] },
+    SpellDef { name: "Silence", level: 2, school: SpellSchool::Illusion,
+        casting: CastingMode::Flavor, concentration: true, ritual: true,
+        classes: &[BARD, CLERIC, RANGER] },
+    SpellDef { name: "Spider Climb", level: 2, school: SpellSchool::Transmutation,
+        casting: CastingMode::SelfBuff, concentration: true, ritual: false,
+        classes: &[SORCERER, WARLOCK, WIZARD] },
+    SpellDef { name: "Spiritual Weapon", level: 2, school: SpellSchool::Evocation,
+        casting: CastingMode::SpellAttack, concentration: false, ritual: false,
+        classes: &[CLERIC] },
+    SpellDef { name: "Suggestion", level: 2, school: SpellSchool::Enchantment,
+        casting: CastingMode::SaveHalf { save_ability: Ability::Wisdom },
+        concentration: true, ritual: false,
+        classes: &[BARD, SORCERER, WARLOCK, WIZARD] },
+    SpellDef { name: "Web", level: 2, school: SpellSchool::Conjuration,
+        casting: CastingMode::SaveHalf { save_ability: Ability::Dexterity },
+        concentration: true, ritual: false,
+        classes: &[SORCERER, WIZARD] },
+
+    // ===== Level 3 spells =====
+    SpellDef { name: "Animate Dead", level: 3, school: SpellSchool::Necromancy,
+        casting: CastingMode::Flavor, concentration: false, ritual: false,
+        classes: &[CLERIC, WIZARD] },
+    SpellDef { name: "Bestow Curse", level: 3, school: SpellSchool::Necromancy,
+        casting: CastingMode::SaveHalf { save_ability: Ability::Wisdom },
+        concentration: true, ritual: false,
+        classes: &[BARD, CLERIC, WIZARD] },
+    SpellDef { name: "Call Lightning", level: 3, school: SpellSchool::Conjuration,
+        casting: CastingMode::SaveHalf { save_ability: Ability::Dexterity },
+        concentration: true, ritual: false,
+        classes: &[DRUID] },
+    SpellDef { name: "Clairvoyance", level: 3, school: SpellSchool::Divination,
+        casting: CastingMode::Flavor, concentration: true, ritual: false,
+        classes: &[BARD, CLERIC, SORCERER, WIZARD] },
+    SpellDef { name: "Counterspell", level: 3, school: SpellSchool::Abjuration,
+        casting: CastingMode::Flavor, concentration: false, ritual: false,
+        classes: &[SORCERER, WARLOCK, WIZARD] },
+    SpellDef { name: "Dispel Magic", level: 3, school: SpellSchool::Abjuration,
+        casting: CastingMode::Flavor, concentration: false, ritual: false,
+        classes: &[BARD, CLERIC, DRUID, PALADIN, SORCERER, WARLOCK, WIZARD] },
+    SpellDef { name: "Fear", level: 3, school: SpellSchool::Illusion,
+        casting: CastingMode::SaveHalf { save_ability: Ability::Wisdom },
+        concentration: true, ritual: false,
+        classes: &[BARD, SORCERER, WARLOCK, WIZARD] },
+    SpellDef { name: "Fireball", level: 3, school: SpellSchool::Evocation,
+        casting: CastingMode::SaveHalf { save_ability: Ability::Dexterity },
+        concentration: false, ritual: false,
+        classes: &[SORCERER, WIZARD] },
+    SpellDef { name: "Fly", level: 3, school: SpellSchool::Transmutation,
+        casting: CastingMode::SelfBuff, concentration: true, ritual: false,
+        classes: &[SORCERER, WARLOCK, WIZARD] },
+    SpellDef { name: "Haste", level: 3, school: SpellSchool::Transmutation,
+        casting: CastingMode::SelfBuff, concentration: true, ritual: false,
+        classes: &[SORCERER, WIZARD] },
+    SpellDef { name: "Hypnotic Pattern", level: 3, school: SpellSchool::Illusion,
+        casting: CastingMode::SaveHalf { save_ability: Ability::Wisdom },
+        concentration: true, ritual: false,
+        classes: &[BARD, SORCERER, WARLOCK, WIZARD] },
+    SpellDef { name: "Lightning Bolt", level: 3, school: SpellSchool::Evocation,
+        casting: CastingMode::SaveHalf { save_ability: Ability::Dexterity },
+        concentration: false, ritual: false,
+        classes: &[SORCERER, WIZARD] },
+    SpellDef { name: "Mass Healing Word", level: 3, school: SpellSchool::Abjuration,
+        casting: CastingMode::Heal, concentration: false, ritual: false,
+        classes: &[CLERIC] },
+    SpellDef { name: "Nondetection", level: 3, school: SpellSchool::Abjuration,
+        casting: CastingMode::SelfBuff, concentration: false, ritual: false,
+        classes: &[BARD, RANGER, WIZARD] },
+    SpellDef { name: "Plant Growth", level: 3, school: SpellSchool::Transmutation,
+        casting: CastingMode::Flavor, concentration: false, ritual: false,
+        classes: &[BARD, DRUID, RANGER] },
+    SpellDef { name: "Protection from Energy", level: 3, school: SpellSchool::Abjuration,
+        casting: CastingMode::SelfBuff, concentration: true, ritual: false,
+        classes: &[CLERIC, DRUID, RANGER, SORCERER, WIZARD] },
+    SpellDef { name: "Remove Curse", level: 3, school: SpellSchool::Abjuration,
+        casting: CastingMode::Flavor, concentration: false, ritual: false,
+        classes: &[CLERIC, PALADIN, WARLOCK, WIZARD] },
+    SpellDef { name: "Revivify", level: 3, school: SpellSchool::Necromancy,
+        casting: CastingMode::Heal, concentration: false, ritual: false,
+        classes: &[CLERIC, PALADIN] },
+    SpellDef { name: "Sending", level: 3, school: SpellSchool::Divination,
+        casting: CastingMode::Flavor, concentration: false, ritual: false,
+        classes: &[BARD, CLERIC, WIZARD] },
+    SpellDef { name: "Sleet Storm", level: 3, school: SpellSchool::Conjuration,
+        casting: CastingMode::Flavor, concentration: true, ritual: false,
+        classes: &[DRUID, SORCERER, WIZARD] },
+    SpellDef { name: "Slow", level: 3, school: SpellSchool::Transmutation,
+        casting: CastingMode::SaveHalf { save_ability: Ability::Wisdom },
+        concentration: true, ritual: false,
+        classes: &[SORCERER, WIZARD] },
+    SpellDef { name: "Speak with Dead", level: 3, school: SpellSchool::Necromancy,
+        casting: CastingMode::Flavor, concentration: false, ritual: false,
+        classes: &[BARD, CLERIC] },
+    SpellDef { name: "Speak with Plants", level: 3, school: SpellSchool::Transmutation,
+        casting: CastingMode::Flavor, concentration: false, ritual: false,
+        classes: &[BARD, DRUID, RANGER] },
+    SpellDef { name: "Spirit Guardians", level: 3, school: SpellSchool::Conjuration,
+        casting: CastingMode::SaveHalf { save_ability: Ability::Wisdom },
+        concentration: true, ritual: false, classes: &[CLERIC] },
+    SpellDef { name: "Stinking Cloud", level: 3, school: SpellSchool::Conjuration,
+        casting: CastingMode::SaveHalf { save_ability: Ability::Constitution },
+        concentration: true, ritual: false,
+        classes: &[BARD, SORCERER, WIZARD] },
+    SpellDef { name: "Tiny Hut", level: 3, school: SpellSchool::Evocation,
+        casting: CastingMode::Flavor, concentration: false, ritual: true,
+        classes: &[BARD, WIZARD] },
+    SpellDef { name: "Tongues", level: 3, school: SpellSchool::Divination,
+        casting: CastingMode::Flavor, concentration: false, ritual: false,
+        classes: &[BARD, CLERIC, SORCERER, WARLOCK, WIZARD] },
+    SpellDef { name: "Vampiric Touch", level: 3, school: SpellSchool::Necromancy,
+        casting: CastingMode::SpellAttack, concentration: true, ritual: false,
+        classes: &[SORCERER, WARLOCK, WIZARD] },
+    SpellDef { name: "Water Breathing", level: 3, school: SpellSchool::Transmutation,
+        casting: CastingMode::SelfBuff, concentration: false, ritual: true,
+        classes: &[DRUID, RANGER, SORCERER, WIZARD] },
+    SpellDef { name: "Water Walk", level: 3, school: SpellSchool::Transmutation,
+        casting: CastingMode::SelfBuff, concentration: false, ritual: true,
+        classes: &[CLERIC, DRUID, RANGER, SORCERER] },
+    SpellDef { name: "Wind Wall", level: 3, school: SpellSchool::Evocation,
+        casting: CastingMode::Flavor, concentration: true, ritual: false,
+        classes: &[DRUID, RANGER] },
 ];
 
 /// Look up a spell definition by name (case-insensitive).
@@ -57,14 +441,201 @@ pub fn find_spell(name: &str) -> Option<&'static SpellDef> {
     SPELLS.iter().find(|s| s.name.to_lowercase() == lower)
 }
 
-/// Compute spell attack modifier: INT mod + proficiency bonus.
-pub fn spell_attack_modifier(int_score: i32, proficiency_bonus: i32) -> i32 {
-    Ability::modifier(int_score) + proficiency_bonus
+/// All spells on a given class's list (by lowercase class-name match).
+/// The returned slice is filtered from [`SPELLS`]; the caller decides how
+/// many to hand out (known-caster limits, prepared-caster lists, etc.).
+pub fn spells_for_class(class_name: &str) -> Vec<&'static SpellDef> {
+    SPELLS.iter().filter(|s| s.is_class_spell(class_name)).collect()
 }
 
-/// Compute spell save DC: 8 + INT mod + proficiency bonus.
-pub fn spell_save_dc(int_score: i32, proficiency_bonus: i32) -> i32 {
-    8 + Ability::modifier(int_score) + proficiency_bonus
+/// Which ability score does this class cast with per SRD 5.1?
+///
+/// - INT: Wizard
+/// - WIS: Cleric, Druid, Ranger
+/// - CHA: Bard, Paladin, Sorcerer, Warlock
+///
+/// Non-casting classes return [`Ability::Intelligence`] as a neutral default
+/// (they shouldn't reach a code path that uses this, but a sensible default
+/// avoids panics). Matching is case-insensitive.
+pub fn spellcasting_ability(class_name: &str) -> Ability {
+    match class_name.to_lowercase().as_str() {
+        "wizard" => Ability::Intelligence,
+        "cleric" | "druid" | "ranger" => Ability::Wisdom,
+        "bard" | "paladin" | "sorcerer" | "warlock" => Ability::Charisma,
+        _ => Ability::Intelligence,
+    }
+}
+
+/// Full-caster spell-slot progression per SRD 5.1. Index is `class_level - 1`;
+/// each row lists the number of slots per spell level (indices 0..=8 = 1st..9th).
+/// Shared by Bard, Cleric, Druid, Sorcerer, and Wizard.
+pub const FULL_CASTER_SLOT_TABLE: [[u32; 9]; 20] = [
+    // L1
+    [2, 0, 0, 0, 0, 0, 0, 0, 0],
+    // L2
+    [3, 0, 0, 0, 0, 0, 0, 0, 0],
+    // L3
+    [4, 2, 0, 0, 0, 0, 0, 0, 0],
+    // L4
+    [4, 3, 0, 0, 0, 0, 0, 0, 0],
+    // L5
+    [4, 3, 2, 0, 0, 0, 0, 0, 0],
+    // L6
+    [4, 3, 3, 0, 0, 0, 0, 0, 0],
+    // L7
+    [4, 3, 3, 1, 0, 0, 0, 0, 0],
+    // L8
+    [4, 3, 3, 2, 0, 0, 0, 0, 0],
+    // L9
+    [4, 3, 3, 3, 1, 0, 0, 0, 0],
+    // L10
+    [4, 3, 3, 3, 2, 0, 0, 0, 0],
+    // L11
+    [4, 3, 3, 3, 2, 1, 0, 0, 0],
+    // L12
+    [4, 3, 3, 3, 2, 1, 0, 0, 0],
+    // L13
+    [4, 3, 3, 3, 2, 1, 1, 0, 0],
+    // L14
+    [4, 3, 3, 3, 2, 1, 1, 0, 0],
+    // L15
+    [4, 3, 3, 3, 2, 1, 1, 1, 0],
+    // L16
+    [4, 3, 3, 3, 2, 1, 1, 1, 0],
+    // L17
+    [4, 3, 3, 3, 2, 1, 1, 1, 1],
+    // L18
+    [4, 3, 3, 3, 3, 1, 1, 1, 1],
+    // L19
+    [4, 3, 3, 3, 3, 2, 1, 1, 1],
+    // L20
+    [4, 3, 3, 3, 3, 2, 2, 1, 1],
+];
+
+/// Half-caster spell-slot progression per SRD 5.1. Used by Paladin and
+/// Ranger. Slots unlock at class level 2. Index is `class_level - 1`.
+pub const HALF_CASTER_SLOT_TABLE: [[u32; 9]; 20] = [
+    // L1 (no slots)
+    [0, 0, 0, 0, 0, 0, 0, 0, 0],
+    // L2
+    [2, 0, 0, 0, 0, 0, 0, 0, 0],
+    // L3
+    [3, 0, 0, 0, 0, 0, 0, 0, 0],
+    // L4
+    [3, 0, 0, 0, 0, 0, 0, 0, 0],
+    // L5
+    [4, 2, 0, 0, 0, 0, 0, 0, 0],
+    // L6
+    [4, 2, 0, 0, 0, 0, 0, 0, 0],
+    // L7
+    [4, 3, 0, 0, 0, 0, 0, 0, 0],
+    // L8
+    [4, 3, 0, 0, 0, 0, 0, 0, 0],
+    // L9
+    [4, 3, 2, 0, 0, 0, 0, 0, 0],
+    // L10
+    [4, 3, 2, 0, 0, 0, 0, 0, 0],
+    // L11
+    [4, 3, 3, 0, 0, 0, 0, 0, 0],
+    // L12
+    [4, 3, 3, 0, 0, 0, 0, 0, 0],
+    // L13
+    [4, 3, 3, 1, 0, 0, 0, 0, 0],
+    // L14
+    [4, 3, 3, 1, 0, 0, 0, 0, 0],
+    // L15
+    [4, 3, 3, 2, 0, 0, 0, 0, 0],
+    // L16
+    [4, 3, 3, 2, 0, 0, 0, 0, 0],
+    // L17
+    [4, 3, 3, 3, 1, 0, 0, 0, 0],
+    // L18
+    [4, 3, 3, 3, 1, 0, 0, 0, 0],
+    // L19
+    [4, 3, 3, 3, 2, 0, 0, 0, 0],
+    // L20
+    [4, 3, 3, 3, 2, 0, 0, 0, 0],
+];
+
+/// Warlock Pact Magic slots per SRD 5.1. Warlocks have a small number of
+/// high-level slots that refresh on a short rest. Index `class_level - 1`.
+/// Slot level equals the highest entry index in each row.
+pub const WARLOCK_SLOT_TABLE: [[u32; 9]; 20] = [
+    // L1:  1 x L1
+    [1, 0, 0, 0, 0, 0, 0, 0, 0],
+    // L2:  2 x L1
+    [2, 0, 0, 0, 0, 0, 0, 0, 0],
+    // L3:  2 x L2
+    [0, 2, 0, 0, 0, 0, 0, 0, 0],
+    // L4:  2 x L2
+    [0, 2, 0, 0, 0, 0, 0, 0, 0],
+    // L5:  2 x L3
+    [0, 0, 2, 0, 0, 0, 0, 0, 0],
+    // L6:  2 x L3
+    [0, 0, 2, 0, 0, 0, 0, 0, 0],
+    // L7:  2 x L4
+    [0, 0, 0, 2, 0, 0, 0, 0, 0],
+    // L8:  2 x L4
+    [0, 0, 0, 2, 0, 0, 0, 0, 0],
+    // L9:  2 x L5
+    [0, 0, 0, 0, 2, 0, 0, 0, 0],
+    // L10: 2 x L5
+    [0, 0, 0, 0, 2, 0, 0, 0, 0],
+    // L11: 3 x L5
+    [0, 0, 0, 0, 3, 0, 0, 0, 0],
+    // L12: 3 x L5
+    [0, 0, 0, 0, 3, 0, 0, 0, 0],
+    // L13: 3 x L5
+    [0, 0, 0, 0, 3, 0, 0, 0, 0],
+    // L14: 3 x L5
+    [0, 0, 0, 0, 3, 0, 0, 0, 0],
+    // L15: 3 x L5
+    [0, 0, 0, 0, 3, 0, 0, 0, 0],
+    // L16: 3 x L5
+    [0, 0, 0, 0, 3, 0, 0, 0, 0],
+    // L17: 4 x L5
+    [0, 0, 0, 0, 4, 0, 0, 0, 0],
+    // L18: 4 x L5
+    [0, 0, 0, 0, 4, 0, 0, 0, 0],
+    // L19: 4 x L5
+    [0, 0, 0, 0, 4, 0, 0, 0, 0],
+    // L20: 4 x L5
+    [0, 0, 0, 0, 4, 0, 0, 0, 0],
+];
+
+/// Compute the slot vector for a caster at a given level. Returns a
+/// trimmed `Vec<i32>` (no trailing zeros) so existing state serialization
+/// stays compact. Lookups clamp the level to `1..=20`.
+///
+/// The matching rules:
+/// - Bard/Cleric/Druid/Sorcerer/Wizard -> full-caster table
+/// - Paladin/Ranger -> half-caster table
+/// - Warlock -> Pact Magic table
+/// - Others -> empty vector
+pub fn slots_for(class_name: &str, level: u32) -> Vec<i32> {
+    let idx = level.clamp(1, 20) as usize - 1;
+    let row: &[u32; 9] = match class_name.to_lowercase().as_str() {
+        "bard" | "cleric" | "druid" | "sorcerer" | "wizard" => &FULL_CASTER_SLOT_TABLE[idx],
+        "paladin" | "ranger" => &HALF_CASTER_SLOT_TABLE[idx],
+        "warlock" => &WARLOCK_SLOT_TABLE[idx],
+        _ => return Vec::new(),
+    };
+    let mut out: Vec<i32> = row.iter().map(|c| *c as i32).collect();
+    // Trim trailing zeros so vec reflects the highest level actually accessible.
+    while out.last().copied() == Some(0) {
+        out.pop();
+    }
+    out
+}
+
+/// Compute spell attack modifier: ability mod + proficiency bonus.
+pub fn spell_attack_modifier(ability_score: i32, proficiency_bonus: i32) -> i32 {
+    Ability::modifier(ability_score) + proficiency_bonus
+}
+
+/// Compute spell save DC: 8 + ability mod + proficiency bonus.
+pub fn spell_save_dc(ability_score: i32, proficiency_bonus: i32) -> i32 {
+    8 + Ability::modifier(ability_score) + proficiency_bonus
 }
 
 /// Result of a spell attack roll.
@@ -81,12 +652,12 @@ pub struct SpellAttackResult {
 /// Roll a spell attack against a target AC.
 pub fn roll_spell_attack(
     rng: &mut impl Rng,
-    int_score: i32,
+    ability_score: i32,
     proficiency_bonus: i32,
     target_ac: i32,
 ) -> SpellAttackResult {
     let roll = roll_d20(rng);
-    let modifier = spell_attack_modifier(int_score, proficiency_bonus);
+    let modifier = spell_attack_modifier(ability_score, proficiency_bonus);
     let total = roll + modifier;
     let natural_20 = roll == 20;
     let natural_1 = roll == 1;
@@ -189,11 +760,11 @@ pub struct SpellTarget {
 /// Resolve a Fire Bolt cast against a single target.
 pub fn resolve_fire_bolt(
     rng: &mut impl Rng,
-    int_score: i32,
+    ability_score: i32,
     proficiency_bonus: i32,
     target_ac: i32,
 ) -> CastOutcome {
-    let attack = roll_spell_attack(rng, int_score, proficiency_bonus, target_ac);
+    let attack = roll_spell_attack(rng, ability_score, proficiency_bonus, target_ac);
     let damage = if attack.hit {
         let rolls = roll_dice(rng, 1, 10);
         let base: i32 = rolls.iter().sum();
@@ -218,11 +789,11 @@ pub fn resolve_magic_missile(rng: &mut impl Rng) -> CastOutcome {
 /// Resolve Burning Hands against all targets within 5 ft.
 pub fn resolve_burning_hands(
     rng: &mut impl Rng,
-    caster_int_score: i32,
+    caster_ability_score: i32,
     caster_proficiency_bonus: i32,
     targets: &[SpellTarget],
 ) -> CastOutcome {
-    let dc = spell_save_dc(caster_int_score, caster_proficiency_bonus);
+    let dc = spell_save_dc(caster_ability_score, caster_proficiency_bonus);
     let damage_rolls = roll_dice(rng, 3, 6);
     let total_rolled: i32 = damage_rolls.iter().sum();
     let half_damage = total_rolled / 2;
@@ -291,35 +862,35 @@ pub fn format_known_spells(
     let mut lines = Vec::new();
     lines.push("=== Known Spells ===".to_string());
 
-    // Cantrips
-    let cantrips: Vec<&String> = known_spells
-        .iter()
-        .filter(|name| {
-            find_spell(name).map_or(false, |def| def.level == 0)
-        })
-        .collect();
+    // Group by spell level (0 = cantrips, 1..=9 = leveled)
+    for level in 0..=9u32 {
+        let in_level: Vec<&String> = known_spells
+            .iter()
+            .filter(|name| find_spell(name).map_or(false, |def| def.level == level))
+            .collect();
+        if in_level.is_empty() { continue; }
 
-    if !cantrips.is_empty() {
         lines.push(String::new());
-        lines.push("Cantrips (at will):".to_string());
-        for name in &cantrips {
-            lines.push(format!("  - {}", name));
-        }
-    }
+        let header = if level == 0 {
+            "Cantrips (at will):".to_string()
+        } else {
+            format!("Level {} Spells:", level)
+        };
+        lines.push(header);
 
-    // Level 1 spells
-    let level1: Vec<&String> = known_spells
-        .iter()
-        .filter(|name| {
-            find_spell(name).map_or(false, |def| def.level == 1)
-        })
-        .collect();
-
-    if !level1.is_empty() {
-        lines.push(String::new());
-        lines.push("Level 1 Spells:".to_string());
-        for name in &level1 {
-            lines.push(format!("  - {}", name));
+        for name in &in_level {
+            let def = find_spell(name);
+            let mut tags: Vec<&'static str> = Vec::new();
+            if let Some(d) = def {
+                if d.concentration { tags.push("C"); }
+                if d.ritual { tags.push("R"); }
+            }
+            let suffix = if tags.is_empty() {
+                String::new()
+            } else {
+                format!(" [{}]", tags.join(","))
+            };
+            lines.push(format!("  - {}{}", name, suffix));
         }
     }
 
@@ -328,7 +899,9 @@ pub fn format_known_spells(
         lines.push(String::new());
         lines.push("Spell Slots:".to_string());
         for (i, (remaining, max)) in spell_slots_remaining.iter().zip(spell_slots_max.iter()).enumerate() {
-            lines.push(format!("  Level {}: {}/{}", i + 1, remaining, max));
+            if *max > 0 {
+                lines.push(format!("  Level {}: {}/{}", i + 1, remaining, max));
+            }
         }
     }
 
@@ -384,17 +957,17 @@ mod tests {
 
     #[test]
     fn test_spell_attack_modifier() {
-        // INT 16 (+3) + prof 2 = +5
+        // Ability 16 (+3) + prof 2 = +5
         assert_eq!(spell_attack_modifier(16, 2), 5);
-        // INT 10 (+0) + prof 2 = +2
+        // Ability 10 (+0) + prof 2 = +2
         assert_eq!(spell_attack_modifier(10, 2), 2);
     }
 
     #[test]
     fn test_spell_save_dc() {
-        // 8 + INT 16 (+3) + prof 2 = 13
+        // 8 + ability 16 (+3) + prof 2 = 13
         assert_eq!(spell_save_dc(16, 2), 13);
-        // 8 + INT 10 (+0) + prof 2 = 10
+        // 8 + ability 10 (+0) + prof 2 = 10
         assert_eq!(spell_save_dc(10, 2), 10);
     }
 
@@ -405,9 +978,9 @@ mod tests {
         match result {
             CastOutcome::FireBolt { attack, damage } => {
                 assert!(attack.roll >= 1 && attack.roll <= 20);
-                assert_eq!(attack.modifier, 5); // INT 16 (+3) + prof 2
+                assert_eq!(attack.modifier, 5);
                 if attack.hit {
-                    assert!(damage >= 1 && damage <= 20); // 1d10, possibly crit
+                    assert!(damage >= 1 && damage <= 20);
                 } else {
                     assert_eq!(damage, 0);
                 }
@@ -436,14 +1009,14 @@ mod tests {
     fn test_burning_hands_only_hits_melee_targets() {
         let mut rng = StdRng::seed_from_u64(42);
         let targets = vec![
-            test_target("Goblin", 12, 7, 10, 5),   // in range
-            test_target("Archer", 13, 10, 14, 30),  // out of range
+            test_target("Goblin", 12, 7, 10, 5),
+            test_target("Archer", 13, 10, 14, 30),
         ];
         let result = resolve_burning_hands(&mut rng, 16, 2, &targets);
         match result {
             CastOutcome::BurningHands { results, dc, .. } => {
-                assert_eq!(dc, 13); // 8 + 3 + 2
-                assert_eq!(results.len(), 1, "Only melee target should be affected");
+                assert_eq!(dc, 13);
+                assert_eq!(results.len(), 1);
                 assert_eq!(results[0].name, "Goblin");
             }
             _ => panic!("Expected BurningHands outcome"),
@@ -457,7 +1030,7 @@ mod tests {
         let result = resolve_burning_hands(&mut rng, 16, 2, &targets);
         match result {
             CastOutcome::BurningHands { total_rolled, half_damage, results, .. } => {
-                assert!(total_rolled >= 3 && total_rolled <= 18); // 3d6
+                assert!(total_rolled >= 3 && total_rolled <= 18);
                 assert_eq!(half_damage, total_rolled / 2);
                 let target = &results[0];
                 if target.save_result.saved {
@@ -472,7 +1045,7 @@ mod tests {
 
     #[test]
     fn test_sleep_targets_weakest_first() {
-        let mut rng = StdRng::seed_from_u64(100); // Use seed that gives enough HP pool
+        let mut rng = StdRng::seed_from_u64(100);
         let targets = vec![
             test_target("Rat", 10, 3, 10, 5),
             test_target("Goblin", 12, 7, 10, 5),
@@ -481,12 +1054,10 @@ mod tests {
         let result = resolve_sleep(&mut rng, &targets);
         match result {
             CastOutcome::SleepResult { hp_pool, affected } => {
-                assert!(hp_pool >= 5 && hp_pool <= 40); // 5d8
-                // Rat (3 HP) should be affected first if pool is sufficient
+                assert!(hp_pool >= 5 && hp_pool <= 40);
                 if !affected.is_empty() {
                     assert_eq!(affected[0].name, "Rat");
                 }
-                // Ogre (59 HP) should never be affected by 5d8 (max 40)
                 assert!(!affected.iter().any(|t| t.name == "Ogre"));
             }
             _ => panic!("Expected SleepResult outcome"),
@@ -506,7 +1077,7 @@ mod tests {
     fn test_consume_spell_slot_cantrip() {
         let mut slots = vec![2];
         assert!(consume_spell_slot(0, &mut slots));
-        assert_eq!(slots, vec![2]); // cantrips don't consume
+        assert_eq!(slots, vec![2]);
     }
 
     #[test]
@@ -516,20 +1087,13 @@ mod tests {
         assert_eq!(slots, vec![1]);
         assert!(consume_spell_slot(1, &mut slots));
         assert_eq!(slots, vec![0]);
-        assert!(!consume_spell_slot(1, &mut slots)); // no slots left
+        assert!(!consume_spell_slot(1, &mut slots));
     }
 
     #[test]
     fn test_consume_spell_slot_no_slots_at_level() {
         let mut slots: Vec<i32> = Vec::new();
         assert!(!consume_spell_slot(1, &mut slots));
-    }
-
-    #[test]
-    fn test_spell_definitions_count() {
-        assert_eq!(SPELLS.len(), 6);
-        assert_eq!(SPELLS.iter().filter(|s| s.level == 0).count(), 2); // cantrips
-        assert_eq!(SPELLS.iter().filter(|s| s.level == 1).count(), 4); // 1st level
     }
 
     #[test]
@@ -547,7 +1111,7 @@ mod tests {
     }
 
     #[test]
-    fn test_format_known_spells_wizard() {
+    fn test_format_known_spells_wizard_mvp() {
         let known = vec![
             "Fire Bolt".to_string(),
             "Prestidigitation".to_string(),
@@ -591,5 +1155,193 @@ mod tests {
         let text = lines.join("\n");
 
         assert!(text.contains("Level 1: 1/2"));
+    }
+
+    // ---- SpellDef extension tests (feat/expanded-spell-catalog) ----
+
+    #[test]
+    fn test_spell_catalog_covers_levels_0_to_3() {
+        // We expect cantrips, 1st, 2nd, and 3rd-level spells in the catalog.
+        let levels: std::collections::HashSet<u32> = SPELLS.iter().map(|s| s.level).collect();
+        assert!(levels.contains(&0), "catalog must include cantrips");
+        assert!(levels.contains(&1), "catalog must include L1 spells");
+        assert!(levels.contains(&2), "catalog must include L2 spells");
+        assert!(levels.contains(&3), "catalog must include L3 spells");
+    }
+
+    #[test]
+    fn test_spell_school_has_all_eight_schools() {
+        // All eight schools should be representable; sanity-check every variant
+        // serializes to a non-error string.
+        for school in [
+            SpellSchool::Abjuration, SpellSchool::Conjuration, SpellSchool::Divination,
+            SpellSchool::Enchantment, SpellSchool::Evocation, SpellSchool::Illusion,
+            SpellSchool::Necromancy, SpellSchool::Transmutation,
+        ] {
+            let json = serde_json::to_string(&school).unwrap();
+            assert!(!json.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_spell_def_has_concentration_ritual_classes() {
+        // Detect Magic -- ritual AND concentration.
+        let detect = find_spell("Detect Magic").expect("Detect Magic must exist in catalog");
+        assert!(detect.ritual, "Detect Magic has the Ritual tag");
+        assert!(detect.concentration, "Detect Magic requires concentration");
+        assert!(!detect.classes.is_empty(), "Detect Magic belongs to at least one class");
+
+        // Fireball -- no ritual, no concentration.
+        let fireball = find_spell("Fireball").expect("Fireball must exist in catalog");
+        assert!(!fireball.ritual);
+        assert!(!fireball.concentration);
+
+        // Hunter's Mark -- concentration, not ritual.
+        let hm = find_spell("Hunter's Mark").expect("Hunter's Mark must exist in catalog");
+        assert!(!hm.ritual);
+        assert!(hm.concentration);
+    }
+
+    #[test]
+    fn test_class_membership_matches_expected() {
+        // Wizard-only ritual
+        let find_fam = find_spell("Find Familiar").unwrap();
+        assert!(find_fam.is_class_spell("Wizard"));
+        assert!(find_fam.is_class_spell("wizard"));
+        assert!(!find_fam.is_class_spell("Cleric"));
+
+        // Cleric-only combat spell
+        let sac = find_spell("Sacred Flame").unwrap();
+        assert!(sac.is_class_spell("Cleric"));
+        assert!(!sac.is_class_spell("Wizard"));
+
+        // Ranger signature
+        let hm = find_spell("Hunter's Mark").unwrap();
+        assert!(hm.is_class_spell("Ranger"));
+        assert!(!hm.is_class_spell("Paladin"));
+    }
+
+    #[test]
+    fn test_spells_for_class_contains_expected_signatures() {
+        let wizard = spells_for_class("Wizard");
+        let names: Vec<&'static str> = wizard.iter().map(|s| s.name).collect();
+        assert!(names.contains(&"Fire Bolt"));
+        assert!(names.contains(&"Fireball"));
+        assert!(names.contains(&"Mage Armor"));
+        // Not Wizard-list
+        assert!(!names.contains(&"Sacred Flame"));
+        assert!(!names.contains(&"Cure Wounds"));
+
+        let cleric = spells_for_class("Cleric");
+        let cnames: Vec<&'static str> = cleric.iter().map(|s| s.name).collect();
+        assert!(cnames.contains(&"Sacred Flame"));
+        assert!(cnames.contains(&"Cure Wounds"));
+        assert!(cnames.contains(&"Spiritual Weapon"));
+    }
+
+    #[test]
+    fn test_spells_for_class_returns_empty_for_non_caster() {
+        assert!(spells_for_class("Fighter").is_empty());
+        assert!(spells_for_class("Barbarian").is_empty());
+        assert!(spells_for_class("Rogue").is_empty());
+        assert!(spells_for_class("Monk").is_empty());
+    }
+
+    // ---- Spellcasting ability per class ----
+
+    #[test]
+    fn test_spellcasting_ability_wizard_is_int() {
+        assert_eq!(spellcasting_ability("Wizard"), Ability::Intelligence);
+        assert_eq!(spellcasting_ability("wizard"), Ability::Intelligence);
+    }
+
+    #[test]
+    fn test_spellcasting_ability_cleric_druid_ranger_is_wis() {
+        assert_eq!(spellcasting_ability("Cleric"), Ability::Wisdom);
+        assert_eq!(spellcasting_ability("Druid"), Ability::Wisdom);
+        assert_eq!(spellcasting_ability("Ranger"), Ability::Wisdom);
+    }
+
+    #[test]
+    fn test_spellcasting_ability_cha_casters() {
+        assert_eq!(spellcasting_ability("Bard"), Ability::Charisma);
+        assert_eq!(spellcasting_ability("Paladin"), Ability::Charisma);
+        assert_eq!(spellcasting_ability("Sorcerer"), Ability::Charisma);
+        assert_eq!(spellcasting_ability("Warlock"), Ability::Charisma);
+    }
+
+    // ---- Slot progression tables ----
+
+    #[test]
+    fn test_full_caster_slots_level_1() {
+        assert_eq!(slots_for("Wizard", 1), vec![2]);
+        assert_eq!(slots_for("Bard", 1), vec![2]);
+        assert_eq!(slots_for("Cleric", 1), vec![2]);
+        assert_eq!(slots_for("Druid", 1), vec![2]);
+        assert_eq!(slots_for("Sorcerer", 1), vec![2]);
+    }
+
+    #[test]
+    fn test_full_caster_slots_level_5() {
+        // L5 full caster: 4 / 3 / 2
+        assert_eq!(slots_for("Wizard", 5), vec![4, 3, 2]);
+    }
+
+    #[test]
+    fn test_full_caster_slots_level_20() {
+        // L20 full caster: 4/3/3/3/3/2/2/1/1
+        let slots = slots_for("Wizard", 20);
+        assert_eq!(slots, vec![4, 3, 3, 3, 3, 2, 2, 1, 1]);
+    }
+
+    #[test]
+    fn test_half_caster_slots() {
+        // Paladin L1: no slots
+        assert_eq!(slots_for("Paladin", 1), Vec::<i32>::new());
+        // Paladin L2: 2 x L1
+        assert_eq!(slots_for("Paladin", 2), vec![2]);
+        // Ranger L5: 4 x L1, 2 x L2
+        assert_eq!(slots_for("Ranger", 5), vec![4, 2]);
+    }
+
+    #[test]
+    fn test_warlock_pact_magic_slots() {
+        // L1: one L1 slot
+        assert_eq!(slots_for("Warlock", 1), vec![1]);
+        // L3: zero L1, two L2 slots
+        assert_eq!(slots_for("Warlock", 3), vec![0, 2]);
+        // L5: zero L1/L2, two L3 slots
+        assert_eq!(slots_for("Warlock", 5), vec![0, 0, 2]);
+    }
+
+    #[test]
+    fn test_non_caster_has_no_slots() {
+        assert_eq!(slots_for("Fighter", 1), Vec::<i32>::new());
+        assert_eq!(slots_for("Fighter", 20), Vec::<i32>::new());
+        assert_eq!(slots_for("Barbarian", 5), Vec::<i32>::new());
+        assert_eq!(slots_for("Rogue", 10), Vec::<i32>::new());
+    }
+
+    #[test]
+    fn test_slots_for_clamps_level() {
+        // Level 0 and huge levels should behave gracefully (clamp into 1..=20).
+        assert_eq!(slots_for("Wizard", 0), slots_for("Wizard", 1));
+        assert_eq!(slots_for("Wizard", 25), slots_for("Wizard", 20));
+    }
+
+    // ---- Format includes new labels ----
+
+    #[test]
+    fn test_format_known_spells_tags_concentration_and_ritual() {
+        let known = vec![
+            "Hunter's Mark".to_string(),
+            "Detect Magic".to_string(),
+        ];
+        let lines = format_known_spells(&known, &[2, 0], &[2, 0]);
+        let text = lines.join("\n");
+        // Hunter's Mark is concentration but not ritual -> "[C]"
+        assert!(text.contains("Hunter's Mark [C]"), "Expected 'Hunter's Mark [C]' in:\n{}", text);
+        // Detect Magic is both -> "[C,R]"
+        assert!(text.contains("Detect Magic [C,R]"), "Expected 'Detect Magic [C,R]' in:\n{}", text);
     }
 }
