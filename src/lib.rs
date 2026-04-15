@@ -158,22 +158,12 @@ fn handle_creation(state: &mut GameState, input: &str, step: CreationStep) -> Ve
             state.character.class = class;
             state.character.save_proficiencies = class.saving_throw_proficiencies();
 
-            // Initialize spell slots and known spells based on class. Wizard
-            // gets the canonical MVP spell list; other casters start known-empty
-            // (catalog populated by #27).
+            // Initialize spell slots and known spells based on class. Each
+            // caster class gets its starter list from
+            // character::default_starting_spells; non-casters get empty.
             state.character.spell_slots_max = class.starting_spell_slots();
             state.character.spell_slots_remaining = state.character.spell_slots_max.clone();
-            state.character.known_spells = match class {
-                Class::Wizard => vec![
-                    "Fire Bolt".to_string(),
-                    "Prestidigitation".to_string(),
-                    "Magic Missile".to_string(),
-                    "Burning Hands".to_string(),
-                    "Sleep".to_string(),
-                    "Shield".to_string(),
-                ],
-                _ => Vec::new(),
-            };
+            state.character.known_spells = character::default_starting_spells(class);
             // Initialize per-class feature state. CHA mod uses the current ability
             // scores (which may be unset at this point — defaults to 10 -> +0 mod
             // -> 1 inspiration min for Bard).
@@ -6820,5 +6810,94 @@ mod tests {
         let output = process_input(&state_json, "cast fire bolt");
         let text = output.text.join("\n");
         assert!(!text.contains("don't know"), "Wizard should know Fire Bolt. Got:\n{}", text);
+    }
+
+    // ---- Expanded-catalog: non-Wizard caster known spells recognized ----
+
+    fn wizard_state_with_class(class: character::class::Class) -> GameState {
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut scores = HashMap::new();
+        scores.insert(Ability::Strength, 10);
+        scores.insert(Ability::Dexterity, 12);
+        scores.insert(Ability::Constitution, 13);
+        scores.insert(Ability::Intelligence, 10);
+        scores.insert(Ability::Wisdom, 14);
+        scores.insert(Ability::Charisma, 14);
+        let character = create_character(
+            "T".to_string(), character::race::Race::Human, class, scores, Vec::new(),
+        );
+        let world = world::generate_world(&mut rng, 15);
+        GameState {
+            version: SAVE_VERSION.to_string(),
+            character,
+            current_location: 0,
+            discovered_locations: [0].into_iter().collect(),
+            world,
+            log: Vec::new(),
+            rng_seed: 42,
+            rng_counter: 100,
+            game_phase: GamePhase::Exploration,
+            active_combat: None,
+            ironman_mode: false,
+            progress: state::ProgressState::default(),
+            in_world_minutes: 0,
+            last_long_rest_minutes: None,
+            pending_background_pattern: None,
+        }
+    }
+
+    #[test]
+    fn test_cleric_can_see_known_spells_via_spells_command() {
+        let state = wizard_state_with_class(character::class::Class::Cleric);
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "spells");
+        let text = output.text.join("\n");
+        assert!(text.contains("Known Spells"),
+            "Cleric should have known spells. Got:\n{}", text);
+        assert!(text.to_lowercase().contains("cure wounds")
+            || text.to_lowercase().contains("guiding bolt"),
+            "Cleric known list should include a signature spell. Got:\n{}", text);
+    }
+
+    #[test]
+    fn test_sorcerer_can_see_known_spells_via_spells_command() {
+        let state = wizard_state_with_class(character::class::Class::Sorcerer);
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "spells");
+        let text = output.text.join("\n");
+        assert!(text.contains("Known Spells"),
+            "Sorcerer should have known spells. Got:\n{}", text);
+    }
+
+    #[test]
+    fn test_bard_can_see_known_spells_via_spells_command() {
+        let state = wizard_state_with_class(character::class::Class::Bard);
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "spells");
+        let text = output.text.join("\n");
+        assert!(text.contains("Known Spells"),
+            "Bard should have known spells. Got:\n{}", text);
+    }
+
+    #[test]
+    fn test_fighter_still_has_no_spells() {
+        let state = wizard_state_with_class(character::class::Class::Fighter);
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "spells");
+        let text = output.text.join("\n");
+        assert!(text.contains("You don't know any spells"),
+            "Fighter should still get no-spells message. Got:\n{}", text);
+    }
+
+    #[test]
+    fn test_paladin_level_one_has_no_spells() {
+        let state = wizard_state_with_class(character::class::Class::Paladin);
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "spells");
+        let text = output.text.join("\n");
+        // Paladin unlocks spellcasting at level 2; level 1 has an empty
+        // known_spells list so the no-spells branch fires.
+        assert!(text.contains("You don't know any spells"),
+            "Paladin L1 should have no spells. Got:\n{}", text);
     }
 }
