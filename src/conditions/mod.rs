@@ -283,6 +283,159 @@ pub fn has_resistance_to_all(conditions: &[ActiveCondition]) -> bool {
     has_condition(conditions, ConditionType::Petrified)
 }
 
+/// Sensory channels used by ability checks. Callers pass the channel they
+/// depend on so the query can report auto-fail when the relevant sense is
+/// impaired by a condition (Blinded => sight, Deafened => hearing).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SenseChannel {
+    Sight,
+    Hearing,
+}
+
+/// Check if conditions cause auto-fail on an ability check that relies on a
+/// specific sense. Per 2024 SRD:
+/// - Blinded auto-fails any check that requires sight.
+/// - Deafened auto-fails any check that requires hearing.
+///
+/// Callers decide whether their check depends on sight or hearing and pass
+/// the corresponding `SenseChannel`.
+pub fn get_ability_check_auto_fail(
+    conditions: &[ActiveCondition],
+    channel: SenseChannel,
+) -> bool {
+    match channel {
+        SenseChannel::Sight => has_condition(conditions, ConditionType::Blinded),
+        SenseChannel::Hearing => has_condition(conditions, ConditionType::Deafened),
+    }
+}
+
+/// Check if conditions impose disadvantage on general ability checks (not
+/// tied to a specific sense). Per 2024 SRD:
+/// - Poisoned imposes disadvantage on all ability checks.
+/// - Frightened imposes disadvantage on ability checks while the source of
+///   the fear is in line of sight. Callers pass `source_visible` to indicate
+///   this. Frightened with no visible source does not impose disadvantage.
+/// - Exhaustion's D20 Tests penalty is numeric (see `exhaustion_d20_penalty`)
+///   and layered separately by the caller.
+pub fn get_ability_check_disadvantage(
+    conditions: &[ActiveCondition],
+    source_visible: bool,
+) -> bool {
+    if has_condition(conditions, ConditionType::Poisoned) {
+        return true;
+    }
+    if source_visible && has_condition(conditions, ConditionType::Frightened) {
+        return true;
+    }
+    false
+}
+
+/// Check if a Charmed attacker confers advantage on social ability checks
+/// (Deception, Intimidation, Performance, Persuasion) made by the charmer
+/// against the target. Per 2024 SRD, the charmer has advantage on such checks
+/// while the target is charmed by them.
+///
+/// `source_name` identifies the would-be charmer; it is matched against the
+/// `source` on the Charmed `ActiveCondition` (case-insensitive, trimmed).
+pub fn charmer_has_social_advantage(
+    target_conditions: &[ActiveCondition],
+    source_name: &str,
+) -> bool {
+    let needle = source_name.trim().to_lowercase();
+    for c in target_conditions {
+        if c.condition == ConditionType::Charmed {
+            if let Some(source) = c.source.as_deref() {
+                if source.trim().to_lowercase() == needle {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Check if an attacker rolls with disadvantage against a specific target
+/// because of Grappled. A Grappled creature rolls with disadvantage on attacks
+/// against any target other than the grappler per 2024 SRD. The grappler is
+/// identified by the `source` on the Grappled `ActiveCondition`.
+///
+/// Returns true if the attacker is Grappled AND the target is NOT the grappler.
+pub fn grappled_attack_disadvantage(
+    attacker_conditions: &[ActiveCondition],
+    target_name: &str,
+) -> bool {
+    let needle = target_name.trim().to_lowercase();
+    for c in attacker_conditions {
+        if c.condition == ConditionType::Grappled {
+            match c.source.as_deref() {
+                Some(source) if source.trim().to_lowercase() == needle => return false,
+                // Grappled with no source recorded: conservatively impose disadvantage
+                // on any target (there is a grappler, we just don't know who).
+                _ => return true,
+            }
+        }
+    }
+    false
+}
+
+/// Check if a Frightened creature can willingly move closer to the fear source.
+/// Returns false if Frightened and the movement would reduce distance to the
+/// source (caller supplies the source name and whether the intended move
+/// reduces distance). Returns true otherwise.
+pub fn can_move_closer_to(
+    conditions: &[ActiveCondition],
+    source_name: &str,
+    move_reduces_distance: bool,
+) -> bool {
+    if !move_reduces_distance {
+        return true;
+    }
+    let needle = source_name.trim().to_lowercase();
+    for c in conditions {
+        if c.condition == ConditionType::Frightened {
+            if let Some(source) = c.source.as_deref() {
+                if source.trim().to_lowercase() == needle {
+                    return false;
+                }
+            } else {
+                // Frightened without a known source: block any "closer" move
+                // conservatively; the caller is responsible for recording
+                // the source on apply.
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// Damage-type / condition-type immunities conferred by a condition. Per 2024
+/// SRD, Petrified grants immunity to the Poisoned condition and to poison/
+/// disease damage types. This helper surfaces the condition-type immunity
+/// used when applying new conditions.
+pub fn is_immune_to_condition(
+    conditions: &[ActiveCondition],
+    incoming: ConditionType,
+) -> bool {
+    if has_condition(conditions, ConditionType::Petrified) && incoming == ConditionType::Poisoned {
+        return true;
+    }
+    false
+}
+
+/// Apply a condition, honoring condition-type immunities. Returns true if the
+/// condition was applied, false if it was rejected due to immunity. Callers
+/// should use this instead of pushing directly onto the `conditions` vec.
+pub fn apply_condition(
+    conditions: &mut Vec<ActiveCondition>,
+    new_condition: ActiveCondition,
+) -> bool {
+    if is_immune_to_condition(conditions, new_condition.condition) {
+        return false;
+    }
+    conditions.push(new_condition);
+    true
+}
+
 /// Decrement round-based durations, returning true if condition expired
 pub fn tick_duration(condition: &mut ActiveCondition) -> bool {
     match &mut condition.duration {
@@ -967,5 +1120,192 @@ mod tests {
             ConditionDuration::Rounds(2),
         ).with_source("Giant Spider");
         assert_eq!(condition.source, Some("Giant Spider".to_string()));
+    }
+
+    // --- Deafened: hearing-based ability check auto-fail ---
+
+    #[test]
+    fn test_deafened_auto_fails_hearing_checks() {
+        let deafened = vec![
+            ActiveCondition::new(ConditionType::Deafened, ConditionDuration::Rounds(3)),
+        ];
+        assert!(get_ability_check_auto_fail(&deafened, SenseChannel::Hearing));
+        // Deafened does NOT auto-fail sight-based checks.
+        assert!(!get_ability_check_auto_fail(&deafened, SenseChannel::Sight));
+    }
+
+    #[test]
+    fn test_blinded_auto_fails_sight_checks() {
+        let blinded = vec![
+            ActiveCondition::new(ConditionType::Blinded, ConditionDuration::Rounds(2)),
+        ];
+        assert!(get_ability_check_auto_fail(&blinded, SenseChannel::Sight));
+        // Blinded does NOT auto-fail hearing checks.
+        assert!(!get_ability_check_auto_fail(&blinded, SenseChannel::Hearing));
+    }
+
+    #[test]
+    fn test_no_sense_auto_fail_without_relevant_condition() {
+        let poisoned = vec![
+            ActiveCondition::new(ConditionType::Poisoned, ConditionDuration::Rounds(2)),
+        ];
+        assert!(!get_ability_check_auto_fail(&poisoned, SenseChannel::Sight));
+        assert!(!get_ability_check_auto_fail(&poisoned, SenseChannel::Hearing));
+    }
+
+    // --- Ability-check disadvantage (Poisoned, Frightened w/ visible source) ---
+
+    #[test]
+    fn test_poisoned_imposes_ability_check_disadvantage() {
+        let poisoned = vec![
+            ActiveCondition::new(ConditionType::Poisoned, ConditionDuration::Rounds(2)),
+        ];
+        // Poisoned applies regardless of source visibility.
+        assert!(get_ability_check_disadvantage(&poisoned, false));
+        assert!(get_ability_check_disadvantage(&poisoned, true));
+    }
+
+    #[test]
+    fn test_frightened_ability_disadvantage_requires_visible_source() {
+        let frightened = vec![
+            ActiveCondition::new(ConditionType::Frightened, ConditionDuration::Rounds(3))
+                .with_source("the demon"),
+        ];
+        // With source visible, disadvantage applies.
+        assert!(get_ability_check_disadvantage(&frightened, true));
+        // Without source visible, no disadvantage from Frightened alone.
+        assert!(!get_ability_check_disadvantage(&frightened, false));
+    }
+
+    #[test]
+    fn test_no_ability_check_disadvantage_without_trigger() {
+        let empty: Vec<ActiveCondition> = vec![];
+        assert!(!get_ability_check_disadvantage(&empty, true));
+        assert!(!get_ability_check_disadvantage(&empty, false));
+    }
+
+    // --- Charmed: charmer gets advantage on social checks vs target ---
+
+    #[test]
+    fn test_charmer_has_social_advantage_vs_target() {
+        let charmed_target = vec![
+            ActiveCondition::new(ConditionType::Charmed, ConditionDuration::Rounds(5))
+                .with_source("Hypnotist"),
+        ];
+        assert!(charmer_has_social_advantage(&charmed_target, "Hypnotist"));
+        // Case-insensitive and trim-insensitive match.
+        assert!(charmer_has_social_advantage(&charmed_target, "  hypnotist "));
+        // Someone else trying a social check does NOT get advantage.
+        assert!(!charmer_has_social_advantage(&charmed_target, "Goblin"));
+    }
+
+    #[test]
+    fn test_non_charmed_target_grants_no_social_advantage() {
+        let empty: Vec<ActiveCondition> = vec![];
+        assert!(!charmer_has_social_advantage(&empty, "Hypnotist"));
+    }
+
+    // --- Grappled: disadvantage when attacking targets other than grappler ---
+
+    #[test]
+    fn test_grappled_imposes_disadvantage_vs_non_grappler() {
+        let grappled = vec![
+            ActiveCondition::new(ConditionType::Grappled, ConditionDuration::Permanent)
+                .with_source("Ogre"),
+        ];
+        // Attacking a bystander => disadvantage.
+        assert!(grappled_attack_disadvantage(&grappled, "Goblin"));
+        // Attacking the grappler itself => no disadvantage from Grappled.
+        assert!(!grappled_attack_disadvantage(&grappled, "Ogre"));
+        // Case-insensitive match.
+        assert!(!grappled_attack_disadvantage(&grappled, "ogre"));
+    }
+
+    #[test]
+    fn test_grappled_without_source_imposes_disadvantage_on_all() {
+        let grappled = vec![
+            ActiveCondition::new(ConditionType::Grappled, ConditionDuration::Permanent),
+        ];
+        // Conservative: with no source recorded, treat all targets as non-grappler.
+        assert!(grappled_attack_disadvantage(&grappled, "Anyone"));
+    }
+
+    #[test]
+    fn test_not_grappled_no_disadvantage() {
+        let empty: Vec<ActiveCondition> = vec![];
+        assert!(!grappled_attack_disadvantage(&empty, "Anyone"));
+    }
+
+    // --- Frightened: can't move closer to source ---
+
+    #[test]
+    fn test_frightened_cannot_move_closer_to_source() {
+        let frightened = vec![
+            ActiveCondition::new(ConditionType::Frightened, ConditionDuration::Rounds(3))
+                .with_source("Dragon"),
+        ];
+        // Move that reduces distance to source => blocked.
+        assert!(!can_move_closer_to(&frightened, "Dragon", true));
+        // Move away from source is still allowed.
+        assert!(can_move_closer_to(&frightened, "Dragon", false));
+        // Moving closer to a DIFFERENT source is allowed.
+        assert!(can_move_closer_to(&frightened, "Goblin", true));
+    }
+
+    #[test]
+    fn test_not_frightened_can_move_freely() {
+        let empty: Vec<ActiveCondition> = vec![];
+        assert!(can_move_closer_to(&empty, "Dragon", true));
+        assert!(can_move_closer_to(&empty, "Dragon", false));
+    }
+
+    // --- Petrified: immunity to Poisoned condition ---
+
+    #[test]
+    fn test_petrified_is_immune_to_poisoned_condition() {
+        let petrified = vec![
+            ActiveCondition::new(ConditionType::Petrified, ConditionDuration::Permanent),
+        ];
+        assert!(is_immune_to_condition(&petrified, ConditionType::Poisoned));
+        // Petrified does NOT grant blanket condition immunity (only Poisoned).
+        assert!(!is_immune_to_condition(&petrified, ConditionType::Blinded));
+        assert!(!is_immune_to_condition(&petrified, ConditionType::Stunned));
+    }
+
+    #[test]
+    fn test_apply_condition_respects_petrified_poison_immunity() {
+        let mut conditions = vec![
+            ActiveCondition::new(ConditionType::Petrified, ConditionDuration::Permanent),
+        ];
+        let applied = apply_condition(
+            &mut conditions,
+            ActiveCondition::new(ConditionType::Poisoned, ConditionDuration::Rounds(3)),
+        );
+        assert!(!applied, "Poisoned should be rejected for a Petrified target");
+        assert!(!has_condition(&conditions, ConditionType::Poisoned));
+    }
+
+    #[test]
+    fn test_apply_condition_allows_non_immune_conditions() {
+        let mut conditions = vec![
+            ActiveCondition::new(ConditionType::Petrified, ConditionDuration::Permanent),
+        ];
+        let applied = apply_condition(
+            &mut conditions,
+            ActiveCondition::new(ConditionType::Blinded, ConditionDuration::Rounds(2)),
+        );
+        assert!(applied);
+        assert!(has_condition(&conditions, ConditionType::Blinded));
+    }
+
+    #[test]
+    fn test_apply_condition_to_empty_target_works() {
+        let mut conditions: Vec<ActiveCondition> = vec![];
+        let applied = apply_condition(
+            &mut conditions,
+            ActiveCondition::new(ConditionType::Poisoned, ConditionDuration::Rounds(3)),
+        );
+        assert!(applied);
+        assert!(has_condition(&conditions, ConditionType::Poisoned));
     }
 }
