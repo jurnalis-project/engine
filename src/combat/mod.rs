@@ -1018,6 +1018,29 @@ pub fn try_apply_condition_to_npc(
     conditions::apply_condition(&mut npc.conditions, new_condition)
 }
 
+/// Apply damage to an NPC, honoring its damage immunities and resistances.
+/// Mutates `npc.combat_stats.current_hp` in place, capping at 0 from below.
+/// Returns the actual damage dealt after modifiers (immunity -> 0, resistance
+/// -> halved, otherwise -> incoming). Appends modifier narration to
+/// `narration` (use an empty `Vec` to discard).
+///
+/// No-op if the NPC has no `combat_stats` (e.g., friendly NPC); returns 0.
+pub fn apply_damage_to_npc(
+    npc: &mut Npc,
+    incoming: i32,
+    damage_type: DamageType,
+    narration: &mut Vec<String>,
+) -> i32 {
+    let name = npc.name.clone();
+    let Some(stats) = npc.combat_stats.as_mut() else { return 0 };
+    let dealt = apply_damage_modifiers(stats, incoming, damage_type, &name, narration);
+    stats.current_hp -= dealt;
+    if stats.current_hp < 0 {
+        stats.current_hp = 0;
+    }
+    dealt
+}
+
 /// Apply incoming damage of `damage_type` to a `CombatStats` snapshot,
 /// honoring damage immunities and resistances. Returns the actual damage
 /// applied (already capped to current_hp >= 0 by the caller's HP write).
@@ -2635,6 +2658,67 @@ mod tests {
         assert_eq!(attack_lines, 1,
             "multiattack should stop when player drops to 0, got {} lines: {:#?}",
             attack_lines, lines);
+    }
+
+    #[test]
+    fn test_apply_damage_to_npc_immunity() {
+        let zombie_def = find_monster("Zombie").unwrap();
+        let stats = monster_to_combat_stats(zombie_def);
+        let starting_hp = stats.current_hp;
+        let mut npc = npc_with_stats("Zombie", stats);
+
+        let mut narr = Vec::new();
+        let dealt = apply_damage_to_npc(&mut npc, 12, DamageType::Poison, &mut narr);
+        assert_eq!(dealt, 0);
+        assert_eq!(npc.combat_stats.as_ref().unwrap().current_hp, starting_hp,
+            "immune target's HP should be unchanged");
+        assert_eq!(narr.len(), 1);
+    }
+
+    #[test]
+    fn test_apply_damage_to_npc_full_damage() {
+        let goblin_def = find_monster("Goblin").unwrap();
+        let stats = monster_to_combat_stats(goblin_def);
+        let starting_hp = stats.current_hp;
+        let mut npc = npc_with_stats("Goblin", stats);
+
+        let mut narr = Vec::new();
+        let dealt = apply_damage_to_npc(&mut npc, 5, DamageType::Slashing, &mut narr);
+        assert_eq!(dealt, 5);
+        assert_eq!(npc.combat_stats.as_ref().unwrap().current_hp, starting_hp - 5);
+        assert!(narr.is_empty());
+    }
+
+    #[test]
+    fn test_apply_damage_to_npc_caps_at_zero() {
+        let mut stats = CombatStats::default();
+        stats.max_hp = 5;
+        stats.current_hp = 5;
+        let mut npc = npc_with_stats("Frail", stats);
+
+        let mut narr = Vec::new();
+        let dealt = apply_damage_to_npc(&mut npc, 100, DamageType::Slashing, &mut narr);
+        assert_eq!(dealt, 100);
+        assert_eq!(npc.combat_stats.as_ref().unwrap().current_hp, 0,
+            "current_hp clamps to 0, never negative");
+    }
+
+    #[test]
+    fn test_apply_damage_to_npc_no_combat_stats() {
+        let mut npc = Npc {
+            id: 9003,
+            name: "Friendly".to_string(),
+            role: NpcRole::Hermit,
+            disposition: Disposition::Friendly,
+            dialogue_tags: vec![],
+            location: 0,
+            combat_stats: None,
+            conditions: Vec::new(),
+        };
+        let mut narr = Vec::new();
+        let dealt = apply_damage_to_npc(&mut npc, 50, DamageType::Slashing, &mut narr);
+        assert_eq!(dealt, 0,
+            "NPC without combat_stats takes no damage and the helper is a no-op");
     }
 
     #[test]

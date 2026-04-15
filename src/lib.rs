@@ -1574,10 +1574,9 @@ fn resolve_reaction_decision(
                 );
                 if result.hit {
                     if let Some(npc) = state.world.npcs.get_mut(&fleeing_npc_id) {
-                        if let Some(stats) = npc.combat_stats.as_mut() {
-                            stats.current_hp -= result.damage;
-                            if stats.current_hp <= 0 { stats.current_hp = 0; }
-                        }
+                        let _dealt = combat::apply_damage_to_npc(
+                            npc, result.damage, result.damage_type, &mut lines,
+                        );
                     }
                     lines.push(format!(
                         "Opportunity attack! You strike {} for {} {} damage.",
@@ -2126,13 +2125,14 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                         lines.push("(Rolled with disadvantage)".to_string());
                     }
 
-                    // Apply damage
+                    // Apply damage (honoring stat-block resistances/immunities)
                     if result.hit {
                         if let Some(npc) = state.world.npcs.get_mut(&npc_id) {
-                            if let Some(stats) = npc.combat_stats.as_mut() {
-                                stats.current_hp -= result.damage;
+                            let _dealt = combat::apply_damage_to_npc(
+                                npc, result.damage, result.damage_type, &mut lines,
+                            );
+                            if let Some(stats) = npc.combat_stats.as_ref() {
                                 if stats.current_hp <= 0 {
-                                    stats.current_hp = 0;
                                     lines.push(format!("{} is slain!", npc_name));
                                 }
                             }
@@ -2410,13 +2410,14 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                         lines.push("(Rolled with disadvantage)".to_string());
                     }
 
-                    // Apply damage
+                    // Apply damage (honoring stat-block resistances/immunities)
                     if result.hit {
                         if let Some(npc) = state.world.npcs.get_mut(&npc_id) {
-                            if let Some(stats) = npc.combat_stats.as_mut() {
-                                stats.current_hp -= adjusted_damage;
+                            let _dealt = combat::apply_damage_to_npc(
+                                npc, adjusted_damage, result.damage_type, &mut lines,
+                            );
+                            if let Some(stats) = npc.combat_stats.as_ref() {
                                 if stats.current_hp <= 0 {
-                                    stats.current_hp = 0;
                                     lines.push(format!("{} is slain!", npc_name));
                                 }
                             }
@@ -2544,12 +2545,13 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                                             .replace("{ac}", &target_ac.to_string())
                                             .replace("{damage}", &damage.to_string()));
                                     }
-                                    // Apply damage
+                                    // Apply damage (honoring stat-block resistances/immunities)
                                     if let Some(npc) = state.world.npcs.get_mut(&npc_id) {
-                                        if let Some(stats) = npc.combat_stats.as_mut() {
-                                            stats.current_hp -= damage;
+                                        let _dealt = combat::apply_damage_to_npc(
+                                            npc, damage, state::DamageType::Fire, &mut lines,
+                                        );
+                                        if let Some(stats) = npc.combat_stats.as_ref() {
                                             if stats.current_hp <= 0 {
-                                                stats.current_hp = 0;
                                                 lines.push(format!("{} is slain!", npc_name));
                                             }
                                         }
@@ -2623,12 +2625,13 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                                     .replace("{max}", &max.to_string())
                                     .replace("{level}", "1"));
 
-                                // Apply damage
+                                // Apply damage (honoring stat-block resistances/immunities)
                                 if let Some(npc) = state.world.npcs.get_mut(&npc_id) {
-                                    if let Some(stats) = npc.combat_stats.as_mut() {
-                                        stats.current_hp -= total_damage;
+                                    let _dealt = combat::apply_damage_to_npc(
+                                        npc, total_damage, state::DamageType::Force, &mut lines,
+                                    );
+                                    if let Some(stats) = npc.combat_stats.as_ref() {
                                         if stats.current_hp <= 0 {
-                                            stats.current_hp = 0;
                                             lines.push(format!("{} is slain!", npc_name));
                                         }
                                     }
@@ -2691,15 +2694,16 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                             .replace("{max}", &max.to_string())
                             .replace("{level}", "1"));
 
-                        // Apply damage to NPCs
+                        // Apply damage to NPCs (honoring stat-block resistances/immunities)
                         for result in &results {
                             // Find NPC by name
                             for (_, npc) in state.world.npcs.iter_mut() {
                                 if npc.name == result.name {
-                                    if let Some(stats) = npc.combat_stats.as_mut() {
-                                        stats.current_hp -= result.damage_taken;
+                                    let _dealt = combat::apply_damage_to_npc(
+                                        npc, result.damage_taken, state::DamageType::Fire, &mut lines,
+                                    );
+                                    if let Some(stats) = npc.combat_stats.as_ref() {
                                         if stats.current_hp <= 0 {
-                                            stats.current_hp = 0;
                                             lines.push(format!("{} is slain!", result.name));
                                         }
                                     }
