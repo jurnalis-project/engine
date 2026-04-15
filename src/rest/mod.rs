@@ -164,11 +164,85 @@ fn apply_short_rest_class_features(state: &mut GameState) -> Vec<String> {
                 }
             }
         }
-        Class::Rogue => {
-            // No short-rest class features at MVP levels.
+        Class::Barbarian => {
+            // Barbarian: one Rage use recovers on a short rest (capped at max).
+            let level = state.character.level.max(1);
+            let max_rages = barbarian_rage_max(level);
+            if state.character.class_features.rage_uses_remaining < max_rages {
+                state.character.class_features.rage_uses_remaining += 1;
+                lines.push("A Rage use returns to you.".to_string());
+            }
+        }
+        Class::Cleric | Class::Paladin => {
+            // Channel Divinity: restore to per-level cap on short rest.
+            let level = state.character.level.max(1);
+            let cap = channel_divinity_max(state.character.class, level);
+            if cap > 0 && state.character.class_features.channel_divinity_remaining < cap {
+                state.character.class_features.channel_divinity_remaining = cap;
+                lines.push("Channel Divinity is restored.".to_string());
+            }
+        }
+        Class::Monk => {
+            // Ki refreshes fully on a short rest.
+            let level = state.character.level.max(1);
+            let max_ki = monk_ki_max(level);
+            if max_ki > 0 && state.character.class_features.ki_points_remaining < max_ki {
+                state.character.class_features.ki_points_remaining = max_ki;
+                lines.push("Your ki is restored.".to_string());
+            }
+        }
+        Class::Warlock => {
+            // Warlock Pact Magic slots refresh on a short rest.
+            let before: i32 = state.character.spell_slots_remaining.iter().sum();
+            let max_total: i32 = state.character.spell_slots_max.iter().sum();
+            if before < max_total {
+                state.character.spell_slots_remaining = state.character.spell_slots_max.clone();
+                lines.push("Your Pact Magic slots are restored.".to_string());
+            }
+        }
+        Class::Rogue | Class::Bard | Class::Druid | Class::Ranger | Class::Sorcerer => {
+            // No short-rest class features at MVP levels for these classes.
         }
     }
     lines
+}
+
+/// Barbarian: number of Rage uses at the given level (per SRD 2024 table).
+fn barbarian_rage_max(level: u32) -> u32 {
+    match level {
+        0..=2 => 2,
+        3..=5 => 3,
+        6..=11 => 4,
+        12..=16 => 5,
+        _ => 6,
+    }
+}
+
+/// Monk: Ki / Focus points at the given level (equal to Monk level per SRD).
+fn monk_ki_max(level: u32) -> u32 {
+    // Monks gain Ki / Focus at level 2 in 5e SRD.
+    if level < 2 { 0 } else { level }
+}
+
+/// Channel Divinity: uses per short-rest cycle at the given level.
+/// Cleric: 1 at level 2+, 2 at level 6+, 3 at level 18+.
+/// Paladin: 1 at level 3+, 2 at level 11+, 3 at level 20.
+fn channel_divinity_max(class: Class, level: u32) -> u32 {
+    match class {
+        Class::Cleric => match level {
+            0..=1 => 0,
+            2..=5 => 1,
+            6..=17 => 2,
+            _ => 3,
+        },
+        Class::Paladin => match level {
+            0..=2 => 0,
+            3..=10 => 1,
+            11..=19 => 2,
+            _ => 3,
+        },
+        _ => 0,
+    }
 }
 
 /// Restore spell slots starting from the lowest level, spending up to
@@ -243,25 +317,68 @@ pub fn perform_long_rest(state: &mut GameState, _rng: &mut impl Rng) -> Vec<Stri
 
     // Long-rest feature resets
     let mut feature_resets = Vec::new();
+    let class = state.character.class;
+    let level = state.character.level.max(1);
+
     if !state.character.class_features.action_surge_available
-        && matches!(state.character.class, Class::Fighter)
+        && matches!(class, Class::Fighter)
     {
         state.character.class_features.action_surge_available = true;
         feature_resets.push("Action Surge");
     }
     if state.character.class_features.arcane_recovery_used_today
-        && matches!(state.character.class, Class::Wizard)
+        && matches!(class, Class::Wizard)
     {
         state.character.class_features.arcane_recovery_used_today = false;
         feature_resets.push("Arcane Recovery");
     }
     // Short-rest features also refresh on a long rest.
     if !state.character.class_features.second_wind_available
-        && matches!(state.character.class, Class::Fighter)
+        && matches!(class, Class::Fighter)
     {
         state.character.class_features.second_wind_available = true;
         feature_resets.push("Second Wind");
     }
+    // Barbarian: refund all Rage uses + clear rage_active.
+    if matches!(class, Class::Barbarian) {
+        let max_rages = barbarian_rage_max(level);
+        if state.character.class_features.rage_uses_remaining < max_rages {
+            state.character.class_features.rage_uses_remaining = max_rages;
+            feature_resets.push("Rage");
+        }
+        state.character.class_features.rage_active = false;
+    }
+    // Bard: refresh Bardic Inspiration (= max(1, CHA_mod)).
+    if matches!(class, Class::Bard) {
+        let cha_mod = Ability::modifier(
+            state.character.ability_scores.get(&Ability::Charisma).copied().unwrap_or(10),
+        );
+        let max_ins = cha_mod.max(1) as u32;
+        if state.character.class_features.bardic_inspiration_remaining < max_ins {
+            state.character.class_features.bardic_inspiration_remaining = max_ins;
+            feature_resets.push("Bardic Inspiration");
+        }
+    }
+    // Cleric / Paladin: refresh Channel Divinity to level cap.
+    if matches!(class, Class::Cleric | Class::Paladin) {
+        let cap = channel_divinity_max(class, level);
+        if cap > 0 && state.character.class_features.channel_divinity_remaining < cap {
+            state.character.class_features.channel_divinity_remaining = cap;
+            feature_resets.push("Channel Divinity");
+        }
+    }
+    // Monk: refresh Ki.
+    if matches!(class, Class::Monk) {
+        let max_ki = monk_ki_max(level);
+        if max_ki > 0 && state.character.class_features.ki_points_remaining < max_ki {
+            state.character.class_features.ki_points_remaining = max_ki;
+            feature_resets.push("Ki");
+        }
+    }
+    // Turn-scoped rogue flags also clear on a long rest (defensive).
+    state.character.class_features.cunning_action_used = false;
+    state.character.class_features.sneak_attack_used_this_turn = false;
+
     if !feature_resets.is_empty() {
         lines.push(format!("Class features refreshed: {}.", feature_resets.join(", ")));
     }
