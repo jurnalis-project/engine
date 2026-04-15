@@ -88,6 +88,24 @@ pub const CAST_SLEEP_NONE: &str = "  No creatures are affected.";
 pub const CAST_SHIELD: &str = "A shimmering barrier of force appears. (+5 AC until your next turn)";
 pub const CAST_SLOT_USED: &str = "[Spell slot used: {remaining}/{max} level {level} slots remaining]";
 
+// -- Condition templates --
+// Placeholders: {target} = creature name or "You", {condition} = lowercase condition name.
+// The orchestrator picks the correct variant (self vs other) based on whether the
+// affected combatant is the player.
+pub const CONDITION_APPLIED_SELF: &str = "You are {condition}!";
+pub const CONDITION_APPLIED_OTHER: &str = "{target} is {condition}!";
+pub const CONDITION_SAVED_SELF: &str = "You shake off the {condition}.";
+pub const CONDITION_SAVED_OTHER: &str = "{target} shakes off the {condition}.";
+pub const CONDITION_EXPIRED_SELF: &str = "The {condition} wears off.";
+pub const CONDITION_EXPIRED_OTHER: &str = "{target} is no longer {condition}.";
+
+// Exhaustion-specific templates since it tracks a numeric level rather than a
+// boolean condition entry.
+pub const EXHAUSTION_GAINED_SELF: &str = "You gain a level of exhaustion (now level {level}).";
+pub const EXHAUSTION_GAINED_OTHER: &str = "{target} gains a level of exhaustion (now level {level}).";
+pub const EXHAUSTION_LETHAL_SELF: &str = "Your exhaustion reaches level 6. You collapse, lifeless.";
+pub const EXHAUSTION_LETHAL_OTHER: &str = "{target} collapses, lifeless from exhaustion.";
+
 pub const HELP_TEXT: &str = "\
 Commands:
   look [target]     - Examine surroundings or a specific thing

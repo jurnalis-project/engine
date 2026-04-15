@@ -219,11 +219,103 @@ pub fn narrate_character_sheet(state: &GameState) -> Vec<String> {
     lines
 }
 
+/// Render a "condition applied" message. `target` is `None` for the player (uses
+/// second-person) or `Some(name)` for an NPC/creature.
+pub fn narrate_condition_applied(target: Option<&str>, condition_name: &str) -> String {
+    match target {
+        None => templates::CONDITION_APPLIED_SELF.replace("{condition}", condition_name),
+        Some(name) => templates::CONDITION_APPLIED_OTHER
+            .replace("{target}", name)
+            .replace("{condition}", condition_name),
+    }
+}
+
+/// Render a "condition saved" (save-ends success) message.
+pub fn narrate_condition_saved(target: Option<&str>, condition_name: &str) -> String {
+    match target {
+        None => templates::CONDITION_SAVED_SELF.replace("{condition}", condition_name),
+        Some(name) => templates::CONDITION_SAVED_OTHER
+            .replace("{target}", name)
+            .replace("{condition}", condition_name),
+    }
+}
+
+/// Render a "condition expired" (duration ran out) message.
+pub fn narrate_condition_expired(target: Option<&str>, condition_name: &str) -> String {
+    match target {
+        None => templates::CONDITION_EXPIRED_SELF.replace("{condition}", condition_name),
+        Some(name) => templates::CONDITION_EXPIRED_OTHER
+            .replace("{target}", name)
+            .replace("{condition}", condition_name),
+    }
+}
+
+/// Render "gained an exhaustion level" message. `lethal` should be true when the
+/// new level is >= 6.
+pub fn narrate_exhaustion_gained(target: Option<&str>, new_level: u32, lethal: bool) -> String {
+    if lethal {
+        match target {
+            None => templates::EXHAUSTION_LETHAL_SELF.to_string(),
+            Some(name) => templates::EXHAUSTION_LETHAL_OTHER.replace("{target}", name),
+        }
+    } else {
+        let level = new_level.to_string();
+        match target {
+            None => templates::EXHAUSTION_GAINED_SELF.replace("{level}", &level),
+            Some(name) => templates::EXHAUSTION_GAINED_OTHER
+                .replace("{target}", name)
+                .replace("{level}", &level),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use rand::SeedableRng;
     use rand::rngs::StdRng;
+
+    #[test]
+    fn test_narrate_condition_applied_self() {
+        let text = narrate_condition_applied(None, "poisoned");
+        assert_eq!(text, "You are poisoned!");
+    }
+
+    #[test]
+    fn test_narrate_condition_applied_other() {
+        let text = narrate_condition_applied(Some("the goblin"), "stunned");
+        assert_eq!(text, "the goblin is stunned!");
+    }
+
+    #[test]
+    fn test_narrate_condition_saved_self() {
+        let text = narrate_condition_saved(None, "frightened");
+        assert_eq!(text, "You shake off the frightened.");
+    }
+
+    #[test]
+    fn test_narrate_condition_expired_other() {
+        let text = narrate_condition_expired(Some("the spider"), "paralyzed");
+        assert_eq!(text, "the spider is no longer paralyzed.");
+    }
+
+    #[test]
+    fn test_narrate_exhaustion_gained_non_lethal() {
+        let text = narrate_exhaustion_gained(None, 3, false);
+        assert!(text.contains("level 3"));
+        assert!(text.contains("exhaustion"));
+    }
+
+    #[test]
+    fn test_narrate_exhaustion_gained_lethal() {
+        let self_text = narrate_exhaustion_gained(None, 6, true);
+        assert!(self_text.contains("level 6"));
+        assert!(self_text.to_lowercase().contains("lifeless"));
+
+        let other_text = narrate_exhaustion_gained(Some("Grik"), 6, true);
+        assert!(other_text.starts_with("Grik"));
+        assert!(other_text.to_lowercase().contains("lifeless"));
+    }
 
     #[test]
     fn test_narrate_skill_check_success() {
