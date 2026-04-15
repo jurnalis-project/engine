@@ -169,16 +169,27 @@ pub fn get_defense_advantage(
     }
 }
 
-/// Check if conditions cause auto-fail on a saving throw
+/// Check if conditions cause auto-fail on a saving throw for the given ability.
+///
+/// Per SRD, Stunned, Paralyzed, Petrified, and Unconscious all auto-fail STR
+/// and DEX saves. Other abilities are unaffected.
 pub fn get_save_auto_fail(conditions: &[ActiveCondition], ability: Ability) -> bool {
-    // Stunned and Paralyzed auto-fail STR and DEX saves
-    let is_incapacitated = has_condition(conditions, ConditionType::Stunned)
-        || has_condition(conditions, ConditionType::Paralyzed);
+    let triggers_auto_fail = has_condition(conditions, ConditionType::Stunned)
+        || has_condition(conditions, ConditionType::Paralyzed)
+        || has_condition(conditions, ConditionType::Petrified)
+        || has_condition(conditions, ConditionType::Unconscious);
 
-    if is_incapacitated && (ability == Ability::Strength || ability == Ability::Dexterity) {
+    triggers_auto_fail && matches!(ability, Ability::Strength | Ability::Dexterity)
+}
+
+/// Check if conditions impose disadvantage on a saving throw for the given ability.
+///
+/// Per SRD, Restrained imposes disadvantage on DEX saves. This is distinct from
+/// auto-fail -- the roll still happens, just with disadvantage.
+pub fn get_save_disadvantage(conditions: &[ActiveCondition], ability: Ability) -> bool {
+    if has_condition(conditions, ConditionType::Restrained) && ability == Ability::Dexterity {
         return true;
     }
-
     false
 }
 
@@ -506,6 +517,46 @@ mod tests {
         assert!(get_save_auto_fail(&paralyzed, Ability::Strength));
         assert!(get_save_auto_fail(&paralyzed, Ability::Dexterity));
         assert!(!get_save_auto_fail(&paralyzed, Ability::Wisdom));
+    }
+
+    #[test]
+    fn test_petrified_auto_fails_str_dex_saves() {
+        let petrified = vec![
+            ActiveCondition::new(ConditionType::Petrified, ConditionDuration::Permanent),
+        ];
+        assert!(get_save_auto_fail(&petrified, Ability::Strength));
+        assert!(get_save_auto_fail(&petrified, Ability::Dexterity));
+        assert!(!get_save_auto_fail(&petrified, Ability::Charisma));
+    }
+
+    #[test]
+    fn test_unconscious_auto_fails_str_dex_saves() {
+        let unconscious = vec![
+            ActiveCondition::new(ConditionType::Unconscious, ConditionDuration::Permanent),
+        ];
+        assert!(get_save_auto_fail(&unconscious, Ability::Strength));
+        assert!(get_save_auto_fail(&unconscious, Ability::Dexterity));
+        assert!(!get_save_auto_fail(&unconscious, Ability::Intelligence));
+    }
+
+    #[test]
+    fn test_restrained_imposes_dex_save_disadvantage() {
+        let restrained = vec![
+            ActiveCondition::new(ConditionType::Restrained, ConditionDuration::Permanent),
+        ];
+        assert!(get_save_disadvantage(&restrained, Ability::Dexterity));
+        assert!(!get_save_disadvantage(&restrained, Ability::Strength));
+        // Restrained does NOT auto-fail DEX saves (only imposes disadvantage).
+        assert!(!get_save_auto_fail(&restrained, Ability::Dexterity));
+    }
+
+    #[test]
+    fn test_empty_conditions_no_save_modifiers() {
+        let empty: Vec<ActiveCondition> = vec![];
+        for ability in Ability::all() {
+            assert!(!get_save_auto_fail(&empty, *ability));
+            assert!(!get_save_disadvantage(&empty, *ability));
+        }
     }
 
     #[test]
