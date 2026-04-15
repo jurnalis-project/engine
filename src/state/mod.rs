@@ -55,6 +55,11 @@ pub struct GameState {
     /// `None` if the character has never taken a long rest.
     #[serde(default)]
     pub last_long_rest_minutes: Option<u64>,
+    /// Transient state used during character creation: the ability-adjustment
+    /// pattern the player picked for their background (1 = +2/+1, 2 = +1/+1/+1).
+    /// Consumed and cleared at character finalization (ChooseName step).
+    #[serde(default)]
+    pub pending_background_pattern: Option<u8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -219,6 +224,10 @@ pub enum GamePhase {
 pub enum CreationStep {
     ChooseRace,
     ChooseClass,
+    /// New: select background (between ChooseClass and ChooseAbilityMethod).
+    ChooseBackground,
+    /// New: select ability adjustment pattern (+2/+1 or +1/+1/+1).
+    ChooseBackgroundAbilityPattern,
     ChooseAbilityMethod,
     PointBuy,
     AssignAbilities,
@@ -276,6 +285,7 @@ mod tests {
             progress: ProgressState::default(),
             in_world_minutes: 0,
             last_long_rest_minutes: None,
+            pending_background_pattern: None,
         }
     }
 

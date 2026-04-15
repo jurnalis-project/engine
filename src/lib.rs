@@ -21,7 +21,7 @@ use output::GameOutput;
 use parser::Command;
 use parser::resolver::{self, ResolveResult};
 use state::{GameState, GamePhase, CreationStep, SAVE_VERSION};
-use character::{race::Race, class::Class, STANDARD_ARRAY, generate_random_scores};
+use character::{race::Race, class::Class, background::Background, STANDARD_ARRAY, generate_random_scores};
 #[cfg(test)]
 use character::create_character;
 use types::{Ability, Skill};
@@ -54,6 +54,7 @@ pub fn new_game(seed: u64, ironman_mode: bool) -> GameOutput {
         progress: state::ProgressState::default(),
         in_world_minutes: 0,
         last_long_rest_minutes: None,
+        pending_background_pattern: None,
     };
 
     let state_json = serde_json::to_string(&state).unwrap();
@@ -161,9 +162,59 @@ fn handle_creation(state: &mut GameState, input: &str, step: CreationStep) -> Ve
                     state.character.known_spells = Vec::new();
                 }
             }
+            state.game_phase = GamePhase::CharacterCreation(CreationStep::ChooseBackground);
+            let mut lines = vec![
+                format!("Class: {}. Choose your background:", class),
+            ];
+            for (i, &bg) in Background::all().iter().enumerate() {
+                let feat = bg.origin_feat();
+                let skills = bg.skill_proficiencies();
+                lines.push(format!(
+                    "  {}. {} ({} / {}, feat: {})",
+                    i + 1, bg, skills[0], skills[1], feat,
+                ));
+            }
+            lines.push("Enter a number or name.".to_string());
+            lines
+        }
+        CreationStep::ChooseBackground => {
+            let input_lower = input.to_lowercase();
+            let all_bgs = Background::all();
+            let selected = input.parse::<usize>().ok()
+                .and_then(|n| if (1..=all_bgs.len()).contains(&n) { Some(all_bgs[n - 1]) } else { None })
+                .or_else(|| all_bgs.iter().copied().find(|bg| bg.to_string().to_lowercase() == input_lower));
+
+            let bg = match selected {
+                Some(b) => b,
+                None => return vec![format!("Please pick a background 1-{} or type its name.", all_bgs.len())],
+            };
+            state.character.background = bg;
+
+            state.game_phase = GamePhase::CharacterCreation(CreationStep::ChooseBackgroundAbilityPattern);
+            let abilities = bg.ability_options();
+            vec![
+                format!("Background: {}. Choose ability adjustment pattern:", bg),
+                format!(
+                    "  1. +2 to {}, +1 to {} (ignores {})",
+                    abilities[0], abilities[1], abilities[2],
+                ),
+                format!(
+                    "  2. +1 to all three ({}, {}, {})",
+                    abilities[0], abilities[1], abilities[2],
+                ),
+            ]
+        }
+        CreationStep::ChooseBackgroundAbilityPattern => {
+            let pattern = match input {
+                "1" | "+2/+1" | "2/1" => 1u8,
+                "2" | "+1/+1/+1" | "1/1/1" => 2u8,
+                _ => return vec!["Please choose 1 (+2/+1) or 2 (+1/+1/+1).".to_string()],
+            };
+            state.pending_background_pattern = Some(pattern);
+
             state.game_phase = GamePhase::CharacterCreation(CreationStep::ChooseAbilityMethod);
             vec![
-                format!("Class: {}. Choose ability score method:", class),
+                "Ability adjustment recorded. Choose ability score method:".to_string(),
                 "  1. Standard Array (15, 14, 13, 12, 10, 8)".to_string(),
                 "  2. Random (4d6 drop lowest)".to_string(),
                 "  3. Point Buy (27 points, scores 8-15)".to_string(),
@@ -351,6 +402,11 @@ fn handle_creation(state: &mut GameState, input: &str, step: CreationStep) -> Ve
             state.character.name = name.clone();
             state.character.traits = state.character.race.traits().iter().map(|s| s.to_string()).collect();
 
+            // Apply background effects: ability adjustments, skill/tool profs,
+            // language, origin feat trait. Must happen before HP is computed so
+            // any CON increase is reflected in max_hp.
+            apply_background_effects(state);
+
             // Calculate HP
             let con_mod = state.character.ability_modifier(Ability::Constitution);
             state.character.max_hp = character::calculate_hp(state.character.class, con_mod, 1);
@@ -365,8 +421,12 @@ fn handle_creation(state: &mut GameState, input: &str, step: CreationStep) -> Ve
             state.current_location = 0;
             state.discovered_locations.insert(0);
 
-            // Grant starting equipment based on class
+            // Grant starting equipment (class + background packages).
             grant_starting_equipment(state);
+            grant_background_equipment(state);
+
+            // Clear transient creation-time state.
+            state.pending_background_pattern = None;
 
             // Seed objectives from generated world
             seed_objectives(state);
@@ -486,6 +546,125 @@ fn grant_starting_equipment(state: &mut GameState) {
             state.character.inventory.push(id);
             next_id += 1;
         }
+    }
+}
+
+/// Apply the character's background effects at finalization:
+///   - ability score adjustments (cap at 20)
+///   - skill proficiencies (merged with class selections, de-duplicated)
+///   - tool proficiency
+///   - language
+///   - origin feat recorded as a trait
+fn apply_background_effects(state: &mut GameState) {
+    let bg = state.character.background;
+    let abilities = bg.ability_options();
+    let pattern = state.pending_background_pattern.unwrap_or(1);
+
+    // 1. Ability score adjustments (cap at 20 per SRD)
+    let adjustments: [(Ability, i32); 3] = if pattern == 2 {
+        [(abilities[0], 1), (abilities[1], 1), (abilities[2], 1)]
+    } else {
+        // Default +2/+1 pattern: +2 to first listed, +1 to second listed
+        [(abilities[0], 2), (abilities[1], 1), (abilities[2], 0)]
+    };
+    for (ab, delta) in adjustments {
+        if delta == 0 { continue; }
+        let entry = state.character.ability_scores.entry(ab).or_insert(10);
+        let new_val = (*entry + delta).min(20);
+        *entry = new_val;
+    }
+
+    // 2. Skill proficiencies (merge + de-dup; class picks keep precedence order)
+    for skill in bg.skill_proficiencies() {
+        if !state.character.skill_proficiencies.contains(&skill) {
+            state.character.skill_proficiencies.push(skill);
+        }
+    }
+
+    // 3. Tool proficiency
+    let tool = bg.tool_proficiency().to_string();
+    if !state.character.tool_proficiencies.contains(&tool) {
+        state.character.tool_proficiencies.push(tool);
+    }
+
+    // 4. Language (ensure Common is present; then add background language)
+    let common = "Common".to_string();
+    if !state.character.languages.contains(&common) {
+        state.character.languages.push(common);
+    }
+    let lang = bg.language().to_string();
+    if !state.character.languages.contains(&lang) {
+        state.character.languages.push(lang);
+    }
+
+    // 5. Origin feat (recorded as a trait until issue #28 lands)
+    let feat_trait = format!("Origin Feat: {}", bg.origin_feat());
+    if !state.character.traits.contains(&feat_trait) {
+        state.character.traits.push(feat_trait);
+    }
+}
+
+/// Grant the starting equipment package of the character's background.
+/// Items that are not modelled in the SRD weapon/armor tables are skipped
+/// (a future issue will add adventuring gear support, see #42).
+fn grant_background_equipment(state: &mut GameState) {
+    use state::{Item, ItemType};
+
+    let bg = state.character.background;
+    let items_to_grant = bg.starting_equipment();
+
+    let mut next_id = state.world.items.keys().max().map_or(0, |&id| id + 1);
+
+    let create_weapon = |name: &str, id: u32| -> Option<Item> {
+        equipment::SRD_WEAPONS.iter().find(|w| w.name == name).map(|w| Item {
+            id,
+            name: w.name.to_string(),
+            description: format!("A {}.", w.name.to_lowercase()),
+            item_type: ItemType::Weapon {
+                damage_dice: w.damage_dice,
+                damage_die: w.damage_die,
+                damage_type: w.damage_type,
+                properties: w.properties,
+                category: w.category,
+                versatile_die: w.versatile_die,
+                range_normal: w.range_normal,
+                range_long: w.range_long,
+            },
+            location: None,
+            carried_by_player: true,
+        })
+    };
+
+    let create_armor = |name: &str, id: u32| -> Option<Item> {
+        equipment::SRD_ARMOR.iter().find(|a| a.name == name).map(|a| Item {
+            id,
+            name: a.name.to_string(),
+            description: format!("A set of {} armor.", a.name.to_lowercase()),
+            item_type: ItemType::Armor {
+                category: a.category,
+                base_ac: a.base_ac,
+                max_dex_bonus: a.max_dex_bonus,
+                str_requirement: a.str_requirement,
+                stealth_disadvantage: a.stealth_disadvantage,
+            },
+            location: None,
+            carried_by_player: true,
+        })
+    };
+
+    for &name in items_to_grant {
+        // Skip items already modelled elsewhere via class loadout to avoid dupes
+        // is unnecessary — background items are distinct flavour. We only skip
+        // items that do not resolve to an SRD weapon or armor entry yet.
+        let created = create_weapon(name, next_id).or_else(|| create_armor(name, next_id));
+        if let Some(item) = created {
+            let id = item.id;
+            state.world.items.insert(id, item);
+            state.character.inventory.push(id);
+            next_id += 1;
+        }
+        // Non-weapon/armor items (tools, books, clothing, etc.) are skipped
+        // silently for now — they will be modelled under issue #42.
     }
 }
 
@@ -2995,6 +3174,16 @@ mod tests {
 
         // Choose class
         let output = process_input(&output.state_json, "1");
+        assert!(output.text.iter().any(|t| t.contains("background")),
+            "Expected background prompt after class. Got: {:?}", output.text);
+
+        // Choose background (Acolyte)
+        let output = process_input(&output.state_json, "1");
+        assert!(output.text.iter().any(|t| t.contains("adjustment pattern")),
+            "Expected ability pattern prompt. Got: {:?}", output.text);
+
+        // Choose +1/+1/+1 pattern
+        let output = process_input(&output.state_json, "2");
         assert!(output.text.iter().any(|t| t.contains("ability score")));
 
         // Choose standard array
@@ -3017,6 +3206,10 @@ mod tests {
         let state: GameState = serde_json::from_str(&output.state_json).unwrap();
         assert!(matches!(state.game_phase, GamePhase::Exploration));
         assert!(!state.world.locations.is_empty());
+        // Background should be recorded
+        assert_eq!(state.character.background, Background::Acolyte);
+        // Origin feat trait added
+        assert!(state.character.traits.iter().any(|t| t == "Origin Feat: Magic Initiate (Cleric)"));
     }
 
     #[test]
@@ -3025,6 +3218,8 @@ mod tests {
         let output = new_game(42, false);
         let output = process_input(&output.state_json, "1"); // Human
         let output = process_input(&output.state_json, "1"); // Fighter
+        let output = process_input(&output.state_json, "1"); // Background: Acolyte (no SRD weapon/armor items)
+        let output = process_input(&output.state_json, "2"); // Ability pattern: +1/+1/+1 (no STR/DEX/CON change)
         let output = process_input(&output.state_json, "1"); // Standard array
         let output = process_input(&output.state_json, "15 14 13 12 10 8");
         let output = process_input(&output.state_json, "1 2"); // 2 skills
@@ -3033,6 +3228,7 @@ mod tests {
         let state: GameState = serde_json::from_str(&output.state_json).unwrap();
 
         // Fighter should have 3 items: Chain Mail, Longsword, Shield
+        // (Acolyte background items don't resolve to SRD_WEAPONS/SRD_ARMOR, so 0 extra)
         assert_eq!(state.character.inventory.len(), 3,
             "Fighter should have 3 starting items in inventory");
 
@@ -3066,6 +3262,8 @@ mod tests {
         let output = new_game(42, false);
         let output = process_input(&output.state_json, "1"); // Human
         let output = process_input(&output.state_json, "2"); // Rogue
+        let output = process_input(&output.state_json, "1"); // Background: Acolyte
+        let output = process_input(&output.state_json, "2"); // Ability pattern: +1/+1/+1
         let output = process_input(&output.state_json, "1"); // Standard array
         let output = process_input(&output.state_json, "15 14 13 12 10 8");
         let output = process_input(&output.state_json, "1 2 3 4"); // 4 skills
@@ -3099,6 +3297,8 @@ mod tests {
         let output = new_game(42, false);
         let output = process_input(&output.state_json, "1"); // Human
         let output = process_input(&output.state_json, "3"); // Wizard
+        let output = process_input(&output.state_json, "1"); // Background: Acolyte
+        let output = process_input(&output.state_json, "2"); // Ability pattern: +1/+1/+1
         let output = process_input(&output.state_json, "1"); // Standard array
         let output = process_input(&output.state_json, "15 14 13 12 10 8");
         let output = process_input(&output.state_json, "1 2"); // 2 skills
@@ -3129,6 +3329,8 @@ mod tests {
         let output = new_game(42, false);
         let output = process_input(&output.state_json, "1"); // Human
         let output = process_input(&output.state_json, "1"); // Fighter
+        let output = process_input(&output.state_json, "1"); // Background: Acolyte
+        let output = process_input(&output.state_json, "2"); // Ability pattern: +1/+1/+1
         let output = process_input(&output.state_json, "1"); // Standard array
         let output = process_input(&output.state_json, "15 14 13 12 10 8");
         let output = process_input(&output.state_json, "1 2"); // 2 skills
@@ -3155,6 +3357,8 @@ mod tests {
         let output = new_game(42, false);
         let output = process_input(&output.state_json, "1"); // Human
         let output = process_input(&output.state_json, "1"); // Fighter
+        let output = process_input(&output.state_json, "1"); // Background: Acolyte
+        let output = process_input(&output.state_json, "2"); // Ability pattern: +1/+1/+1
         let output = process_input(&output.state_json, "1"); // Standard array
         let output = process_input(&output.state_json, "15 14 13 12 10 8");
         let output = process_input(&output.state_json, "1 2"); // 2 skills
@@ -4751,6 +4955,8 @@ mod tests {
         let output = new_game(42, false);
         let output = process_input(&output.state_json, "1"); // race
         let output = process_input(&output.state_json, "1"); // class
+        let output = process_input(&output.state_json, "1"); // background: Acolyte
+        let output = process_input(&output.state_json, "2"); // ability pattern
         let output = process_input(&output.state_json, "1"); // standard array
         let output = process_input(&output.state_json, "15 14 13 12 10 8"); // scores
         let output = process_input(&output.state_json, "1 2"); // skills
@@ -4819,6 +5025,7 @@ mod tests {
             progress: state::ProgressState::default(),
             in_world_minutes: 0,
             last_long_rest_minutes: None,
+            pending_background_pattern: None,
         }
     }
 
@@ -4981,6 +5188,7 @@ mod tests {
             progress: state::ProgressState::default(),
             in_world_minutes: 0,
             last_long_rest_minutes: None,
+            pending_background_pattern: None,
         }
     }
 
