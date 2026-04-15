@@ -88,6 +88,16 @@ pub const CAST_SLEEP_NONE: &str = "  No creatures are affected.";
 pub const CAST_SHIELD: &str = "A shimmering barrier of force appears. (+5 AC until your next turn)";
 pub const CAST_SLOT_USED: &str = "[Spell slot used: {remaining}/{max} level {level} slots remaining]";
 
+// -- Ritual-cast templates --
+pub const CAST_NOT_A_RITUAL: &str = "{spell} doesn't have the Ritual tag — cast it normally.";
+pub const CAST_RITUAL_INTRO: &str = "You begin a ritual casting of {spell}. (No spell slot consumed. Takes longer than normal in-world.)";
+
+// -- Concentration templates --
+pub const CONCENTRATION_STARTED: &str = "You focus on maintaining {spell}.";
+pub const CONCENTRATION_DROPPED: &str = "You release your concentration on {old} to focus on {new}.";
+pub const CONCENTRATION_BROKEN: &str = "Your concentration on {spell} is broken!";
+pub const CONCENTRATION_HELD: &str = "You grit your teeth and maintain concentration on {spell}.";
+
 // -- Condition templates --
 // Placeholders: {target} = creature name or "You", {condition} = lowercase condition name.
 // The orchestrator picks the correct variant (self vs other) based on whether the

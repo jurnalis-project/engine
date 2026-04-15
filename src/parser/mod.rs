@@ -26,7 +26,10 @@ pub enum Command {
     Map,
     // Spell commands
     Spells,
-    Cast { spell: String, target: Option<String> },
+    /// Cast a spell. `ritual == true` when the player added the `ritual` /
+    /// `as ritual` suffix; the orchestrator validates the spell actually has
+    /// the Ritual tag and skips slot consumption on the ritual path.
+    Cast { spell: String, target: Option<String>, ritual: bool },
     // Combat commands
     Attack(String),
     Approach(String),
@@ -251,16 +254,22 @@ pub fn parse(input: &str) -> Command {
             if args.is_empty() {
                 Command::Unknown("Cast what spell?".to_string())
             } else {
+                // Detect a ritual-cast suffix. Accept "as ritual" or a bare
+                // trailing " ritual". Strip it before further parsing so the
+                // spell name doesn't include "ritual".
+                let (args_no_ritual, ritual) = strip_ritual_suffix(&args);
                 // Split on " at " or " on " to separate spell name from target
-                let (spell, target) = if let Some(pos) = args.find(" at ") {
-                    (args[..pos].to_string(), Some(args[pos + 4..].to_string()))
-                } else if let Some(pos) = args.find(" on ") {
-                    (args[..pos].to_string(), Some(args[pos + 4..].to_string()))
+                let (spell, target) = if let Some(pos) = args_no_ritual.find(" at ") {
+                    (args_no_ritual[..pos].to_string(),
+                     Some(args_no_ritual[pos + 4..].to_string()))
+                } else if let Some(pos) = args_no_ritual.find(" on ") {
+                    (args_no_ritual[..pos].to_string(),
+                     Some(args_no_ritual[pos + 4..].to_string()))
                 } else {
-                    (args.clone(), None)
+                    (args_no_ritual.clone(), None)
                 };
                 let target = target.filter(|t| !t.is_empty());
-                Command::Cast { spell, target }
+                Command::Cast { spell, target, ritual }
             }
         }
         "attack" | "hit" | "strike" | "shoot" => {
@@ -318,6 +327,25 @@ pub fn parse(input: &str) -> Command {
         }
         _ => Command::Unknown(input.to_string()),
     }
+}
+
+/// Detect and strip a ritual-cast suffix from the arguments of a `cast`
+/// command. Recognizes a bare trailing `ritual` or the phrase `as ritual`.
+/// Returns the stripped argument string and a `ritual` flag.
+///
+/// Examples:
+///   "detect magic ritual"          -> ("detect magic", true)
+///   "detect magic as ritual"       -> ("detect magic", true)
+///   "identify at chest"            -> ("identify at chest", false)
+///   "detect magic as ritual" (mid) -> not stripped unless at end
+fn strip_ritual_suffix(args: &str) -> (String, bool) {
+    let trimmed = args.trim();
+    for suffix in [" as ritual", " ritual"] {
+        if let Some(stripped) = trimmed.strip_suffix(suffix) {
+            return (stripped.trim().to_string(), true);
+        }
+    }
+    (trimmed.to_string(), false)
 }
 
 /// If the argument string ends with an "off hand" / "offhand" suffix,
@@ -784,7 +812,7 @@ mod tests {
     fn test_cast_spell_at_target() {
         assert_eq!(
             parse("cast fire bolt at goblin"),
-            Command::Cast { spell: "fire bolt".to_string(), target: Some("goblin".to_string()) }
+            Command::Cast { spell: "fire bolt".to_string(), target: Some("goblin".to_string()), ritual: false }
         );
     }
 
@@ -792,7 +820,7 @@ mod tests {
     fn test_cast_spell_no_target() {
         assert_eq!(
             parse("cast burning hands"),
-            Command::Cast { spell: "burning hands".to_string(), target: None }
+            Command::Cast { spell: "burning hands".to_string(), target: None, ritual: false }
         );
     }
 
@@ -800,7 +828,7 @@ mod tests {
     fn test_cast_spell_on_target() {
         assert_eq!(
             parse("cast magic missile on skeleton"),
-            Command::Cast { spell: "magic missile".to_string(), target: Some("skeleton".to_string()) }
+            Command::Cast { spell: "magic missile".to_string(), target: Some("skeleton".to_string()), ritual: false }
         );
     }
 
@@ -816,7 +844,7 @@ mod tests {
     fn test_cast_prestidigitation() {
         assert_eq!(
             parse("cast prestidigitation"),
-            Command::Cast { spell: "prestidigitation".to_string(), target: None }
+            Command::Cast { spell: "prestidigitation".to_string(), target: None, ritual: false }
         );
     }
 
@@ -824,7 +852,7 @@ mod tests {
     fn test_cast_shield() {
         assert_eq!(
             parse("cast shield"),
-            Command::Cast { spell: "shield".to_string(), target: None }
+            Command::Cast { spell: "shield".to_string(), target: None, ritual: false }
         );
     }
 
@@ -832,7 +860,43 @@ mod tests {
     fn test_cast_sleep() {
         assert_eq!(
             parse("cast sleep"),
-            Command::Cast { spell: "sleep".to_string(), target: None }
+            Command::Cast { spell: "sleep".to_string(), target: None, ritual: false }
+        );
+    }
+
+    // ---- Ritual casting (feat/expanded-spell-catalog) ----
+
+    #[test]
+    fn test_cast_ritual_suffix() {
+        assert_eq!(
+            parse("cast detect magic ritual"),
+            Command::Cast { spell: "detect magic".to_string(), target: None, ritual: true }
+        );
+    }
+
+    #[test]
+    fn test_cast_as_ritual_phrase() {
+        assert_eq!(
+            parse("cast detect magic as ritual"),
+            Command::Cast { spell: "detect magic".to_string(), target: None, ritual: true }
+        );
+    }
+
+    #[test]
+    fn test_cast_ritual_with_target() {
+        assert_eq!(
+            parse("cast identify on chest ritual"),
+            Command::Cast { spell: "identify".to_string(), target: Some("chest".to_string()), ritual: true }
+        );
+    }
+
+    #[test]
+    fn test_cast_non_ritual_by_default() {
+        // A spell whose name ends in "al" shouldn't be treated as ritual.
+        // "cast identify" -> ritual false.
+        assert_eq!(
+            parse("cast identify"),
+            Command::Cast { spell: "identify".to_string(), target: None, ritual: false }
         );
     }
 
