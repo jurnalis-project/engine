@@ -22,9 +22,24 @@ use parser::Command;
 use parser::resolver::{self, ResolveResult};
 use state::{GameState, GamePhase, CreationStep, SAVE_VERSION};
 use character::{race::Race, class::Class, background::Background, STANDARD_ARRAY, generate_random_scores};
+use character::feat::{FeatDef, FeatCategory, FeatEffect};
 #[cfg(test)]
 use character::create_character;
 use types::{Ability, Skill};
+
+/// The 9 SRD origin feats, in the order shown on the ChooseOriginFeat menu.
+/// Mirrors the catalog order in `character::feat::FEATS` for the origin tier.
+const ORIGIN_FEAT_NAMES: &[&str] = &[
+    "Alert",
+    "Crafter",
+    "Healer",
+    "Lucky",
+    "Magic Initiate",
+    "Musician",
+    "Savage Attacker",
+    "Skilled",
+    "Tavern Brawler",
+];
 
 pub fn new_game(seed: u64, ironman_mode: bool) -> GameOutput {
     let state = GameState {
@@ -106,6 +121,7 @@ pub fn process_input(state_json: &str, input: &str) -> GameOutput {
             GamePhase::CharacterCreation(step) => handle_creation(&mut state, input, step),
             GamePhase::Exploration => handle_exploration(&mut state, input),
             GamePhase::Victory => handle_victory(&mut state, input),
+            GamePhase::ChooseAsi => handle_choose_asi(&mut state, input),
         }
     };
 
@@ -204,10 +220,63 @@ fn handle_creation(state: &mut GameState, input: &str, step: CreationStep) -> Ve
             };
             state.character.background = bg;
 
+            state.game_phase = GamePhase::CharacterCreation(CreationStep::ChooseOriginFeat);
+            let suggested = bg.origin_feat();
+            // Strip parenthetical suffix like " (Cleric)" so suggestion matches
+            // a feat in the catalog (e.g. "Magic Initiate (Cleric)" -> "Magic Initiate").
+            let suggested_short = suggested.split(" (").next().unwrap_or(suggested);
+            let mut lines = vec![
+                format!("Background: {}. Choose your origin feat:", bg),
+                format!("(Background suggests: {} — press Enter or type 'default' to keep.)", suggested),
+            ];
+            for (i, feat) in ORIGIN_FEAT_NAMES.iter().enumerate() {
+                let marker = if *feat == suggested_short { " *" } else { "" };
+                lines.push(format!("  {}. {}{}", i + 1, feat, marker));
+            }
+            lines.push("Enter a number, name, or 'default'.".to_string());
+            lines
+        }
+        CreationStep::ChooseOriginFeat => {
+            let bg = state.character.background;
+            let suggested_full = bg.origin_feat();
+            let suggested_short = suggested_full.split(" (").next().unwrap_or(suggested_full);
+
+            let trimmed = input.trim();
+            let lower = trimmed.to_lowercase();
+
+            let chosen: &'static str = if trimmed.is_empty()
+                || lower == "default" || lower == "keep" || lower == "suggested"
+            {
+                // Map background suggestion onto a catalog feat name.
+                ORIGIN_FEAT_NAMES.iter().copied().find(|n| *n == suggested_short)
+                    .unwrap_or("Alert")
+            } else if let Ok(n) = trimmed.parse::<usize>() {
+                if (1..=ORIGIN_FEAT_NAMES.len()).contains(&n) {
+                    ORIGIN_FEAT_NAMES[n - 1]
+                } else {
+                    return vec![format!(
+                        "Please choose a number 1-{} or type a feat name.",
+                        ORIGIN_FEAT_NAMES.len(),
+                    )];
+                }
+            } else {
+                match ORIGIN_FEAT_NAMES.iter().copied().find(|n| n.to_lowercase() == lower) {
+                    Some(name) => name,
+                    None => {
+                        return vec![format!(
+                            "Unknown origin feat. Pick a number 1-{} or type one of: {}.",
+                            ORIGIN_FEAT_NAMES.len(),
+                            ORIGIN_FEAT_NAMES.join(", "),
+                        )];
+                    }
+                }
+            };
+            state.character.origin_feat = Some(chosen.to_string());
+
             state.game_phase = GamePhase::CharacterCreation(CreationStep::ChooseBackgroundAbilityPattern);
             let abilities = bg.ability_options();
             vec![
-                format!("Background: {}. Choose ability adjustment pattern:", bg),
+                format!("Origin feat: {}. Choose ability adjustment pattern:", chosen),
                 format!(
                     "  1. +2 to {}, +1 to {} (ignores {})",
                     abilities[0], abilities[1], abilities[2],
@@ -427,6 +496,13 @@ fn handle_creation(state: &mut GameState, input: &str, step: CreationStep) -> Ve
             state.character.current_hp = state.character.max_hp;
             state.character.level = 1;
             state.character.speed = state.character.race.speed();
+
+            // Apply origin-feat effects (HP-per-level for Tough, skill profs,
+            // ability bonuses, etc.). Must run AFTER HP is computed because
+            // HpBonusPerLevel adjusts max_hp/current_hp directly.
+            if let Some(name) = state.character.origin_feat.clone() {
+                apply_feat_effects(&mut state.character, &name);
+            }
 
             // Generate world
             let mut rng = StdRng::seed_from_u64(state.rng_seed);
@@ -982,6 +1058,9 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
 
                     // Check if all objectives are now complete
                     lines.extend(check_all_objectives_complete(state));
+
+                    // If a quest level-up granted unspent ASI credits, prompt.
+                    lines.extend(check_and_enter_asi_phase(state));
 
                     lines
                 }
@@ -1870,7 +1949,10 @@ fn end_combat(state: &mut GameState, victory: bool) -> Vec<String> {
             .iter()
             .map(|&cr| leveling::xp_for_cr(cr))
             .sum();
+        let level_before = state.character.level;
         lines.extend(leveling::award_xp(&mut state.character, monster_xp));
+        let levels_gained = state.character.level - level_before;
+        apply_post_levelup_feat_bonuses(&mut state.character, levels_gained);
 
         if !state.progress.first_victory {
             state.progress.first_victory = true;
@@ -1885,6 +1967,10 @@ fn end_combat(state: &mut GameState, victory: bool) -> Vec<String> {
 
         // Check if all objectives are now complete
         lines.extend(check_all_objectives_complete(state));
+
+        // If a level-up granted unspent ASI credits, prompt the player.
+        // Skipped if Victory just transitioned us out of Exploration.
+        lines.extend(check_and_enter_asi_phase(state));
 
         lines
     } else {
@@ -1917,10 +2003,15 @@ fn check_defeat_npc_objectives(state: &mut GameState) -> Vec<String> {
         }
     }
     if newly_completed > 0 {
+        let level_before = state.character.level;
         lines.extend(leveling::award_xp(
             &mut state.character,
             leveling::OBJECTIVE_XP_REWARD * newly_completed,
         ));
+        let levels_gained = state.character.level - level_before;
+        apply_post_levelup_feat_bonuses(&mut state.character, levels_gained);
+        // Note: ASI prompt for objective-driven level-ups is triggered by
+        // the caller (end_combat) so this helper stays state-mutation-only.
     }
     lines
 }
@@ -1941,10 +2032,13 @@ fn check_find_item_objectives(state: &mut GameState, item_id: u32) -> Vec<String
         }
     }
     if newly_completed > 0 {
+        let level_before = state.character.level;
         lines.extend(leveling::award_xp(
             &mut state.character,
             leveling::OBJECTIVE_XP_REWARD * newly_completed,
         ));
+        let levels_gained = state.character.level - level_before;
+        apply_post_levelup_feat_bonuses(&mut state.character, levels_gained);
     }
     lines
 }
@@ -3510,6 +3604,250 @@ fn handle_victory(state: &mut GameState, input: &str) -> Vec<String> {
     }
 }
 
+/// Map a 3-letter ability code (case-insensitive) to the matching `Ability`.
+fn parse_ability_code(code: &str) -> Option<Ability> {
+    match code.to_uppercase().as_str() {
+        "STR" | "STRENGTH" => Some(Ability::Strength),
+        "DEX" | "DEXTERITY" => Some(Ability::Dexterity),
+        "CON" | "CONSTITUTION" => Some(Ability::Constitution),
+        "INT" | "INTELLIGENCE" => Some(Ability::Intelligence),
+        "WIS" | "WISDOM" => Some(Ability::Wisdom),
+        "CHA" | "CHARISMA" => Some(Ability::Charisma),
+        _ => None,
+    }
+}
+
+/// Apply a flat ability bonus to the character's score, capped at 20 per SRD.
+/// Returns `(old, new)` so the caller can describe what changed.
+fn apply_ability_bonus(character: &mut character::Character, ability: Ability, amount: i32) -> (i32, i32) {
+    let entry = character.ability_scores.entry(ability).or_insert(10);
+    let old = *entry;
+    let new = (*entry + amount).min(20);
+    *entry = new;
+    (old, new)
+}
+
+/// Apply the static (non-Flavor) effects of a feat to the character. Skill
+/// proficiency, ability bonus, and HP-per-level all land here. Initiative is
+/// summed dynamically by `character::initiative_bonus_from_feats` and is NOT
+/// applied here. Flavor-only feats produce no state changes.
+fn apply_feat_effects(character: &mut character::Character, feat_name: &str) {
+    let Some(feat) = FeatDef::lookup(feat_name) else { return; };
+    for effect in feat.effects {
+        match effect {
+            FeatEffect::AbilityBonus { ability, amount } => {
+                apply_ability_bonus(character, *ability, *amount);
+            }
+            FeatEffect::SkillProficiency(skill) => {
+                if !character.skill_proficiencies.contains(skill) {
+                    character.skill_proficiencies.push(*skill);
+                }
+            }
+            FeatEffect::HpBonusPerLevel(per_level) => {
+                let bonus = *per_level * (character.level.max(1) as i32);
+                character.max_hp += bonus;
+                character.current_hp = (character.current_hp + bonus).min(character.max_hp);
+            }
+            FeatEffect::SpeedBonus(n) => {
+                character.speed += *n;
+            }
+            // Initiative is summed at roll time; nothing to do here.
+            FeatEffect::Initiative(_) => {}
+            // Placeholder feats — record-only at MVP.
+            FeatEffect::LanguageProficiency
+            | FeatEffect::ToolProficiency
+            | FeatEffect::Flavor => {}
+        }
+    }
+}
+
+/// Apply the per-level HP bonus from feats with `HpBonusPerLevel` (e.g. Tough)
+/// after a level-up. Called by the orchestrator immediately after
+/// `leveling::award_xp` returns, once per level gained.
+///
+/// `levels_gained` is the number of levels crossed in this award (usually 1,
+/// but can be > 1 if XP jumped multiple thresholds). For each new level,
+/// `HpBonusPerLevel(n)` feats grant `n` additional HP.
+///
+/// `leveling/` cannot call this directly (module-isolation rule); the
+/// orchestrator owns the coordination between leveling and feat data.
+fn apply_post_levelup_feat_bonuses(character: &mut character::Character, levels_gained: u32) {
+    if levels_gained == 0 { return; }
+    // Collect all held feat names (origin + general).
+    let mut names: Vec<String> = character.general_feats.clone();
+    if let Some(ref name) = character.origin_feat {
+        names.push(name.clone());
+    }
+    for name in &names {
+        if let Some(feat) = FeatDef::lookup(name) {
+            for effect in feat.effects {
+                if let FeatEffect::HpBonusPerLevel(per_level) = effect {
+                    let bonus = *per_level * levels_gained as i32;
+                    character.max_hp += bonus;
+                    character.current_hp = (character.current_hp + bonus).min(character.max_hp);
+                }
+            }
+        }
+    }
+}
+
+/// In-play handler for `GamePhase::ChooseAsi`. Accepts:
+///   - `+2 STR` / `+2 strength` etc. — apply +2 to one ability (cap 20)
+///   - `+1 STR DEX` — apply +1 to two distinct abilities (cap 20)
+///   - feat name (e.g. `Tough`, `Defense`) — record the feat and apply effects
+///   - `cancel` / `later` — defer; return to Exploration without spending
+fn handle_choose_asi(state: &mut GameState, input: &str) -> Vec<String> {
+    let trimmed = input.trim();
+    let lower = trimmed.to_lowercase();
+
+    // Defer / cancel — exit phase without spending.
+    if matches!(lower.as_str(), "cancel" | "later" | "skip") {
+        state.game_phase = GamePhase::Exploration;
+        return vec!["You set the decision aside for now. Type 'asi' or rest to revisit.".to_string()];
+    }
+
+    // Help / show menu
+    if trimmed.is_empty() || lower == "help" || lower == "?" {
+        return asi_menu_lines(state);
+    }
+
+    // Parse "+2 ABIL" or "+1 ABIL ABIL2"
+    if let Some(rest) = trimmed.strip_prefix("+2 ").or_else(|| trimmed.strip_prefix("+2")) {
+        let parts: Vec<&str> = rest.split_whitespace().collect();
+        if parts.len() != 1 {
+            return vec!["Format: '+2 STR' (one ability).".to_string()];
+        }
+        let Some(ab) = parse_ability_code(parts[0]) else {
+            return vec![format!("Unknown ability '{}'. Use STR/DEX/CON/INT/WIS/CHA.", parts[0])];
+        };
+        let (old, new) = apply_ability_bonus(&mut state.character, ab, 2);
+        state.character.asi_credits = state.character.asi_credits.saturating_sub(1);
+        let lines = vec![format!("{} {} -> {} (cap 20).", ab, old, new)];
+        return finalize_asi(state, lines);
+    }
+    if let Some(rest) = trimmed.strip_prefix("+1 ").or_else(|| trimmed.strip_prefix("+1")) {
+        let parts: Vec<&str> = rest.split_whitespace().collect();
+        if parts.len() != 2 {
+            return vec!["Format: '+1 STR DEX' (two abilities).".to_string()];
+        }
+        let Some(a1) = parse_ability_code(parts[0]) else {
+            return vec![format!("Unknown ability '{}'.", parts[0])];
+        };
+        let Some(a2) = parse_ability_code(parts[1]) else {
+            return vec![format!("Unknown ability '{}'.", parts[1])];
+        };
+        if a1 == a2 {
+            return vec!["+1/+1 must target two different abilities.".to_string()];
+        }
+        let (o1, n1) = apply_ability_bonus(&mut state.character, a1, 1);
+        let (o2, n2) = apply_ability_bonus(&mut state.character, a2, 1);
+        state.character.asi_credits = state.character.asi_credits.saturating_sub(1);
+        let lines = vec![
+            format!("{} {} -> {}, {} {} -> {} (cap 20).", a1, o1, n1, a2, o2, n2),
+        ];
+        return finalize_asi(state, lines);
+    }
+
+    // Try feat-name match.
+    if let Some(feat) = FeatDef::lookup(trimmed) {
+        // Origin feats are not selectable via ASI per SRD.
+        if feat.category == FeatCategory::Origin {
+            return vec![format!(
+                "{} is an origin feat — origin feats are chosen at character creation only.",
+                feat.name,
+            )];
+        }
+        // Fighting-style feats are class-gated.
+        if feat.category == FeatCategory::FightingStyle
+            && !matches!(state.character.class, Class::Fighter | Class::Paladin | Class::Ranger)
+        {
+            return vec!["Only Fighters, Paladins, and Rangers can take fighting-style feats.".to_string()];
+        }
+        if state.character.general_feats.iter().any(|f| f == feat.name) {
+            return vec![format!("You already have {}.", feat.name)];
+        }
+        state.character.general_feats.push(feat.name.to_string());
+        apply_feat_effects(&mut state.character, feat.name);
+        state.character.asi_credits = state.character.asi_credits.saturating_sub(1);
+        let lines = vec![format!("You take the {} feat.", feat.name)];
+        return finalize_asi(state, lines);
+    }
+
+    asi_menu_lines(state)
+}
+
+/// Return to Exploration if all credits are spent; otherwise prompt again
+/// with the remaining-credit count.
+fn finalize_asi(state: &mut GameState, mut lines: Vec<String>) -> Vec<String> {
+    if state.character.asi_credits == 0 {
+        state.game_phase = GamePhase::Exploration;
+        lines.push("All ASI credits spent. Returning to exploration.".to_string());
+    } else {
+        lines.push(format!(
+            "You have {} ASI credit{} remaining.",
+            state.character.asi_credits,
+            if state.character.asi_credits == 1 { "" } else { "s" },
+        ));
+    }
+    lines
+}
+
+/// Build the ASI menu text shown when the player enters `ChooseAsi` or
+/// types `help`.
+fn asi_menu_lines(state: &GameState) -> Vec<String> {
+    let mut lines = vec![
+        format!(
+            "You have {} unspent ASI credit{}. Choose how to spend one:",
+            state.character.asi_credits,
+            if state.character.asi_credits == 1 { "" } else { "s" },
+        ),
+        "  - '+2 ABIL' (e.g. '+2 STR') -> +2 to one ability, cap 20".to_string(),
+        "  - '+1 A B' (e.g. '+1 STR DEX') -> +1 to two abilities, cap 20".to_string(),
+        "  - feat name (e.g. 'Tough', 'Defense') -> take a general or fighting-style feat".to_string(),
+        "  - 'cancel' to defer".to_string(),
+    ];
+    let general: Vec<&'static str> = FEATS_GENERAL.to_vec();
+    lines.push(format!("Available general feats: {}", general.join(", ")));
+    if matches!(state.character.class, Class::Fighter | Class::Paladin | Class::Ranger) {
+        let fs: Vec<&'static str> = FEATS_FIGHTING_STYLE.to_vec();
+        lines.push(format!("Available fighting-style feats: {}", fs.join(", ")));
+    }
+    lines
+}
+
+/// Names of general feats, in catalog order.
+const FEATS_GENERAL: &[&str] = &[
+    "Ability Score Improvement",
+    "Grappler",
+    "Great Weapon Master",
+    "Sharpshooter",
+    "Sentinel",
+    "Tough",
+    "War Caster",
+];
+
+/// Names of fighting-style feats, in catalog order.
+const FEATS_FIGHTING_STYLE: &[&str] = &[
+    "Archery",
+    "Defense",
+    "Dueling",
+    "Great Weapon Fighting",
+    "Protection",
+    "Two-Weapon Fighting",
+];
+
+/// After any operation that may have raised `character.asi_credits` (i.e. a
+/// level-up), enter the `ChooseAsi` phase if we are currently in
+/// `Exploration`. Returns the menu lines if the phase changed, or an empty
+/// Vec otherwise. Combat-time level-ups defer the prompt until combat ends.
+fn check_and_enter_asi_phase(state: &mut GameState) -> Vec<String> {
+    if state.character.asi_credits == 0 { return Vec::new(); }
+    if state.active_combat.is_some() { return Vec::new(); }
+    if !matches!(state.game_phase, GamePhase::Exploration) { return Vec::new(); }
+    state.game_phase = GamePhase::ChooseAsi;
+    asi_menu_lines(state)
+}
+
 fn handle_equip_command(state: &mut GameState, target_str: &str) -> Vec<String> {
     let words: Vec<&str> = target_str.split_whitespace().collect();
     let (target_name, force_off_hand) = if words.len() >= 3
@@ -4207,6 +4545,11 @@ mod tests {
 
         // Choose background (Acolyte)
         let output = process_input(&output.state_json, "1");
+        assert!(output.text.iter().any(|t| t.contains("origin feat")),
+            "Expected origin-feat prompt. Got: {:?}", output.text);
+
+        // Accept the background's suggested origin feat.
+        let output = process_input(&output.state_json, "default");
         assert!(output.text.iter().any(|t| t.contains("adjustment pattern")),
             "Expected ability pattern prompt. Got: {:?}", output.text);
 
@@ -4246,7 +4589,8 @@ mod tests {
         let output = new_game(42, false);
         let output = process_input(&output.state_json, "1"); // Human
         let output = process_input(&output.state_json, "Rogue"); // Class by name
-        let output = process_input(&output.state_json, "4"); // Criminal (index 4 in Background::all())
+        let output = process_input(&output.state_json, "4"); // Criminal
+        let output = process_input(&output.state_json, "default"); // origin feat
         let output = process_input(&output.state_json, "1"); // +2/+1 pattern (DEX+2, CON+1)
         let output = process_input(&output.state_json, "1"); // Standard array
         let output = process_input(&output.state_json, "15 14 13 12 10 8");
@@ -4282,6 +4626,7 @@ mod tests {
         let output = process_input(&output.state_json, "1"); // Human
         let output = process_input(&output.state_json, "Rogue");
         let output = process_input(&output.state_json, "4"); // Criminal
+        let output = process_input(&output.state_json, "default"); // origin feat
         let output = process_input(&output.state_json, "1"); // +2/+1 pattern
         let output = process_input(&output.state_json, "1"); // Standard array
         let output = process_input(&output.state_json, "15 14 13 12 10 8");
@@ -4306,6 +4651,7 @@ mod tests {
         let output = process_input(&output.state_json, "1"); // Human
         let output = process_input(&output.state_json, "Wizard");
         let output = process_input(&output.state_json, "12"); // Sage (index 12 in Background::all())
+        let output = process_input(&output.state_json, "default"); // origin feat
         let output = process_input(&output.state_json, "2"); // +1/+1/+1 pattern
         let output = process_input(&output.state_json, "1"); // Standard array
         let output = process_input(&output.state_json, "15 14 13 12 10 8");
@@ -4334,6 +4680,7 @@ mod tests {
         let output = process_input(&output.state_json, "2"); // Elf
         let output = process_input(&output.state_json, "Rogue");
         let output = process_input(&output.state_json, "4"); // Criminal
+        let output = process_input(&output.state_json, "default"); // origin feat
         let output = process_input(&output.state_json, "1"); // +2/+1 pattern
         let output = process_input(&output.state_json, "1"); // Standard array
         let output = process_input(&output.state_json, "8 15 14 13 12 10"); // DEX=15 for max
@@ -4353,6 +4700,7 @@ mod tests {
         let output = process_input(&output.state_json, "1"); // Human
         let output = process_input(&output.state_json, "Fighter");
         let output = process_input(&output.state_json, "soldier"); // By name (case-insensitive)
+        let output = process_input(&output.state_json, "default"); // origin feat
         let output = process_input(&output.state_json, "2"); // +1/+1/+1
         let output = process_input(&output.state_json, "1"); // Standard array
         let output = process_input(&output.state_json, "15 14 13 12 10 8");
@@ -4383,6 +4731,7 @@ mod tests {
         let output = process_input(&output.state_json, "1");
         let output = process_input(&output.state_json, "1");
         let output = process_input(&output.state_json, "1"); // Acolyte
+        let output = process_input(&output.state_json, "default"); // origin feat
         let output = process_input(&output.state_json, "1"); // +2/+1
         let output = process_input(&output.state_json, "1");
         let output = process_input(&output.state_json, "15 14 13 12 10 8");
@@ -4400,6 +4749,7 @@ mod tests {
         let output = process_input(&output.state_json, "1"); // Human
         let output = process_input(&output.state_json, "Fighter");
         let output = process_input(&output.state_json, "1"); // Background: Acolyte (no SRD weapon/armor items)
+        let output = process_input(&output.state_json, "default"); // origin feat
         let output = process_input(&output.state_json, "2"); // Ability pattern: +1/+1/+1 (no STR/DEX/CON change)
         let output = process_input(&output.state_json, "1"); // Standard array
         let output = process_input(&output.state_json, "15 14 13 12 10 8");
@@ -4444,6 +4794,7 @@ mod tests {
         let output = process_input(&output.state_json, "1"); // Human
         let output = process_input(&output.state_json, "Rogue");
         let output = process_input(&output.state_json, "1"); // Background: Acolyte
+        let output = process_input(&output.state_json, "default"); // origin feat
         let output = process_input(&output.state_json, "2"); // Ability pattern: +1/+1/+1
         let output = process_input(&output.state_json, "1"); // Standard array
         let output = process_input(&output.state_json, "15 14 13 12 10 8");
@@ -4479,6 +4830,7 @@ mod tests {
         let output = process_input(&output.state_json, "1"); // Human
         let output = process_input(&output.state_json, "Wizard");
         let output = process_input(&output.state_json, "1"); // Background: Acolyte
+        let output = process_input(&output.state_json, "default"); // origin feat
         let output = process_input(&output.state_json, "2"); // Ability pattern: +1/+1/+1
         let output = process_input(&output.state_json, "1"); // Standard array
         let output = process_input(&output.state_json, "15 14 13 12 10 8");
@@ -4511,6 +4863,7 @@ mod tests {
         let output = process_input(&output.state_json, "1"); // Human
         let output = process_input(&output.state_json, "Fighter");
         let output = process_input(&output.state_json, "1"); // Background: Acolyte
+        let output = process_input(&output.state_json, "default"); // origin feat
         let output = process_input(&output.state_json, "2"); // Ability pattern: +1/+1/+1
         let output = process_input(&output.state_json, "1"); // Standard array
         let output = process_input(&output.state_json, "15 14 13 12 10 8");
@@ -4539,6 +4892,7 @@ mod tests {
         let output = process_input(&output.state_json, "1"); // Human
         let output = process_input(&output.state_json, "Fighter");
         let output = process_input(&output.state_json, "1"); // Background: Acolyte
+        let output = process_input(&output.state_json, "default"); // origin feat
         let output = process_input(&output.state_json, "2"); // Ability pattern: +1/+1/+1
         let output = process_input(&output.state_json, "1"); // Standard array
         let output = process_input(&output.state_json, "15 14 13 12 10 8");
@@ -6483,6 +6837,7 @@ mod tests {
         let output = process_input(&output.state_json, "1"); // race
         let output = process_input(&output.state_json, "Fighter"); // class
         let output = process_input(&output.state_json, "1"); // background: Acolyte
+        let output = process_input(&output.state_json, "default"); // origin feat
         let output = process_input(&output.state_json, "2"); // ability pattern
         let output = process_input(&output.state_json, "1"); // standard array
         let output = process_input(&output.state_json, "15 14 13 12 10 8"); // scores
@@ -7096,6 +7451,64 @@ mod tests {
         let lines = render_character_sheet_with_xp(&state);
         let joined = lines.join("\n");
         assert!(joined.contains("ASI/feat credits: 2"), "Got: {}", joined);
+    }
+
+    // ---- Tough feat: per-level HP bonus on level-up ----
+
+    #[test]
+    fn tough_feat_grants_extra_hp_on_level_up() {
+        // Character with Tough in general_feats should gain +2 HP extra on each level-up.
+        let mut state = create_test_exploration_state();
+        state.character.general_feats = vec!["Tough".to_string()];
+        let hp_before = state.character.max_hp;
+        // Award enough XP to level up from 1 to 2.
+        let xp_lines = leveling::award_xp(&mut state.character, 300);
+        // apply_post_levelup_feat_bonuses to add Tough's +2 HP for the new level.
+        apply_post_levelup_feat_bonuses(&mut state.character, 1);
+        assert_eq!(state.character.level, 2);
+        // Base HP gain + 2 from Tough
+        let hp_gain = state.character.max_hp - hp_before;
+        assert!(
+            hp_gain >= 2,
+            "Expected at least 2 extra HP from Tough on level-up, got {}. Lines: {:?}",
+            hp_gain, xp_lines,
+        );
+        // Specifically: Tough adds +2 (per HpBonusPerLevel(2) * 1 new level)
+        // The base gain for Fighter d10 + CON 2 = 8; Tough adds 2 → total 10.
+        // We just verify the Tough bonus specifically: recompute base to isolate.
+        let base_hp = hp_before; // before any level-up
+        let _ = base_hp; // used for context above
+        // The total gain should be base_gain + 2
+        let base_gain_without_tough = 8; // Fighter Human CON 14 (13+1) -> +2 mod, d10->+6 = 8
+        assert_eq!(hp_gain, base_gain_without_tough + 2, "Tough should add +2 HP per level-up");
+    }
+
+    #[test]
+    fn no_tough_feat_no_extra_hp_on_level_up() {
+        let mut state = create_test_exploration_state();
+        // No feats
+        state.character.general_feats = vec![];
+        let hp_before = state.character.max_hp;
+        leveling::award_xp(&mut state.character, 300);
+        apply_post_levelup_feat_bonuses(&mut state.character, 1);
+        assert_eq!(state.character.level, 2);
+        let hp_gain = state.character.max_hp - hp_before;
+        let expected_base = 8; // Fighter Human CON 14 -> mod +2; d10 -> (10/2)+1+2 = 8
+        assert_eq!(hp_gain, expected_base, "No feat — only base HP gain expected");
+    }
+
+    #[test]
+    fn tough_in_origin_feat_also_grants_level_hp_bonus() {
+        let mut state = create_test_exploration_state();
+        state.character.origin_feat = Some("Tough".to_string());
+        state.character.general_feats = vec![];
+        let hp_before = state.character.max_hp;
+        leveling::award_xp(&mut state.character, 300);
+        apply_post_levelup_feat_bonuses(&mut state.character, 1);
+        assert_eq!(state.character.level, 2);
+        let hp_gain = state.character.max_hp - hp_before;
+        let expected_base = 8;
+        assert_eq!(hp_gain, expected_base + 2, "Origin feat Tough should also grant +2 HP/level");
     }
 
     #[test]
