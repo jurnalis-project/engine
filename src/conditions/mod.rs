@@ -226,9 +226,13 @@ pub fn can_speak(conditions: &[ActiveCondition]) -> bool {
     !is_incapacitated(conditions)
 }
 
-/// Get movement speed multiplier
+/// Get movement speed multiplier for conditions that scale speed.
+///
+/// Returns the multiplicative factor (Prone = 0.5). Callers should consult
+/// `speed_is_zero` FIRST for hard zero-speed conditions (Grappled, Restrained,
+/// Paralyzed, Petrified, Unconscious) -- those are not representable as a
+/// multiplier.
 pub fn get_speed_multiplier(conditions: &[ActiveCondition]) -> f32 {
-    // Prone: crawling costs 2ft per 1ft moved (0.5x speed effectively when standing up)
     if has_condition(conditions, ConditionType::Prone) {
         0.5
     } else {
@@ -236,10 +240,47 @@ pub fn get_speed_multiplier(conditions: &[ActiveCondition]) -> f32 {
     }
 }
 
-/// Check if attacks against this target are automatic critical hits
+/// Check whether any condition forces the combatant's speed to 0.
+///
+/// Per SRD: Grappled, Restrained, Paralyzed, Petrified, Unconscious all
+/// set speed to 0 (and prevent it from increasing).
+pub fn speed_is_zero(conditions: &[ActiveCondition]) -> bool {
+    has_condition(conditions, ConditionType::Grappled)
+        || has_condition(conditions, ConditionType::Restrained)
+        || has_condition(conditions, ConditionType::Paralyzed)
+        || has_condition(conditions, ConditionType::Petrified)
+        || has_condition(conditions, ConditionType::Unconscious)
+}
+
+/// Check if attacks against this target are automatic critical hits when the
+/// attacker is within 5 ft. Callers must verify the distance themselves.
+///
+/// Per SRD: Paralyzed and Unconscious targets auto-crit from within 5 ft.
 pub fn is_auto_crit_target(conditions: &[ActiveCondition]) -> bool {
-    // Paralyzed: attacks within 5ft are auto-crits
     has_condition(conditions, ConditionType::Paralyzed)
+        || has_condition(conditions, ConditionType::Unconscious)
+}
+
+/// Get initiative roll advantage/disadvantage from conditions.
+///
+/// - Invisible grants advantage on Initiative.
+/// - Incapacitated (directly or derived) imposes disadvantage on Initiative.
+/// - Both present cancel to no net effect.
+pub fn get_initiative_advantage(conditions: &[ActiveCondition]) -> Option<bool> {
+    let advantage = has_condition(conditions, ConditionType::Invisible);
+    let disadvantage = is_incapacitated(conditions);
+
+    match (advantage, disadvantage) {
+        (true, false) => Some(true),
+        (false, true) => Some(false),
+        _ => None,
+    }
+}
+
+/// Check whether conditions grant resistance to all damage types. Currently
+/// only Petrified does per SRD.
+pub fn has_resistance_to_all(conditions: &[ActiveCondition]) -> bool {
+    has_condition(conditions, ConditionType::Petrified)
 }
 
 /// Decrement round-based durations, returning true if condition expired
@@ -598,6 +639,136 @@ mod tests {
     fn test_normal_speed_without_conditions() {
         let empty: Vec<ActiveCondition> = vec![];
         assert_eq!(get_speed_multiplier(&empty), 1.0);
+    }
+
+    // --- Speed zero conditions ---
+
+    #[test]
+    fn test_grappled_sets_speed_zero() {
+        let grappled = vec![
+            ActiveCondition::new(ConditionType::Grappled, ConditionDuration::Permanent),
+        ];
+        assert!(speed_is_zero(&grappled));
+    }
+
+    #[test]
+    fn test_restrained_sets_speed_zero() {
+        let restrained = vec![
+            ActiveCondition::new(ConditionType::Restrained, ConditionDuration::Permanent),
+        ];
+        assert!(speed_is_zero(&restrained));
+    }
+
+    #[test]
+    fn test_paralyzed_sets_speed_zero() {
+        let paralyzed = vec![
+            ActiveCondition::new(ConditionType::Paralyzed, ConditionDuration::Rounds(2)),
+        ];
+        assert!(speed_is_zero(&paralyzed));
+    }
+
+    #[test]
+    fn test_petrified_sets_speed_zero() {
+        let petrified = vec![
+            ActiveCondition::new(ConditionType::Petrified, ConditionDuration::Permanent),
+        ];
+        assert!(speed_is_zero(&petrified));
+    }
+
+    #[test]
+    fn test_unconscious_sets_speed_zero() {
+        let unconscious = vec![
+            ActiveCondition::new(ConditionType::Unconscious, ConditionDuration::Permanent),
+        ];
+        assert!(speed_is_zero(&unconscious));
+    }
+
+    #[test]
+    fn test_no_condition_speed_not_zero() {
+        let empty: Vec<ActiveCondition> = vec![];
+        assert!(!speed_is_zero(&empty));
+        let poisoned = vec![
+            ActiveCondition::new(ConditionType::Poisoned, ConditionDuration::Rounds(2)),
+        ];
+        assert!(!speed_is_zero(&poisoned));
+    }
+
+    // --- Auto-crit ---
+
+    #[test]
+    fn test_unconscious_is_auto_crit_target() {
+        let unconscious = vec![
+            ActiveCondition::new(ConditionType::Unconscious, ConditionDuration::Permanent),
+        ];
+        assert!(is_auto_crit_target(&unconscious));
+    }
+
+    // --- Initiative ---
+
+    #[test]
+    fn test_invisible_grants_initiative_advantage() {
+        let invisible = vec![
+            ActiveCondition::new(ConditionType::Invisible, ConditionDuration::Rounds(5)),
+        ];
+        assert_eq!(get_initiative_advantage(&invisible), Some(true));
+    }
+
+    #[test]
+    fn test_incapacitated_imposes_initiative_disadvantage() {
+        let incap = vec![
+            ActiveCondition::new(ConditionType::Incapacitated, ConditionDuration::Rounds(1)),
+        ];
+        assert_eq!(get_initiative_advantage(&incap), Some(false));
+    }
+
+    #[test]
+    fn test_stunned_imposes_initiative_disadvantage_via_incap() {
+        let stunned = vec![
+            ActiveCondition::new(ConditionType::Stunned, ConditionDuration::Rounds(1)),
+        ];
+        assert_eq!(get_initiative_advantage(&stunned), Some(false));
+    }
+
+    #[test]
+    fn test_invisible_plus_incap_cancels_initiative_mod() {
+        let mixed = vec![
+            ActiveCondition::new(ConditionType::Invisible, ConditionDuration::Rounds(5)),
+            ActiveCondition::new(ConditionType::Incapacitated, ConditionDuration::Rounds(1)),
+        ];
+        assert_eq!(get_initiative_advantage(&mixed), None);
+    }
+
+    #[test]
+    fn test_no_initiative_modifier_without_conditions() {
+        let empty: Vec<ActiveCondition> = vec![];
+        assert_eq!(get_initiative_advantage(&empty), None);
+    }
+
+    // --- Damage resistance ---
+
+    #[test]
+    fn test_petrified_grants_resistance_to_all() {
+        let petrified = vec![
+            ActiveCondition::new(ConditionType::Petrified, ConditionDuration::Permanent),
+        ];
+        assert!(has_resistance_to_all(&petrified));
+    }
+
+    #[test]
+    fn test_other_conditions_no_blanket_resistance() {
+        for condition in [
+            ConditionType::Stunned,
+            ConditionType::Paralyzed,
+            ConditionType::Unconscious,
+            ConditionType::Poisoned,
+        ] {
+            let conds = vec![ActiveCondition::new(condition, ConditionDuration::Rounds(1))];
+            assert!(
+                !has_resistance_to_all(&conds),
+                "{:?} should NOT grant blanket resistance",
+                condition
+            );
+        }
     }
 
     #[test]
