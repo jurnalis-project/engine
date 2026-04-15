@@ -1525,16 +1525,23 @@ fn resolve_reaction_decision(
                     state.world.npcs.get(&fleeing_npc_id)
                         .map(|n| n.conditions.clone())
                         .unwrap_or_default();
+                let name = state.world.npcs.get(&fleeing_npc_id)
+                    .map(|n| n.name.clone())
+                    .unwrap_or_else(|| "the enemy".to_string());
+                // Grappled-vs-non-grappler: the player rolls the OA with disadvantage
+                // if they are grappled by someone other than the fleeing target.
+                let grappled_disadv = crate::conditions::grappled_attack_disadvantage(
+                    &state.character.conditions,
+                    &name,
+                );
                 let result = combat::resolve_player_attack(
                     rng, &state.character, target_ac, false,
                     weapon_id, &state.world.items, old_distance,
                     state.character.equipped.off_hand.is_none(),
                     true, // hostile within 5ft
                     &target_conditions,
+                    grappled_disadv,
                 );
-                let name = state.world.npcs.get(&fleeing_npc_id)
-                    .map(|n| n.name.clone())
-                    .unwrap_or_else(|| "the enemy".to_string());
                 if result.hit {
                     if let Some(npc) = state.world.npcs.get_mut(&fleeing_npc_id) {
                         if let Some(stats) = npc.combat_stats.as_mut() {
@@ -1593,9 +1600,16 @@ fn resolve_single_npc_attack(
     }));
     let attack = match attack_ref { Some(a) => a.clone(), None => return lines };
 
+    // NPC attacking the player: disadvantage if the NPC is grappled by someone
+    // other than the player (per 2024 SRD Grappled condition).
+    let extra_disadvantage = crate::conditions::grappled_attack_disadvantage(
+        &npc_conditions,
+        &state.character.name,
+    );
     let result = combat::resolve_npc_attack(
         rng, &attack, player_ac, combat.player_dodging, distance,
         &npc_conditions, &player_conditions,
+        extra_disadvantage,
     );
     let verb = if attack.reach > 0 { "attacks with" } else { "fires" };
     let disadv = if result.disadvantage { " (with disadvantage)" } else { "" };
@@ -2010,10 +2024,31 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                         .map(|n| n.conditions.as_slice())
                         .unwrap_or(&[]);
 
+                    let npc_name = state.world.npcs.get(&npc_id)
+                        .map(|n| n.name.clone())
+                        .unwrap_or_else(|| "the enemy".to_string());
+
+                    // Charmed: the player cannot attack their charmer (per 2024 SRD).
+                    if !crate::conditions::can_attack_target(&state.character.conditions, &npc_name) {
+                        state.active_combat = Some(combat);
+                        return vec![format!(
+                            "You can't bring yourself to attack {} -- you are Charmed by them.",
+                            npc_name
+                        )];
+                    }
+
+                    // Grappled: disadvantage on attacks against any target other than
+                    // the grappler.
+                    let grappled_disadv = crate::conditions::grappled_attack_disadvantage(
+                        &state.character.conditions,
+                        &npc_name,
+                    );
+
                     let result = combat::resolve_player_attack(
                         &mut rng, &state.character, target_ac, target_dodging,
                         weapon_id, &state.world.items, distance, off_hand_free, hostile_within_5ft,
                         target_conditions,
+                        grappled_disadv,
                     );
 
                     let npc_name = state.world.npcs.get(&npc_id)
@@ -2261,6 +2296,24 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                             .map(|n| n.conditions.as_slice())
                             .unwrap_or(&[]);
                     let hostile_within_5ft = combat::has_living_hostile_within(state, &combat, 5);
+                    let npc_name = state.world.npcs.get(&npc_id)
+                        .map(|n| n.name.clone())
+                        .unwrap_or_else(|| "the enemy".to_string());
+
+                    // Charmed: player cannot attack their charmer, even off-hand.
+                    if !crate::conditions::can_attack_target(&state.character.conditions, &npc_name) {
+                        state.active_combat = Some(combat);
+                        return vec![format!(
+                            "You can't bring yourself to attack {} -- you are Charmed by them.",
+                            npc_name
+                        )];
+                    }
+
+                    // Grappled-vs-non-grappler disadvantage.
+                    let grappled_disadv = crate::conditions::grappled_attack_disadvantage(
+                        &state.character.conditions,
+                        &npc_name,
+                    );
 
                     // Resolve the attack using the OFF-HAND weapon.
                     let result = combat::resolve_player_attack(
@@ -2269,6 +2322,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                         false, // off-hand slot is occupied (by this weapon), no Versatile bonus
                         hostile_within_5ft,
                         target_conditions,
+                        grappled_disadv,
                     );
 
                     // Off-hand damage rule: remove the positive ability modifier from the

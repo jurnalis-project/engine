@@ -330,6 +330,7 @@ pub fn resolve_player_attack(
     off_hand_free: bool,
     hostile_within_5ft: bool,
     target_conditions: &[ActiveCondition],
+    extra_disadvantage: bool,
 ) -> AttackResult {
     let (weapon_name, damage_dice, damage_die, damage_type, properties, versatile_die, range_normal, range_long) =
         match weapon_id.and_then(|id| items.get(&id)) {
@@ -384,6 +385,10 @@ pub fn resolve_player_attack(
     // Check disadvantage
     let mut disadvantage = false;
     if target_dodging {
+        disadvantage = true;
+    }
+    if extra_disadvantage {
+        // Orchestrator-supplied disadvantage (e.g., Grappled vs non-grappler target).
         disadvantage = true;
     }
     if ranged {
@@ -492,11 +497,16 @@ pub fn resolve_npc_attack(
     distance: u32,
     npc_conditions: &[ActiveCondition],
     player_conditions: &[ActiveCondition],
+    extra_disadvantage: bool,
 ) -> AttackResult {
     let mut disadvantage = false;
     let mut advantage = false;
 
     if player_dodging {
+        disadvantage = true;
+    }
+    if extra_disadvantage {
+        // Orchestrator-supplied disadvantage (e.g., NPC Grappled and attacking a non-grappler).
         disadvantage = true;
     }
 
@@ -591,9 +601,16 @@ pub fn resolve_opportunity_attack(
     // Find a melee attack that can reach the player at current distance
     let melee_attack = stats.attacks.iter()
         .find(|a| a.reach > 0 && distance <= a.reach as u32)?;
+    // For NPC opportunity attacks, Grappled-vs-non-grappler disadvantage against
+    // the player would apply if the NPC is grappled by someone other than the
+    // player. We compute it here rather than leaking target-name parsing into combat.
+    let extra_disadvantage = conditions::grappled_attack_disadvantage(
+        &npc.conditions,
+        &state.character.name,
+    );
     let result = resolve_npc_attack(
         rng, melee_attack, player_ac, false, distance,
-        &npc.conditions, &state.character.conditions
+        &npc.conditions, &state.character.conditions, extra_disadvantage,
     );
     Some((npc.name.clone(), result))
 }
@@ -633,12 +650,19 @@ pub fn resolve_npc_turn(
 
     // Priority: melee if in range -> ranged if in range -> move toward player
 
+    // Orchestrator-side grappled disadvantage: if the NPC is grappled by
+    // someone other than the player, attacking the player is at disadvantage.
+    let extra_disadvantage = conditions::grappled_attack_disadvantage(
+        npc_conditions,
+        &state.character.name,
+    );
+
     // Check for melee attack
     let melee_attack = npc_attacks.iter().find(|a| a.reach > 0 && distance <= a.reach as u32);
     if let Some(attack) = melee_attack {
         let player_ac = crate::equipment::calculate_ac(&state.character, &state.world.items);
         let player_dodging = combat.player_dodging;
-        let result = resolve_npc_attack(rng, attack, player_ac, player_dodging, distance, npc_conditions, player_conditions);
+        let result = resolve_npc_attack(rng, attack, player_ac, player_dodging, distance, npc_conditions, player_conditions, extra_disadvantage);
         let disadv = if result.disadvantage { " (with disadvantage)" } else { "" };
 
         if result.hit {
@@ -669,7 +693,7 @@ pub fn resolve_npc_turn(
     if let Some(attack) = ranged_attack {
         let player_ac = crate::equipment::calculate_ac(&state.character, &state.world.items);
         let player_dodging = combat.player_dodging;
-        let result = resolve_npc_attack(rng, attack, player_ac, player_dodging, distance, npc_conditions, player_conditions);
+        let result = resolve_npc_attack(rng, attack, player_ac, player_dodging, distance, npc_conditions, player_conditions, extra_disadvantage);
         let disadv = if result.disadvantage { " (with disadvantage)" } else { "" };
 
         if result.hit {
@@ -1055,7 +1079,7 @@ mod tests {
         let mut misses = 0;
         for seed in 0..100 {
             let mut rng = StdRng::seed_from_u64(seed);
-            let result = resolve_npc_attack(&mut rng, &attack, 15, false, 5, &[], &[]);
+            let result = resolve_npc_attack(&mut rng, &attack, 15, false, 5, &[], &[], false);
             if result.hit { hits += 1; } else { misses += 1; }
         }
         assert!(hits > 0, "Should have some hits");
@@ -1073,7 +1097,7 @@ mod tests {
         // Find a seed that gives nat 20
         for seed in 0..1000 {
             let mut rng = StdRng::seed_from_u64(seed);
-            let result = resolve_npc_attack(&mut rng, &attack, 30, false, 5, &[], &[]);
+            let result = resolve_npc_attack(&mut rng, &attack, 30, false, 5, &[], &[], false);
             if result.natural_20 {
                 assert!(result.hit, "Natural 20 should always hit");
                 return;
@@ -1092,7 +1116,7 @@ mod tests {
         };
         for seed in 0..1000 {
             let mut rng = StdRng::seed_from_u64(seed);
-            let result = resolve_npc_attack(&mut rng, &attack, 1, false, 5, &[], &[]);
+            let result = resolve_npc_attack(&mut rng, &attack, 1, false, 5, &[], &[], false);
             if result.natural_1 {
                 assert!(!result.hit, "Natural 1 should always miss");
                 return;
@@ -1113,7 +1137,7 @@ mod tests {
         let mut crit_damages = Vec::new();
         for seed in 0..1000 {
             let mut rng = StdRng::seed_from_u64(seed);
-            let result = resolve_npc_attack(&mut rng, &attack, 10, false, 5, &[], &[]);
+            let result = resolve_npc_attack(&mut rng, &attack, 10, false, 5, &[], &[], false);
             if result.natural_20 {
                 crit_damages.push(result.damage);
             }
@@ -1139,8 +1163,8 @@ mod tests {
         for seed in 0..1000 {
             let mut rng1 = StdRng::seed_from_u64(seed);
             let mut rng2 = StdRng::seed_from_u64(seed);
-            let dodge = resolve_npc_attack(&mut rng1, &attack, 15, true, 5, &[], &[]);
-            let normal = resolve_npc_attack(&mut rng2, &attack, 15, false, 5, &[], &[]);
+            let dodge = resolve_npc_attack(&mut rng1, &attack, 15, true, 5, &[], &[], false);
+            let normal = resolve_npc_attack(&mut rng2, &attack, 15, false, 5, &[], &[], false);
             if dodge.hit { dodge_hits += 1; }
             if normal.hit { normal_hits += 1; }
         }
@@ -1834,10 +1858,12 @@ mod tests {
                 &mut rng1, &state_adv.character, target_ac, false, Some(9999),
                 &state_adv.world.items, distance, true, false,
                 &[], // defender has no conditions
+                false,
             );
             let res_neu = resolve_player_attack(
                 &mut rng2, &state_neu.character, target_ac, false, Some(9999),
                 &state_neu.world.items, distance, true, false, &[],
+                false,
             );
 
             if res_adv.hit { wins_with_adv += 1; }
@@ -1849,6 +1875,58 @@ mod tests {
             wins_with_adv > wins_neutral + 20,
             "Invisible attacker should hit more often ({} vs neutral {})",
             wins_with_adv, wins_neutral
+        );
+    }
+
+    #[test]
+    fn test_extra_disadvantage_flag_reduces_player_hit_rate() {
+        // End-to-end: when the orchestrator reports `extra_disadvantage = true`
+        // (e.g., Grappled attacking a non-grappler) the hit rate should be
+        // measurably lower than without it. This test verifies the parameter
+        // is actually wired into the roll.
+        use crate::state::{Item, ItemType, DamageType, WeaponCategory};
+
+        let mut wins_disadv = 0;
+        let mut wins_neutral = 0;
+        let trials = 400u64;
+
+        for seed in 0..trials {
+            let mut state = test_state_with_goblin();
+            let club = Item {
+                id: 9999,
+                name: "club".to_string(),
+                description: "Sturdy club.".to_string(),
+                item_type: ItemType::Weapon {
+                    damage_dice: 1, damage_die: 6,
+                    damage_type: DamageType::Bludgeoning,
+                    properties: 0, category: WeaponCategory::Simple,
+                    versatile_die: 0, range_normal: 0, range_long: 0,
+                },
+                location: None, carried_by_player: true,
+            };
+            state.world.items.insert(9999, club);
+            state.character.inventory.push(9999);
+            state.character.equipped.main_hand = Some(9999);
+
+            let mut rng1 = StdRng::seed_from_u64(seed);
+            let mut rng2 = StdRng::seed_from_u64(seed);
+
+            let res_disadv = resolve_player_attack(
+                &mut rng1, &state.character, 15, false, Some(9999),
+                &state.world.items, 5, true, false, &[], true,
+            );
+            let res_neu = resolve_player_attack(
+                &mut rng2, &state.character, 15, false, Some(9999),
+                &state.world.items, 5, true, false, &[], false,
+            );
+            if res_disadv.hit { wins_disadv += 1; }
+            if res_neu.hit { wins_neutral += 1; }
+        }
+
+        assert!(
+            wins_neutral > wins_disadv + 20,
+            "extra_disadvantage should lower hit rate (disadv={}, neutral={})",
+            wins_disadv, wins_neutral
         );
     }
 
