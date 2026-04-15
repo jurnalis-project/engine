@@ -368,6 +368,10 @@ pub enum GamePhase {
     CharacterCreation(CreationStep),
     Exploration,
     Victory,
+    /// In-play prompt to spend an unspent ASI/feat credit. Entered after a
+    /// level-up if `character.asi_credits > 0`. The orchestrator returns to
+    /// `Exploration` once the credit is spent. See `docs/specs/feat-system.md`.
+    ChooseAsi,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -376,6 +380,10 @@ pub enum CreationStep {
     ChooseClass,
     /// New: select background (between ChooseClass and ChooseAbilityMethod).
     ChooseBackground,
+    /// New: select origin feat (between ChooseBackground and
+    /// ChooseBackgroundAbilityPattern). Defaults to background's suggestion
+    /// if the player accepts.
+    ChooseOriginFeat,
     /// New: select ability adjustment pattern (+2/+1 or +1/+1/+1).
     ChooseBackgroundAbilityPattern,
     ChooseAbilityMethod,
