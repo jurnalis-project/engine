@@ -7511,6 +7511,124 @@ mod tests {
         assert_eq!(hp_gain, expected_base + 2, "Origin feat Tough should also grant +2 HP/level");
     }
 
+    // ---- handle_choose_asi: spec acceptance criteria ----
+
+    fn asi_state() -> GameState {
+        let mut state = create_test_exploration_state();
+        state.character.asi_credits = 1;
+        state.game_phase = GamePhase::ChooseAsi;
+        state
+    }
+
+    #[test]
+    fn choose_asi_plus2_str_raises_by_2_and_consumes_credit() {
+        let mut state = asi_state();
+        state.character.ability_scores.insert(Ability::Strength, 15);
+        let result = handle_choose_asi(&mut state, "+2 STR");
+        assert_eq!(state.character.ability_scores[&Ability::Strength], 17,
+            "STR should be 17 after +2 from 15. Got: {:?}", result);
+        assert_eq!(state.character.asi_credits, 0);
+        assert!(matches!(state.game_phase, GamePhase::Exploration));
+    }
+
+    #[test]
+    fn choose_asi_plus1_str_dex_raises_each_and_consumes_credit() {
+        let mut state = asi_state();
+        state.character.ability_scores.insert(Ability::Strength, 14);
+        state.character.ability_scores.insert(Ability::Dexterity, 13);
+        let result = handle_choose_asi(&mut state, "+1 STR DEX");
+        assert_eq!(state.character.ability_scores[&Ability::Strength], 15,
+            "STR should be 15. Got: {:?}", result);
+        assert_eq!(state.character.ability_scores[&Ability::Dexterity], 14,
+            "DEX should be 14. Got: {:?}", result);
+        assert_eq!(state.character.asi_credits, 0);
+    }
+
+    #[test]
+    fn choose_asi_plus2_str_caps_at_20() {
+        let mut state = asi_state();
+        state.character.ability_scores.insert(Ability::Strength, 19);
+        handle_choose_asi(&mut state, "+2 STR");
+        assert_eq!(state.character.ability_scores[&Ability::Strength], 20,
+            "+2 on 19 STR must cap at 20, not go to 21");
+    }
+
+    #[test]
+    fn choose_asi_plus1_two_abilities_already_at_20_stays_at_20() {
+        let mut state = asi_state();
+        state.character.ability_scores.insert(Ability::Strength, 20);
+        state.character.ability_scores.insert(Ability::Dexterity, 20);
+        handle_choose_asi(&mut state, "+1 STR DEX");
+        assert_eq!(state.character.ability_scores[&Ability::Strength], 20,
+            "STR already at 20 must not exceed 20");
+        assert_eq!(state.character.ability_scores[&Ability::Dexterity], 20,
+            "DEX already at 20 must not exceed 20");
+    }
+
+    #[test]
+    fn choose_asi_tough_adds_to_general_feats_and_applies_hp() {
+        let mut state = asi_state();
+        let hp_before = state.character.max_hp;
+        let level = state.character.level;
+        handle_choose_asi(&mut state, "Tough");
+        assert!(state.character.general_feats.contains(&"Tough".to_string()),
+            "Tough should appear in general_feats");
+        assert_eq!(state.character.max_hp, hp_before + 2 * level as i32,
+            "Tough should add 2 * level HP");
+        assert_eq!(state.character.asi_credits, 0);
+        assert!(matches!(state.game_phase, GamePhase::Exploration));
+    }
+
+    #[test]
+    fn choose_asi_credits_zero_exits_to_exploration() {
+        let mut state = asi_state();
+        state.character.asi_credits = 1;
+        handle_choose_asi(&mut state, "+2 CON");
+        assert_eq!(state.character.asi_credits, 0);
+        assert!(matches!(state.game_phase, GamePhase::Exploration),
+            "Phase should return to Exploration when credits reach 0");
+    }
+
+    #[test]
+    fn choose_asi_archery_rejected_for_non_fighter() {
+        let mut state = asi_state();
+        state.character.class = Class::Wizard; // Wizard can't take Archery
+        let result = handle_choose_asi(&mut state, "Archery");
+        assert!(result.iter().any(|l| l.contains("Only Fighters")),
+            "Expected fighting-style gate error. Got: {:?}", result);
+        // Credit should NOT be consumed
+        assert_eq!(state.character.asi_credits, 1);
+    }
+
+    #[test]
+    fn choose_asi_archery_accepted_for_fighter() {
+        let mut state = asi_state();
+        state.character.class = Class::Fighter;
+        handle_choose_asi(&mut state, "Archery");
+        assert!(state.character.general_feats.contains(&"Archery".to_string()),
+            "Fighter should be able to take Archery");
+        assert_eq!(state.character.asi_credits, 0);
+    }
+
+    #[test]
+    fn choose_asi_origin_feat_rejected() {
+        let mut state = asi_state();
+        let result = handle_choose_asi(&mut state, "Alert");
+        assert!(result.iter().any(|l| l.contains("origin feat")),
+            "Alert (origin feat) should be rejected in ASI phase. Got: {:?}", result);
+        assert_eq!(state.character.asi_credits, 1, "Credit must not be consumed");
+    }
+
+    #[test]
+    fn choose_asi_cancel_defers_without_spending() {
+        let mut state = asi_state();
+        let result = handle_choose_asi(&mut state, "cancel");
+        assert!(result.iter().any(|l| l.contains("aside") || l.contains("cancel") || l.contains("defer")),
+            "Cancel should defer. Got: {:?}", result);
+        assert_eq!(state.character.asi_credits, 1, "Credit must not be consumed on cancel");
+        assert!(matches!(state.game_phase, GamePhase::Exploration));
+    }
+
     #[test]
     fn legacy_save_missing_cr_field_defaults_to_zero() {
         // Older saves predate the CR field on CombatStats; serde default = 0.0.
