@@ -12,6 +12,7 @@ use crate::equipment::{FINESSE, THROWN, VERSATILE, REACH, AMMUNITION};
 use crate::rules::dice::{roll_d20, roll_dice};
 use crate::character::Character;
 use crate::conditions::{self, ConditionType, ActiveCondition};
+use crate::state::Npc;
 
 /// Identifies a combatant in initiative order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -975,6 +976,63 @@ pub fn format_initiative(combat: &CombatState, state: &GameState) -> Vec<String>
     }
 
     lines
+}
+
+/// Apply a condition to an NPC, honoring stat-block immunities AND the
+/// generic `conditions::is_immune_to_condition` rules (e.g., Petrified =>
+/// Poisoned). Returns `true` if the condition was applied, `false` if it
+/// was rejected by either immunity check.
+///
+/// Lives in `combat/` (not `conditions/`) so the conditions module stays
+/// decoupled from NPC stat-block storage. See
+/// `docs/specs/monster-stat-blocks.md`.
+pub fn try_apply_condition_to_npc(
+    npc: &mut Npc,
+    new_condition: ActiveCondition,
+) -> bool {
+    // Stat-block immunity check (e.g., Skeleton immune to Poisoned).
+    if let Some(stats) = npc.combat_stats.as_ref() {
+        if stats.condition_immunities.contains(&new_condition.condition) {
+            return false;
+        }
+    }
+    // Generic condition-vs-condition immunity (e.g., Petrified => Poisoned).
+    conditions::apply_condition(&mut npc.conditions, new_condition)
+}
+
+/// Apply incoming damage of `damage_type` to a `CombatStats` snapshot,
+/// honoring damage immunities and resistances. Returns the actual damage
+/// applied (already capped to current_hp >= 0 by the caller's HP write).
+///
+/// - If `damage_type` is in `damage_immunities`, returns 0 and emits an
+///   immunity narration line into `narration` if provided.
+/// - Else if `damage_type` is in `damage_resistances`, returns
+///   `incoming / 2` (rounded down, minimum 0) and emits a resistance line.
+/// - Else returns `incoming` unchanged.
+///
+/// `target_name` is used when building narration text; pass the NPC's
+/// display name. The narration `Vec` parameter is appended to in-place; pass
+/// an empty `Vec` to discard narration (useful in tests).
+pub fn apply_damage_modifiers(
+    stats: &CombatStats,
+    incoming: i32,
+    damage_type: DamageType,
+    target_name: &str,
+    narration: &mut Vec<String>,
+) -> i32 {
+    if incoming <= 0 {
+        return incoming.max(0);
+    }
+    if stats.damage_immunities.contains(&damage_type) {
+        narration.push(format!("The {} is immune to {} damage!", target_name, damage_type));
+        return 0;
+    }
+    if stats.damage_resistances.contains(&damage_type) {
+        let halved = incoming / 2;
+        narration.push(format!("The {} resists the {} damage.", target_name, damage_type));
+        return halved.max(0);
+    }
+    incoming
 }
 
 #[cfg(test)]
@@ -2338,5 +2396,165 @@ mod tests {
         assert!(!round_tripped.bonus_action_used);
         assert!(!round_tripped.reaction_used);
         assert!(!round_tripped.free_interaction_used);
+    }
+
+    // ----- monster-stat-blocks (2026-04-15) -----
+
+    use crate::conditions::ConditionDuration;
+    use crate::combat::monsters::{find_monster, monster_to_combat_stats};
+
+    fn npc_with_stats(name: &str, stats: CombatStats) -> Npc {
+        Npc {
+            id: 9001,
+            name: name.to_string(),
+            role: NpcRole::Guard,
+            disposition: Disposition::Hostile,
+            dialogue_tags: vec![],
+            location: 0,
+            combat_stats: Some(stats),
+            conditions: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn test_try_apply_condition_to_npc_rejects_stat_block_immunity() {
+        let skel_def = find_monster("Skeleton").unwrap();
+        let stats = monster_to_combat_stats(skel_def);
+        let mut npc = npc_with_stats("Skeleton", stats);
+
+        let applied = try_apply_condition_to_npc(
+            &mut npc,
+            ActiveCondition::new(ConditionType::Poisoned, ConditionDuration::Rounds(3)),
+        );
+        assert!(!applied,
+            "Skeleton should reject Poisoned condition due to stat-block immunity");
+        assert!(npc.conditions.is_empty(),
+            "rejected condition should not be appended");
+    }
+
+    #[test]
+    fn test_try_apply_condition_to_npc_accepts_non_immune() {
+        let skel_def = find_monster("Skeleton").unwrap();
+        let stats = monster_to_combat_stats(skel_def);
+        let mut npc = npc_with_stats("Skeleton", stats);
+
+        let applied = try_apply_condition_to_npc(
+            &mut npc,
+            ActiveCondition::new(ConditionType::Frightened, ConditionDuration::Rounds(3)),
+        );
+        assert!(applied);
+        assert_eq!(npc.conditions.len(), 1);
+        assert_eq!(npc.conditions[0].condition, ConditionType::Frightened);
+    }
+
+    #[test]
+    fn test_try_apply_condition_to_npc_honors_petrified_poison_rule() {
+        // Even with no stat-block immunities, conditions::is_immune_to_condition
+        // should still apply (Petrified => Poisoned).
+        let mut stats = CombatStats::default();
+        stats.condition_immunities = vec![]; // no stat-block immunities
+        let mut npc = npc_with_stats("Statue", stats);
+        // First apply Petrified.
+        let p1 = try_apply_condition_to_npc(
+            &mut npc,
+            ActiveCondition::new(ConditionType::Petrified, ConditionDuration::Permanent),
+        );
+        assert!(p1);
+        // Then try to poison: should be rejected by the generic immunity rule.
+        let p2 = try_apply_condition_to_npc(
+            &mut npc,
+            ActiveCondition::new(ConditionType::Poisoned, ConditionDuration::Rounds(3)),
+        );
+        assert!(!p2,
+            "Petrified target should reject Poisoned per conditions::is_immune_to_condition");
+        assert_eq!(npc.conditions.len(), 1);
+        assert_eq!(npc.conditions[0].condition, ConditionType::Petrified);
+    }
+
+    #[test]
+    fn test_try_apply_condition_to_npc_skips_immunity_when_no_combat_stats() {
+        // Friendly NPCs with no combat_stats can still receive conditions
+        // via the generic apply_condition path; the helper should not panic.
+        let mut npc = Npc {
+            id: 9002,
+            name: "Friendly Hermit".to_string(),
+            role: NpcRole::Hermit,
+            disposition: Disposition::Friendly,
+            dialogue_tags: vec![],
+            location: 0,
+            combat_stats: None,
+            conditions: Vec::new(),
+        };
+        let applied = try_apply_condition_to_npc(
+            &mut npc,
+            ActiveCondition::new(ConditionType::Charmed, ConditionDuration::Rounds(1)),
+        );
+        assert!(applied);
+        assert_eq!(npc.conditions.len(), 1);
+    }
+
+    #[test]
+    fn test_apply_damage_modifiers_immunity_zeros_damage() {
+        let zombie_def = find_monster("Zombie").unwrap();
+        let stats = monster_to_combat_stats(zombie_def);
+        let mut narration = Vec::new();
+        let dealt = apply_damage_modifiers(&stats, 12, DamageType::Poison, "zombie", &mut narration);
+        assert_eq!(dealt, 0, "Zombie should be immune to Poison damage");
+        assert_eq!(narration.len(), 1);
+        assert!(narration[0].contains("immune"), "narration mentions immunity: {:?}", narration[0]);
+    }
+
+    #[test]
+    fn test_apply_damage_modifiers_no_immunity_passes_through() {
+        let zombie_def = find_monster("Zombie").unwrap();
+        let stats = monster_to_combat_stats(zombie_def);
+        let mut narration = Vec::new();
+        let dealt = apply_damage_modifiers(&stats, 7, DamageType::Slashing, "zombie", &mut narration);
+        assert_eq!(dealt, 7);
+        assert!(narration.is_empty(), "no narration when no immunity/resistance applies");
+    }
+
+    #[test]
+    fn test_apply_damage_modifiers_resistance_halves_damage() {
+        let mut stats = CombatStats::default();
+        stats.damage_resistances = vec![DamageType::Slashing];
+        let mut narration = Vec::new();
+        let dealt = apply_damage_modifiers(&stats, 10, DamageType::Slashing, "ghost", &mut narration);
+        assert_eq!(dealt, 5);
+        assert_eq!(narration.len(), 1);
+        assert!(narration[0].contains("resists"));
+    }
+
+    #[test]
+    fn test_apply_damage_modifiers_resistance_halves_odd_damage() {
+        // 11 / 2 = 5 (round down, integer division).
+        let mut stats = CombatStats::default();
+        stats.damage_resistances = vec![DamageType::Fire];
+        let mut narration = Vec::new();
+        let dealt = apply_damage_modifiers(&stats, 11, DamageType::Fire, "fiend", &mut narration);
+        assert_eq!(dealt, 5);
+    }
+
+    #[test]
+    fn test_apply_damage_modifiers_zero_or_negative_input() {
+        let stats = CombatStats::default();
+        let mut narration = Vec::new();
+        assert_eq!(apply_damage_modifiers(&stats, 0, DamageType::Fire, "x", &mut narration), 0);
+        assert_eq!(apply_damage_modifiers(&stats, -3, DamageType::Fire, "x", &mut narration), 0);
+        assert!(narration.is_empty());
+    }
+
+    #[test]
+    fn test_apply_damage_modifiers_immunity_takes_precedence_over_resistance() {
+        // If a creature is both resistant AND immune (unusual but possible),
+        // immunity (full negation) wins.
+        let mut stats = CombatStats::default();
+        stats.damage_immunities = vec![DamageType::Cold];
+        stats.damage_resistances = vec![DamageType::Cold];
+        let mut narration = Vec::new();
+        let dealt = apply_damage_modifiers(&stats, 8, DamageType::Cold, "elemental", &mut narration);
+        assert_eq!(dealt, 0);
+        assert_eq!(narration.len(), 1);
+        assert!(narration[0].contains("immune"));
     }
 }
