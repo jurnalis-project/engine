@@ -68,6 +68,13 @@ pub struct Character {
     /// come from background, race, and other features.
     #[serde(default)]
     pub languages: Vec<String>,
+    /// IDs of magic items the character is currently attuned to. Capped at
+    /// `equipment::magic::MAX_ATTUNED_ITEMS` (3 per SRD 5.1). Items are
+    /// attuned via the `attune` command and released via `unattune`.
+    /// `#[serde(default)]` so older saves without this field deserialize
+    /// to an empty vec. Added 2026-04-15 (feat/magic-items).
+    #[serde(default)]
+    pub attuned_items: Vec<ItemId>,
 }
 
 impl Character {
@@ -167,6 +174,7 @@ pub fn create_character(
         background: Background::default(),
         tool_proficiencies: Vec::new(),
         languages: vec!["Common".to_string()],
+        attuned_items: Vec::new(),
     }
 }
 
@@ -500,6 +508,23 @@ mod tests {
         // Barbarian d12 -> 12 + con_mod = 14.
         let c = create_character("Krom".to_string(), Race::Human, Class::Barbarian, test_scores(), vec![]);
         assert_eq!(c.max_hp, 14);
+    }
+
+    #[test]
+    fn test_new_character_has_empty_attuned_items() {
+        let c = create_character("Test".to_string(), Race::Human, Class::Fighter, test_scores(), vec![]);
+        assert!(c.attuned_items.is_empty());
+    }
+
+    #[test]
+    fn test_character_missing_attuned_items_deserialize_defaults() {
+        // Legacy save that predates attuned_items: the field missing from JSON
+        // should deserialize to an empty Vec<ItemId> (via #[serde(default)]).
+        let c = create_character("Test".to_string(), Race::Human, Class::Fighter, test_scores(), vec![]);
+        let mut v: serde_json::Value = serde_json::to_value(&c).unwrap();
+        v.as_object_mut().unwrap().remove("attuned_items");
+        let loaded: Character = serde_json::from_value(v).unwrap();
+        assert!(loaded.attuned_items.is_empty());
     }
 
     #[test]
