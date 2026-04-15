@@ -4631,6 +4631,10 @@ mod tests {
             "FindItem objective should be marked complete after picking up the artifact");
         assert!(output.text.iter().any(|l| l.contains("Objective complete") && l.contains("Ancient Gem")),
             "Should announce objective completion: {:?}", output.text);
+        // Quest XP bonus is awarded on FindItem completion.
+        assert_eq!(new_state.character.xp, leveling::OBJECTIVE_XP_REWARD,
+            "FindItem completion should award OBJECTIVE_XP_REWARD ({}); got {}",
+            leveling::OBJECTIVE_XP_REWARD, new_state.character.xp);
     }
 
     #[test]
