@@ -3301,14 +3301,12 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                 }
             }
 
-            // Spellcasting ability per class (INT/WIS/CHA). The local is
-            // kept as `int_score` for compatibility with the existing MVP
-            // resolve_* call sites; the name reflects legacy Wizard-only
-            // wiring, but the value now tracks the class's actual casting
-            // ability.
+            // Spellcasting ability per class (INT/WIS/CHA). The value is
+            // the caster's score in whichever ability their class uses for
+            // spells -- resolve_* helpers are ability-agnostic.
             let class_name = state.character.class.to_string();
             let casting_ability = spells::spellcasting_ability(&class_name);
-            let int_score = state.character.ability_scores
+            let caster_score = state.character.ability_scores
                 .get(&casting_ability).copied().unwrap_or(10);
             let prof_bonus = state.character.proficiency_bonus();
 
@@ -3340,7 +3338,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                                 .map(|n| n.name.clone())
                                 .unwrap_or_else(|| "the enemy".to_string());
 
-                            let outcome = spells::resolve_fire_bolt(&mut rng, int_score, prof_bonus, target_ac);
+                            let outcome = spells::resolve_fire_bolt(&mut rng, caster_score, prof_bonus, target_ac);
                             if let spells::CastOutcome::FireBolt { attack, damage } = outcome {
                                 if attack.hit {
                                     if attack.natural_20 {
@@ -3474,7 +3472,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                         return lines;
                     }
 
-                    let outcome = spells::resolve_burning_hands(&mut rng, int_score, prof_bonus, &targets);
+                    let outcome = spells::resolve_burning_hands(&mut rng, caster_score, prof_bonus, &targets);
                     if let spells::CastOutcome::BurningHands { total_rolled, half_damage: _, dc, results } = outcome {
                         lines.push(narration::templates::CAST_BURNING_HANDS_INTRO
                             .replace("{damage}", &total_rolled.to_string())
@@ -3604,7 +3602,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                                 return vec![format!("There's no \"{}\" to target.", target_name)];
                             };
                             let npc_name = spell_target.name.clone();
-                            let outcome = spells::resolve_sacred_flame(&mut rng, int_score, prof_bonus, &spell_target);
+                            let outcome = spells::resolve_sacred_flame(&mut rng, caster_score, prof_bonus, &spell_target);
                             if let spells::CastOutcome::SacredFlame { save_result, damage } = outcome {
                                 let save_str = format!("{}+{}={} vs DC {}",
                                     save_result.roll, save_result.modifier,
@@ -3644,7 +3642,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                 }
                 "Cure Wounds" => {
                     // Self-heal 1d8 + spellcasting mod. Slot already consumed at top.
-                    let outcome = spells::resolve_cure_wounds(&mut rng, int_score);
+                    let outcome = spells::resolve_cure_wounds(&mut rng, caster_score);
                     if let spells::CastOutcome::CureWoundsResult { healing, rolled, modifier } = outcome {
                         let new_hp = (state.character.current_hp + healing).min(state.character.max_hp);
                         let applied = new_hp - state.character.current_hp;
@@ -3693,7 +3691,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                                 .map(|s| s.ac).unwrap_or(10);
                             let npc_name = state.world.npcs.get(&npc_id)
                                 .map(|n| n.name.clone()).unwrap_or_else(|| "the enemy".to_string());
-                            let outcome = spells::resolve_guiding_bolt(&mut rng, int_score, prof_bonus, target_ac);
+                            let outcome = spells::resolve_guiding_bolt(&mut rng, caster_score, prof_bonus, target_ac);
                             if let spells::CastOutcome::GuidingBolt { attack, damage } = outcome {
                                 if attack.hit {
                                     if attack.natural_20 {
@@ -3766,7 +3764,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                 "Healing Word" => {
                     // Self-heal 1d4 + mod. SRD calls this a bonus action, but the
                     // MVP combat model resolves it as an action like other spells.
-                    let outcome = spells::resolve_healing_word(&mut rng, int_score);
+                    let outcome = spells::resolve_healing_word(&mut rng, caster_score);
                     if let spells::CastOutcome::HealingWordResult { healing, rolled, modifier } = outcome {
                         let new_hp = (state.character.current_hp + healing).min(state.character.max_hp);
                         let applied = new_hp - state.character.current_hp;
@@ -3815,7 +3813,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                                 return vec![format!("There's no \"{}\" to target.", target_name)];
                             };
                             let npc_name = spell_target.name.clone();
-                            let outcome = spells::resolve_vicious_mockery(&mut rng, int_score, prof_bonus, &spell_target);
+                            let outcome = spells::resolve_vicious_mockery(&mut rng, caster_score, prof_bonus, &spell_target);
                             if let spells::CastOutcome::ViciousMockery { save_result, damage } = outcome {
                                 let save_str = format!("{}+{}={} vs DC {}",
                                     save_result.roll, save_result.modifier,
@@ -3876,7 +3874,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                                 return vec![format!("There's no \"{}\" to target.", target_name)];
                             };
                             let npc_name = spell_target.name.clone();
-                            let outcome = spells::resolve_charm_person(&mut rng, int_score, prof_bonus, &spell_target);
+                            let outcome = spells::resolve_charm_person(&mut rng, caster_score, prof_bonus, &spell_target);
                             if let spells::CastOutcome::CharmPerson { save_result } = outcome {
                                 let save_str = format!("{}+{}={} vs DC {}",
                                     save_result.roll, save_result.modifier,
@@ -3940,7 +3938,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                                 return vec![format!("There's no \"{}\" to target.", target_name)];
                             };
                             let npc_name = spell_target.name.clone();
-                            let outcome = spells::resolve_faerie_fire(&mut rng, int_score, prof_bonus, &spell_target);
+                            let outcome = spells::resolve_faerie_fire(&mut rng, caster_score, prof_bonus, &spell_target);
                             if let spells::CastOutcome::FaerieFire { save_result } = outcome {
                                 let save_str = format!("{}+{}={} vs DC {}",
                                     save_result.roll, save_result.modifier,
@@ -3996,7 +3994,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                                 .map(|s| s.ac).unwrap_or(10);
                             let npc_name = state.world.npcs.get(&npc_id)
                                 .map(|n| n.name.clone()).unwrap_or_else(|| "the enemy".to_string());
-                            let outcome = spells::resolve_eldritch_blast(&mut rng, int_score, prof_bonus, target_ac);
+                            let outcome = spells::resolve_eldritch_blast(&mut rng, caster_score, prof_bonus, target_ac);
                             if let spells::CastOutcome::EldritchBlast { attack, damage } = outcome {
                                 if attack.hit {
                                     if attack.natural_20 {
