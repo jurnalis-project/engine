@@ -416,6 +416,10 @@ pub enum CreationStep {
     PointBuy,
     AssignAbilities,
     ChooseSkills,
+    /// New (#35): SRD alignment selection. Sits between ChooseSkills and
+    /// ChooseName so it mirrors the SRD creation order (background/species/
+    /// abilities -> alignment -> details).
+    ChooseAlignment,
     ChooseName,
 }
 

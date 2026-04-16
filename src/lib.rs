@@ -25,7 +25,7 @@ use character::{race::Race, class::Class, background::Background, STANDARD_ARRAY
 use character::feat::{FeatDef, FeatCategory, FeatEffect};
 #[cfg(test)]
 use character::create_character;
-use types::{Ability, Skill};
+use types::{Ability, Alignment, Skill};
 
 /// The 9 SRD origin feats, in the order shown on the ChooseOriginFeat menu.
 /// Mirrors the catalog order in `character::feat::FEATS` for the origin tier.
@@ -39,6 +39,24 @@ const ORIGIN_FEAT_NAMES: &[&str] = &[
     "Savage Attacker",
     "Skilled",
     "Tavern Brawler",
+];
+
+/// The 10 SRD alignment options, in the canonical order shown on the
+/// ChooseAlignment menu: the nine classic alignments (LG, NG, CG, LN, N, CN,
+/// LE, NE, CE) followed by Unaligned. See
+/// `docs/reference/character-creation.md` and
+/// `docs/specs/character-system.md`.
+const ALIGNMENT_OPTIONS: &[Alignment] = &[
+    Alignment::LawfulGood,
+    Alignment::NeutralGood,
+    Alignment::ChaoticGood,
+    Alignment::LawfulNeutral,
+    Alignment::TrueNeutral,
+    Alignment::ChaoticNeutral,
+    Alignment::LawfulEvil,
+    Alignment::NeutralEvil,
+    Alignment::ChaoticEvil,
+    Alignment::Unaligned,
 ];
 
 pub fn new_game(seed: u64, ironman_mode: bool) -> GameOutput {
@@ -561,9 +579,56 @@ fn handle_creation(state: &mut GameState, input: &str, step: CreationStep) -> Ve
             }
 
             state.character.skill_proficiencies = skills;
+            state.game_phase = GamePhase::CharacterCreation(CreationStep::ChooseAlignment);
+
+            let mut lines = vec![
+                "Skills chosen! Choose your alignment:".to_string(),
+            ];
+            for (i, alignment) in ALIGNMENT_OPTIONS.iter().enumerate() {
+                lines.push(format!("  {}. {}", i + 1, alignment));
+            }
+            lines.push("Enter a number or name.".to_string());
+            lines
+        }
+        CreationStep::ChooseAlignment => {
+            let trimmed = input.trim();
+            let lower = trimmed.to_lowercase();
+
+            // Numeric (1-10) or case-insensitive name match. Display names
+            // (e.g. "Lawful Good", "Neutral" for TrueNeutral) are used for
+            // prose matching since they're what the prompt shows.
+            let chosen: Alignment = if let Ok(n) = trimmed.parse::<usize>() {
+                if (1..=ALIGNMENT_OPTIONS.len()).contains(&n) {
+                    ALIGNMENT_OPTIONS[n - 1]
+                } else {
+                    return vec![format!(
+                        "Please choose a number 1-{} or type an alignment name.",
+                        ALIGNMENT_OPTIONS.len(),
+                    )];
+                }
+            } else {
+                match ALIGNMENT_OPTIONS.iter().copied()
+                    .find(|a| a.to_string().to_lowercase() == lower)
+                {
+                    Some(a) => a,
+                    None => {
+                        let names: Vec<String> = ALIGNMENT_OPTIONS.iter()
+                            .map(|a| a.to_string()).collect();
+                        return vec![format!(
+                            "Unknown alignment. Pick a number 1-{} or type one of: {}.",
+                            ALIGNMENT_OPTIONS.len(),
+                            names.join(", "),
+                        )];
+                    }
+                }
+            };
+
+            state.character.alignment = chosen;
             state.game_phase = GamePhase::CharacterCreation(CreationStep::ChooseName);
 
-            vec!["Skills chosen! Enter your character's name:".to_string()]
+            vec![
+                format!("Alignment: {}. Enter your character's name:", chosen),
+            ]
         }
         CreationStep::ChooseName => {
             let name = input.trim().to_string();
@@ -4623,6 +4688,121 @@ mod tests {
             "Got: {:?}", output.text);
     }
 
+    // ---- ChooseAlignment step (#35) ----
+
+    /// Helper: drive a fresh character through the creation wizard up to the
+    /// point where ChooseAlignment is the active step. Returns the state JSON
+    /// with the game phase parked at `ChooseAlignment`.
+    fn state_at_choose_alignment() -> String {
+        let output = new_game(42, false);
+        let output = process_input(&output.state_json, "1"); // Human
+        let output = process_input(&output.state_json, "Fighter");
+        let output = process_input(&output.state_json, "1"); // Acolyte
+        let output = process_input(&output.state_json, "default"); // origin feat
+        let output = process_input(&output.state_json, "2"); // +1/+1/+1
+        let output = process_input(&output.state_json, "1"); // Standard array
+        let output = process_input(&output.state_json, "15 14 13 12 10 8");
+        let output = process_input(&output.state_json, "1 2"); // skills
+        output.state_json
+    }
+
+    #[test]
+    fn test_choose_skills_advances_to_choose_alignment() {
+        let state = state_at_choose_alignment();
+        let loaded: GameState = serde_json::from_str(&state).unwrap();
+        assert_eq!(
+            loaded.game_phase,
+            GamePhase::CharacterCreation(CreationStep::ChooseAlignment),
+            "After skills, the wizard should advance to ChooseAlignment, not ChooseName",
+        );
+    }
+
+    #[test]
+    fn test_choose_alignment_prompt_lists_all_ten_options() {
+        let output = new_game(42, false);
+        let output = process_input(&output.state_json, "1");
+        let output = process_input(&output.state_json, "Fighter");
+        let output = process_input(&output.state_json, "1");
+        let output = process_input(&output.state_json, "default");
+        let output = process_input(&output.state_json, "2");
+        let output = process_input(&output.state_json, "1");
+        let output = process_input(&output.state_json, "15 14 13 12 10 8");
+        let output = process_input(&output.state_json, "1 2");
+        // The prompt for ChooseAlignment should list all 10 alignments.
+        let joined = output.text.join("\n");
+        assert!(joined.contains("Lawful Good"), "prompt should list Lawful Good. Got:\n{}", joined);
+        assert!(joined.contains("Chaotic Evil"), "prompt should list Chaotic Evil. Got:\n{}", joined);
+        assert!(joined.contains("Unaligned"), "prompt should list Unaligned. Got:\n{}", joined);
+        assert!(joined.contains("alignment"), "prompt should mention alignment. Got:\n{}", joined);
+    }
+
+    #[test]
+    fn test_choose_alignment_numeric_selection_sets_alignment_and_advances() {
+        use crate::types::Alignment;
+        let state = state_at_choose_alignment();
+        // Option 1 = Lawful Good (first in the canonical order).
+        let output = process_input(&state, "1");
+        let loaded: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(loaded.character.alignment, Alignment::LawfulGood);
+        assert_eq!(
+            loaded.game_phase,
+            GamePhase::CharacterCreation(CreationStep::ChooseName),
+            "After choosing alignment, the wizard should advance to ChooseName",
+        );
+        // The subsequent prompt should ask for a name.
+        assert!(output.text.iter().any(|t| t.to_lowercase().contains("name")),
+            "Expected name prompt after alignment. Got: {:?}", output.text);
+    }
+
+    #[test]
+    fn test_choose_alignment_accepts_all_ten_by_number() {
+        use crate::types::Alignment;
+        let expected = [
+            Alignment::LawfulGood, Alignment::NeutralGood, Alignment::ChaoticGood,
+            Alignment::LawfulNeutral, Alignment::TrueNeutral, Alignment::ChaoticNeutral,
+            Alignment::LawfulEvil, Alignment::NeutralEvil, Alignment::ChaoticEvil,
+            Alignment::Unaligned,
+        ];
+        for (idx, expected_alignment) in expected.iter().enumerate() {
+            let state = state_at_choose_alignment();
+            let input = format!("{}", idx + 1);
+            let output = process_input(&state, &input);
+            let loaded: GameState = serde_json::from_str(&output.state_json).unwrap();
+            assert_eq!(
+                &loaded.character.alignment, expected_alignment,
+                "input {} should set alignment {:?}", input, expected_alignment,
+            );
+        }
+    }
+
+    #[test]
+    fn test_choose_alignment_accepts_name_case_insensitive() {
+        use crate::types::Alignment;
+        let state = state_at_choose_alignment();
+        let output = process_input(&state, "chaotic good");
+        let loaded: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(loaded.character.alignment, Alignment::ChaoticGood);
+    }
+
+    #[test]
+    fn test_choose_alignment_rejects_invalid_input() {
+        let state = state_at_choose_alignment();
+        let output = process_input(&state, "11"); // out of range
+        let loaded: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(
+            loaded.game_phase,
+            GamePhase::CharacterCreation(CreationStep::ChooseAlignment),
+            "Invalid input should leave the wizard parked at ChooseAlignment",
+        );
+        let output = process_input(&output.state_json, "invalid");
+        let loaded: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(
+            loaded.game_phase,
+            GamePhase::CharacterCreation(CreationStep::ChooseAlignment),
+            "Non-numeric unknown input should also stay on ChooseAlignment",
+        );
+    }
+
     #[test]
     fn test_full_character_creation_flow() {
         let output = new_game(42, false);
@@ -4662,6 +4842,11 @@ mod tests {
 
         // Choose skills (Fighter gets 2)
         let output = process_input(&output.state_json, "1 2");
+        assert!(output.text.iter().any(|t| t.contains("alignment")),
+            "Expected alignment prompt after skills. Got: {:?}", output.text);
+
+        // Choose alignment (5 = Neutral / TrueNeutral)
+        let output = process_input(&output.state_json, "5");
         assert!(output.text.iter().any(|t| t.contains("name")));
 
         // Choose name
@@ -4690,6 +4875,7 @@ mod tests {
         let output = process_input(&output.state_json, "1"); // Standard array
         let output = process_input(&output.state_json, "15 14 13 12 10 8");
         let output = process_input(&output.state_json, "1 2 3 4"); // 4 rogue skills
+        let output = process_input(&output.state_json, "5"); // alignment: Neutral
         let output = process_input(&output.state_json, "Shadow");
         let state: GameState = serde_json::from_str(&output.state_json).unwrap();
 
@@ -4726,6 +4912,7 @@ mod tests {
         let output = process_input(&output.state_json, "1"); // Standard array
         let output = process_input(&output.state_json, "15 14 13 12 10 8");
         let output = process_input(&output.state_json, "1 2 3 4");
+        let output = process_input(&output.state_json, "5"); // alignment: Neutral
         let output = process_input(&output.state_json, "Shadow");
         let state: GameState = serde_json::from_str(&output.state_json).unwrap();
 
@@ -4751,6 +4938,7 @@ mod tests {
         let output = process_input(&output.state_json, "1"); // Standard array
         let output = process_input(&output.state_json, "15 14 13 12 10 8");
         let output = process_input(&output.state_json, "1 2"); // 2 wizard skills
+        let output = process_input(&output.state_json, "5"); // alignment: Neutral
         let output = process_input(&output.state_json, "Sage");
         let state: GameState = serde_json::from_str(&output.state_json).unwrap();
 
@@ -4780,6 +4968,7 @@ mod tests {
         let output = process_input(&output.state_json, "1"); // Standard array
         let output = process_input(&output.state_json, "8 15 14 13 12 10"); // DEX=15 for max
         let output = process_input(&output.state_json, "1 2 3 4");
+        let output = process_input(&output.state_json, "5"); // alignment: Neutral
         let output = process_input(&output.state_json, "Shadow");
         let state: GameState = serde_json::from_str(&output.state_json).unwrap();
 
@@ -4800,6 +4989,7 @@ mod tests {
         let output = process_input(&output.state_json, "1"); // Standard array
         let output = process_input(&output.state_json, "15 14 13 12 10 8");
         let output = process_input(&output.state_json, "1 2");
+        let output = process_input(&output.state_json, "5"); // alignment: Neutral
         let output = process_input(&output.state_json, "Max");
         let state: GameState = serde_json::from_str(&output.state_json).unwrap();
 
@@ -4831,6 +5021,7 @@ mod tests {
         let output = process_input(&output.state_json, "1");
         let output = process_input(&output.state_json, "15 14 13 12 10 8");
         let output = process_input(&output.state_json, "1 2");
+        let output = process_input(&output.state_json, "5"); // alignment: Neutral
         let output = process_input(&output.state_json, "Hero");
         let state: GameState = serde_json::from_str(&output.state_json).unwrap();
         assert_eq!(state.pending_background_pattern, None,
@@ -4849,6 +5040,7 @@ mod tests {
         let output = process_input(&output.state_json, "1"); // Standard array
         let output = process_input(&output.state_json, "15 14 13 12 10 8");
         let output = process_input(&output.state_json, "1 2"); // 2 skills
+        let output = process_input(&output.state_json, "5"); // alignment: Neutral
         let output = process_input(&output.state_json, "Aldric");
 
         let state: GameState = serde_json::from_str(&output.state_json).unwrap();
@@ -4894,6 +5086,7 @@ mod tests {
         let output = process_input(&output.state_json, "1"); // Standard array
         let output = process_input(&output.state_json, "15 14 13 12 10 8");
         let output = process_input(&output.state_json, "1 2 3 4"); // 4 skills
+        let output = process_input(&output.state_json, "5"); // alignment: Neutral
         let output = process_input(&output.state_json, "Shadow");
 
         let state: GameState = serde_json::from_str(&output.state_json).unwrap();
@@ -4930,6 +5123,7 @@ mod tests {
         let output = process_input(&output.state_json, "1"); // Standard array
         let output = process_input(&output.state_json, "15 14 13 12 10 8");
         let output = process_input(&output.state_json, "1 2"); // 2 skills
+        let output = process_input(&output.state_json, "5"); // alignment: Neutral
         let output = process_input(&output.state_json, "Gandalf");
 
         let state: GameState = serde_json::from_str(&output.state_json).unwrap();
@@ -4963,6 +5157,7 @@ mod tests {
         let output = process_input(&output.state_json, "1"); // Standard array
         let output = process_input(&output.state_json, "15 14 13 12 10 8");
         let output = process_input(&output.state_json, "1 2"); // 2 skills
+        let output = process_input(&output.state_json, "5"); // alignment: Neutral
         let output = process_input(&output.state_json, "Aldric");
 
         let state: GameState = serde_json::from_str(&output.state_json).unwrap();
@@ -4992,6 +5187,7 @@ mod tests {
         let output = process_input(&output.state_json, "1"); // Standard array
         let output = process_input(&output.state_json, "15 14 13 12 10 8");
         let output = process_input(&output.state_json, "1 2"); // 2 skills
+        let output = process_input(&output.state_json, "5"); // alignment: Neutral
         let output = process_input(&output.state_json, "Aldric");
 
         let state: GameState = serde_json::from_str(&output.state_json).unwrap();
@@ -6937,6 +7133,7 @@ mod tests {
         let output = process_input(&output.state_json, "1"); // standard array
         let output = process_input(&output.state_json, "15 14 13 12 10 8"); // scores
         let output = process_input(&output.state_json, "1 2"); // skills
+        let output = process_input(&output.state_json, "5"); // alignment: Neutral
         let output = process_input(&output.state_json, "TestHero"); // name
 
         let state: GameState = serde_json::from_str(&output.state_json).unwrap();
