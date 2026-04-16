@@ -150,6 +150,40 @@ pub type NpcId = u32;
 pub type ItemId = u32;
 pub type TriggerId = u32;
 
+/// Weapon Mastery property per 2024 SRD. Every weapon has exactly one
+/// mastery. The mastery is static data on the weapon; whether a character
+/// can *use* it depends on unlocked mastery slots (see
+/// `docs/specs/weapon-mastery.md`). Defined here in `types.rs` because
+/// `combat`, `equipment`, and `character` all reference it and feature
+/// modules cannot depend on each other directly (see the module-isolation
+/// decision).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Mastery {
+    Cleave,
+    Graze,
+    Nick,
+    Push,
+    Sap,
+    Slow,
+    Topple,
+    Vex,
+}
+
+impl std::fmt::Display for Mastery {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Mastery::Cleave => write!(f, "Cleave"),
+            Mastery::Graze => write!(f, "Graze"),
+            Mastery::Nick => write!(f, "Nick"),
+            Mastery::Push => write!(f, "Push"),
+            Mastery::Sap => write!(f, "Sap"),
+            Mastery::Slow => write!(f, "Slow"),
+            Mastery::Topple => write!(f, "Topple"),
+            Mastery::Vex => write!(f, "Vex"),
+        }
+    }
+}
+
 /// Nine-axis alignment plus Unaligned. Shared between characters (chosen at
 /// creation) and monsters (declared per stat block). Canonical definition
 /// lives here in `types.rs` because it is referenced across feature modules
@@ -255,5 +289,52 @@ mod tests {
         assert_eq!(Alignment::LawfulGood.to_string(), "Lawful Good");
         assert_eq!(Alignment::TrueNeutral.to_string(), "Neutral");
         assert_eq!(Alignment::Unaligned.to_string(), "Unaligned");
+    }
+
+    // ---- Weapon Mastery (2024 SRD) ----
+
+    #[test]
+    fn test_mastery_all_variants_exist() {
+        // All 8 SRD 2024 masteries must exist as enum variants.
+        let _ = [
+            Mastery::Cleave,
+            Mastery::Graze,
+            Mastery::Nick,
+            Mastery::Push,
+            Mastery::Sap,
+            Mastery::Slow,
+            Mastery::Topple,
+            Mastery::Vex,
+        ];
+    }
+
+    #[test]
+    fn test_mastery_display_matches_srd_names() {
+        assert_eq!(Mastery::Cleave.to_string(), "Cleave");
+        assert_eq!(Mastery::Graze.to_string(), "Graze");
+        assert_eq!(Mastery::Nick.to_string(), "Nick");
+        assert_eq!(Mastery::Push.to_string(), "Push");
+        assert_eq!(Mastery::Sap.to_string(), "Sap");
+        assert_eq!(Mastery::Slow.to_string(), "Slow");
+        assert_eq!(Mastery::Topple.to_string(), "Topple");
+        assert_eq!(Mastery::Vex.to_string(), "Vex");
+    }
+
+    #[test]
+    fn test_mastery_serde_roundtrip() {
+        for m in [
+            Mastery::Cleave,
+            Mastery::Graze,
+            Mastery::Nick,
+            Mastery::Push,
+            Mastery::Sap,
+            Mastery::Slow,
+            Mastery::Topple,
+            Mastery::Vex,
+        ] {
+            let json = serde_json::to_string(&m).unwrap();
+            let back: Mastery = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, m);
+        }
     }
 }
