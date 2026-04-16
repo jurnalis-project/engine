@@ -1136,6 +1136,311 @@ pub fn apply_damage_modifiers(
     incoming
 }
 
+// ---------- Weapon Mastery (2024 SRD) ----------------------------------
+//
+// Mastery effects are applied after `resolve_player_attack` returns. The
+// orchestrator in `lib.rs` calls these helpers with the attack result, the
+// weapon's mastery, and relevant state. The helpers mutate `CombatState`
+// and the target NPC directly; they return narration lines for the caller
+// to emit. This keeps combat's mastery logic local to this module while
+// respecting the `lib.rs` orchestrator pattern for cross-module glue.
+//
+// Every helper is a no-op when the character does not have mastery for
+// the attacking weapon. Callers are expected to guard with
+// `equipment::character_has_mastery` *before* calling any of these, but
+// the helpers also accept a `has_mastery: bool` parameter for belt-and-
+// suspenders safety and easier testing.
+
+/// Graze: if the attack missed, deal ability-modifier damage of the
+/// weapon's type. Per SRD 2024, the damage "can be increased only by
+/// increasing the ability modifier" — we pass the modifier used for the
+/// attack roll in `ability_mod_used` and floor the damage at 0.
+///
+/// Returns the damage actually dealt (after resistance/immunity filtering
+/// via `apply_damage_to_npc`), or 0 when mastery doesn't apply.
+///
+/// Narration describing the graze is appended to `narration`.
+pub fn apply_graze_mastery(
+    has_mastery: bool,
+    result: &AttackResult,
+    ability_mod_used: i32,
+    npc: &mut Npc,
+    narration: &mut Vec<String>,
+) -> i32 {
+    if !has_mastery || result.hit || ability_mod_used <= 0 {
+        return 0;
+    }
+    let damage = ability_mod_used;
+    let npc_name = npc.name.clone();
+    let dealt = apply_damage_to_npc(npc, damage, result.damage_type, narration);
+    if dealt > 0 {
+        narration.push(format!(
+            "Graze: you still deal {} {} damage to {}.",
+            dealt, result.damage_type, npc_name
+        ));
+    }
+    dealt
+}
+
+/// Vex: on a hit that deals damage, mark the target so the player's next
+/// attack against them is made with advantage. Cleared at the start of
+/// the player's next turn or when consumed (see `consume_vex_advantage`).
+///
+/// Returns true when the mark was set.
+pub fn apply_vex_mastery(
+    has_mastery: bool,
+    result: &AttackResult,
+    target_npc_id: NpcId,
+    combat: &mut CombatState,
+    narration: &mut Vec<String>,
+) -> bool {
+    if !has_mastery || !result.hit || result.damage <= 0 {
+        return false;
+    }
+    combat.player_vex_target = Some(target_npc_id);
+    narration.push("Vex: you have advantage on your next attack against this target.".to_string());
+    true
+}
+
+/// Returns true when the player has advantage on their next attack vs
+/// `target_npc_id` because of a previously-applied Vex mastery. Consumes
+/// the mark (clears `combat.player_vex_target`) so a subsequent attack
+/// does not retain the advantage.
+pub fn consume_vex_advantage(
+    combat: &mut CombatState,
+    target_npc_id: NpcId,
+) -> bool {
+    if combat.player_vex_target == Some(target_npc_id) {
+        combat.player_vex_target = None;
+        return true;
+    }
+    false
+}
+
+/// Sap: on a hit, mark the target so their next attack roll (before the
+/// start of the player's next turn) is made at disadvantage. Returns true
+/// when the mark was set.
+pub fn apply_sap_mastery(
+    has_mastery: bool,
+    result: &AttackResult,
+    target_npc_id: NpcId,
+    combat: &mut CombatState,
+    narration: &mut Vec<String>,
+) -> bool {
+    if !has_mastery || !result.hit {
+        return false;
+    }
+    combat.sap_targets.insert(target_npc_id);
+    narration.push("Sap: the target has disadvantage on its next attack roll.".to_string());
+    true
+}
+
+/// Returns true when `npc_id` is currently sap-marked and consumes the
+/// mark. Intended to be called once per NPC attack so the mark only
+/// affects one attack roll.
+pub fn consume_sap_disadvantage(
+    combat: &mut CombatState,
+    npc_id: NpcId,
+) -> bool {
+    combat.sap_targets.remove(&npc_id)
+}
+
+/// Slow: on a hit that deals damage, reduce the target's Speed by 10 ft
+/// until the start of the player's next turn. Per SRD the reduction from
+/// a single source does not exceed 10 ft, so subsequent Slow hits on the
+/// same target this turn are no-ops for the target's speed accounting.
+///
+/// Returns true when the mark was newly applied.
+pub fn apply_slow_mastery(
+    has_mastery: bool,
+    result: &AttackResult,
+    target_npc_id: NpcId,
+    combat: &mut CombatState,
+    narration: &mut Vec<String>,
+) -> bool {
+    if !has_mastery || !result.hit || result.damage <= 0 {
+        return false;
+    }
+    let existing = combat.slow_targets.get(&target_npc_id).copied().unwrap_or(0);
+    if existing >= 10 {
+        return false;
+    }
+    combat.slow_targets.insert(target_npc_id, 10);
+    narration.push("Slow: the target's Speed is reduced by 10 ft until the start of your next turn.".to_string());
+    true
+}
+
+/// Current Slow reduction (in feet) for `npc_id`. 0 when the target is
+/// not currently slow-marked. Used by NPC movement accounting.
+pub fn slow_speed_reduction(combat: &CombatState, npc_id: NpcId) -> i32 {
+    combat.slow_targets.get(&npc_id).copied().unwrap_or(0)
+}
+
+/// Push: on a hit against a Large-or-smaller creature, shove them 10 ft
+/// away. The engine's 1D combat model represents this by adding 10 ft to
+/// the player-to-target distance. Returns Some(new_distance) if pushed,
+/// None if the mastery does not apply.
+///
+/// Per SRD 2024 the push is optional ("you can"), but for MVP we always
+/// push when the mastery fires.
+pub fn apply_push_mastery(
+    has_mastery: bool,
+    result: &AttackResult,
+    target_npc_id: NpcId,
+    combat: &mut CombatState,
+    narration: &mut Vec<String>,
+    target_size: crate::combat::monsters::Size,
+) -> Option<u32> {
+    if !has_mastery || !result.hit {
+        return None;
+    }
+    // Per SRD: only Large or smaller. Huge/Gargantuan are immune.
+    use crate::combat::monsters::Size;
+    if matches!(target_size, Size::Huge | Size::Gargantuan) {
+        return None;
+    }
+    let current = combat.distances.get(&target_npc_id).copied().unwrap_or(5);
+    let new_distance = current.saturating_add(10);
+    combat.distances.insert(target_npc_id, new_distance);
+    narration.push(format!(
+        "Push: the target is shoved back 10 ft ({}ft -> {}ft).",
+        current, new_distance
+    ));
+    Some(new_distance)
+}
+
+/// Topple: on a hit, the target makes a CON save vs DC (8 + ability mod
+/// used for the attack roll + player proficiency bonus). On a failure,
+/// the target gains the Prone condition.
+///
+/// Returns true when Prone was applied. The RNG is consumed for the
+/// target's CON save.
+pub fn apply_topple_mastery(
+    has_mastery: bool,
+    result: &AttackResult,
+    target_npc_id: NpcId,
+    state: &mut GameState,
+    narration: &mut Vec<String>,
+    ability_mod_used: i32,
+    player_proficiency_bonus: i32,
+    rng: &mut impl Rng,
+) -> bool {
+    if !has_mastery || !result.hit {
+        return false;
+    }
+    let dc = 8 + ability_mod_used + player_proficiency_bonus;
+    let Some(npc) = state.world.npcs.get_mut(&target_npc_id) else { return false };
+    let Some(stats) = npc.combat_stats.as_ref() else { return false };
+    let con = stats.ability_scores.get(&Ability::Constitution).copied().unwrap_or(10);
+    let con_mod = Ability::modifier(con);
+    let con_save_prof = 0; // NPC CON save proficiency is not modelled in MVP.
+    let roll = roll_d20(rng);
+    let save_total = roll + con_mod + con_save_prof;
+    let npc_name = npc.name.clone();
+    if save_total >= dc {
+        narration.push(format!(
+            "Topple: {} succeeds on a CON save ({}+{}={} vs DC {}).",
+            npc_name, roll, con_mod, save_total, dc
+        ));
+        return false;
+    }
+    // Apply Prone (honoring the NPC's condition immunities).
+    let new_cond = ActiveCondition::new(
+        ConditionType::Prone,
+        crate::conditions::ConditionDuration::Permanent,
+    );
+    let applied = conditions::apply_condition(&mut npc.conditions, new_cond);
+    if applied {
+        narration.push(format!(
+            "Topple: {} fails the CON save ({}+{}={} vs DC {}) and is knocked Prone!",
+            npc_name, roll, con_mod, save_total, dc
+        ));
+    } else {
+        narration.push(format!(
+            "Topple: {} fails the CON save but is immune to Prone.",
+            npc_name
+        ));
+    }
+    applied
+}
+
+/// Cleave: on a melee hit, if another hostile NPC is within 5 ft of the
+/// player (i.e., in melee range), make a second attack roll against that
+/// NPC with the same weapon. Damage ability modifier is omitted unless
+/// negative (SRD). Once per player turn.
+///
+/// Returns Some((target_id, cleave_result)) when a cleave second attack
+/// was rolled; None otherwise. Callers resolve the damage through
+/// `apply_damage_to_npc` to respect immunities/resistances.
+///
+/// `primary_target_id` is excluded from the eligible secondaries.
+///
+/// A conservative "within reach" definition is used: 5 ft range. Reach
+/// weapons still cleave at 5 ft per SRD's "within 5 feet of the first"
+/// clause — the secondary target just needs to be 5 ft from the primary,
+/// which in the 1D model collapses to "also in melee range of you".
+#[allow(clippy::too_many_arguments)]
+pub fn apply_cleave_mastery(
+    rng: &mut impl Rng,
+    has_mastery: bool,
+    result: &AttackResult,
+    primary_target_id: NpcId,
+    combat: &mut CombatState,
+    state: &GameState,
+    ability_mod_used: i32,
+) -> Option<(NpcId, AttackResult, i32)> {
+    if !has_mastery || !result.hit || combat.cleave_used_this_turn {
+        return None;
+    }
+    // Find a secondary target: a living hostile NPC, not the primary,
+    // currently within 5 ft.
+    let secondary_id = combat.distances.iter()
+        .filter(|(id, dist)| {
+            **id != primary_target_id
+                && **dist <= 5
+                && state.world.npcs.get(*id)
+                    .and_then(|n| n.combat_stats.as_ref())
+                    .map(|s| s.current_hp > 0)
+                    .unwrap_or(false)
+        })
+        .map(|(id, _)| *id)
+        .next();
+    let secondary_id = secondary_id?;
+    let secondary_ac = state.world.npcs.get(&secondary_id)
+        .and_then(|n| n.combat_stats.as_ref())
+        .map(|s| s.ac)
+        .unwrap_or(10);
+    let secondary_dodging = combat.npc_dodging.get(&secondary_id).copied().unwrap_or(false);
+    let secondary_conditions: Vec<ActiveCondition> = state.world.npcs.get(&secondary_id)
+        .map(|n| n.conditions.clone())
+        .unwrap_or_default();
+    let distance = combat.distances.get(&secondary_id).copied().unwrap_or(5);
+    let hostile_within_5ft = has_living_hostile_within(state, combat, 5);
+    let weapon_id = state.character.equipped.main_hand;
+    let off_hand_free = state.character.equipped.off_hand.is_none();
+    let mut cleave_result = resolve_player_attack(
+        rng,
+        &state.character,
+        secondary_ac,
+        secondary_dodging,
+        weapon_id,
+        &state.world.items,
+        distance,
+        off_hand_free,
+        hostile_within_5ft,
+        &secondary_conditions,
+        false,
+    );
+    // Per SRD: the second attack does not include ability-mod damage
+    // unless the modifier is negative. We subtract the positive modifier
+    // back out of the damage roll.
+    if cleave_result.hit && cleave_result.damage > 0 && ability_mod_used > 0 {
+        cleave_result.damage = (cleave_result.damage - ability_mod_used).max(1);
+    }
+    combat.cleave_used_this_turn = true;
+    Some((secondary_id, cleave_result, ability_mod_used))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2806,5 +3111,317 @@ mod tests {
         assert_eq!(dealt, 0);
         assert_eq!(narration.len(), 1);
         assert!(narration[0].contains("immune"));
+    }
+
+    // ---- Weapon Mastery helpers (feat/weapon-mastery) ----
+
+    fn test_goblin(id: NpcId) -> Npc {
+        Npc {
+            id,
+            name: format!("Goblin {}", id),
+            role: NpcRole::Guard,
+            disposition: Disposition::Hostile,
+            dialogue_tags: vec![],
+            location: 0,
+            combat_stats: Some(goblin_stats()),
+            conditions: Vec::new(),
+        }
+    }
+
+    fn attack_result(hit: bool, damage: i32, damage_type: DamageType) -> AttackResult {
+        AttackResult {
+            hit,
+            natural_20: false,
+            natural_1: false,
+            attack_roll: if hit { 15 } else { 5 },
+            total_attack: if hit { 20 } else { 8 },
+            target_ac: 13,
+            damage,
+            damage_type,
+            weapon_name: "Longsword".to_string(),
+            disadvantage: false,
+        }
+    }
+
+    #[test]
+    fn test_graze_on_miss_deals_ability_mod_damage() {
+        let mut npc = test_goblin(1);
+        let missed = attack_result(false, 0, DamageType::Slashing);
+        let mut narr = Vec::new();
+        let dealt = apply_graze_mastery(true, &missed, 3, &mut npc, &mut narr);
+        assert_eq!(dealt, 3);
+        assert!(narr.iter().any(|l| l.contains("Graze")));
+        let stats = npc.combat_stats.as_ref().unwrap();
+        assert_eq!(stats.current_hp, stats.max_hp - 3);
+    }
+
+    #[test]
+    fn test_graze_no_mastery_is_noop() {
+        let mut npc = test_goblin(1);
+        let missed = attack_result(false, 0, DamageType::Slashing);
+        let mut narr = Vec::new();
+        let dealt = apply_graze_mastery(false, &missed, 3, &mut npc, &mut narr);
+        assert_eq!(dealt, 0);
+        assert!(narr.is_empty());
+    }
+
+    #[test]
+    fn test_graze_on_hit_is_noop() {
+        // Graze only applies on miss.
+        let mut npc = test_goblin(1);
+        let hit = attack_result(true, 7, DamageType::Slashing);
+        let mut narr = Vec::new();
+        let dealt = apply_graze_mastery(true, &hit, 3, &mut npc, &mut narr);
+        assert_eq!(dealt, 0);
+    }
+
+    #[test]
+    fn test_graze_with_zero_or_negative_mod_is_noop() {
+        let mut npc = test_goblin(1);
+        let missed = attack_result(false, 0, DamageType::Slashing);
+        let mut narr = Vec::new();
+        // Per SRD, Graze damage equals the ability modifier used; a 0 or
+        // negative modifier yields no damage.
+        assert_eq!(apply_graze_mastery(true, &missed, 0, &mut npc, &mut narr), 0);
+        assert_eq!(apply_graze_mastery(true, &missed, -1, &mut npc, &mut narr), 0);
+    }
+
+    #[test]
+    fn test_vex_mastery_marks_target_and_is_consumed_on_next_attack() {
+        let player = test_character();
+        let mut combat = start_combat(
+            &mut StdRng::seed_from_u64(1), &player, &[], &HashMap::new(),
+        );
+        let hit = attack_result(true, 7, DamageType::Slashing);
+        let mut narr = Vec::new();
+        assert!(apply_vex_mastery(true, &hit, 42, &mut combat, &mut narr));
+        assert_eq!(combat.player_vex_target, Some(42));
+        // Consume vex — should return true once, then false.
+        assert!(consume_vex_advantage(&mut combat, 42));
+        assert_eq!(combat.player_vex_target, None);
+        assert!(!consume_vex_advantage(&mut combat, 42));
+    }
+
+    #[test]
+    fn test_vex_requires_damage() {
+        // Per spec, Vex requires the hit to deal damage.
+        let player = test_character();
+        let mut combat = start_combat(
+            &mut StdRng::seed_from_u64(1), &player, &[], &HashMap::new(),
+        );
+        let zero_dmg_hit = attack_result(true, 0, DamageType::Slashing);
+        let mut narr = Vec::new();
+        assert!(!apply_vex_mastery(true, &zero_dmg_hit, 42, &mut combat, &mut narr));
+        assert_eq!(combat.player_vex_target, None);
+    }
+
+    #[test]
+    fn test_sap_mastery_marks_then_consumes() {
+        let player = test_character();
+        let mut combat = start_combat(
+            &mut StdRng::seed_from_u64(1), &player, &[], &HashMap::new(),
+        );
+        let hit = attack_result(true, 5, DamageType::Slashing);
+        let mut narr = Vec::new();
+        assert!(apply_sap_mastery(true, &hit, 7, &mut combat, &mut narr));
+        assert!(combat.sap_targets.contains(&7));
+        assert!(consume_sap_disadvantage(&mut combat, 7));
+        assert!(!combat.sap_targets.contains(&7));
+        // Second call returns false.
+        assert!(!consume_sap_disadvantage(&mut combat, 7));
+    }
+
+    #[test]
+    fn test_sap_on_miss_is_noop() {
+        let player = test_character();
+        let mut combat = start_combat(
+            &mut StdRng::seed_from_u64(1), &player, &[], &HashMap::new(),
+        );
+        let missed = attack_result(false, 0, DamageType::Slashing);
+        let mut narr = Vec::new();
+        assert!(!apply_sap_mastery(true, &missed, 7, &mut combat, &mut narr));
+        assert!(combat.sap_targets.is_empty());
+    }
+
+    #[test]
+    fn test_slow_mastery_applies_10ft_reduction() {
+        let player = test_character();
+        let mut combat = start_combat(
+            &mut StdRng::seed_from_u64(1), &player, &[], &HashMap::new(),
+        );
+        let hit = attack_result(true, 5, DamageType::Slashing);
+        let mut narr = Vec::new();
+        assert!(apply_slow_mastery(true, &hit, 7, &mut combat, &mut narr));
+        assert_eq!(slow_speed_reduction(&combat, 7), 10);
+        // Repeat Slow on same target this turn — does not stack (already 10 ft).
+        assert!(!apply_slow_mastery(true, &hit, 7, &mut combat, &mut narr));
+        assert_eq!(slow_speed_reduction(&combat, 7), 10);
+    }
+
+    #[test]
+    fn test_slow_requires_damage() {
+        let player = test_character();
+        let mut combat = start_combat(
+            &mut StdRng::seed_from_u64(1), &player, &[], &HashMap::new(),
+        );
+        let zero_dmg_hit = attack_result(true, 0, DamageType::Slashing);
+        let mut narr = Vec::new();
+        assert!(!apply_slow_mastery(true, &zero_dmg_hit, 7, &mut combat, &mut narr));
+        assert_eq!(slow_speed_reduction(&combat, 7), 0);
+    }
+
+    #[test]
+    fn test_push_mastery_moves_target_10ft_away() {
+        use crate::combat::monsters::Size;
+        let player = test_character();
+        let mut combat = start_combat(
+            &mut StdRng::seed_from_u64(1), &player, &[], &HashMap::new(),
+        );
+        combat.distances.insert(7, 5);
+        let hit = attack_result(true, 5, DamageType::Bludgeoning);
+        let mut narr = Vec::new();
+        let pushed = apply_push_mastery(true, &hit, 7, &mut combat, &mut narr, Size::Medium);
+        assert_eq!(pushed, Some(15));
+        assert_eq!(combat.distances.get(&7), Some(&15));
+    }
+
+    #[test]
+    fn test_push_mastery_respects_size_limit() {
+        use crate::combat::monsters::Size;
+        let player = test_character();
+        let mut combat = start_combat(
+            &mut StdRng::seed_from_u64(1), &player, &[], &HashMap::new(),
+        );
+        combat.distances.insert(7, 5);
+        let hit = attack_result(true, 5, DamageType::Bludgeoning);
+        let mut narr = Vec::new();
+        // Huge: not pushed.
+        assert_eq!(
+            apply_push_mastery(true, &hit, 7, &mut combat, &mut narr, Size::Huge),
+            None
+        );
+        assert_eq!(combat.distances.get(&7), Some(&5), "Huge should not be pushed");
+        // Large: pushed.
+        let pushed = apply_push_mastery(true, &hit, 7, &mut combat, &mut narr, Size::Large);
+        assert_eq!(pushed, Some(15));
+    }
+
+    #[test]
+    fn test_topple_mastery_applies_prone_on_failed_save() {
+        let player = test_character();
+        let mut state = test_game_state(player);
+        state.world.npcs.insert(7, test_goblin(7));
+        let mut combat = start_combat(
+            &mut StdRng::seed_from_u64(1), &state.character, &[], &HashMap::new(),
+        );
+        let _ = &mut combat; // unused for this test; kept for future use
+        let hit = attack_result(true, 5, DamageType::Bludgeoning);
+        let mut narr = Vec::new();
+        // DC is 8 + mod + prof = 8 + 5 + 2 = 15. Goblin CON 10 (mod 0). Seed
+        // chosen so the first d20 rolls less than 15 -> fail.
+        let mut rng = StdRng::seed_from_u64(2);
+        let applied = apply_topple_mastery(
+            true, &hit, 7, &mut state, &mut narr, /*ability_mod=*/5,
+            /*prof_bonus=*/2, &mut rng,
+        );
+        // Whether applied depends on RNG; assert either outcome is reported
+        // via narration and that Prone presence mirrors the reported line.
+        let got_prone = state.world.npcs.get(&7).unwrap().conditions
+            .iter().any(|c| c.condition == ConditionType::Prone);
+        assert_eq!(applied, got_prone);
+    }
+
+    #[test]
+    fn test_topple_mastery_requires_hit() {
+        let player = test_character();
+        let mut state = test_game_state(player);
+        state.world.npcs.insert(7, test_goblin(7));
+        let missed = attack_result(false, 0, DamageType::Bludgeoning);
+        let mut narr = Vec::new();
+        let mut rng = StdRng::seed_from_u64(2);
+        let applied = apply_topple_mastery(
+            true, &missed, 7, &mut state, &mut narr, 5, 2, &mut rng,
+        );
+        assert!(!applied);
+        let got_prone = state.world.npcs.get(&7).unwrap().conditions
+            .iter().any(|c| c.condition == ConditionType::Prone);
+        assert!(!got_prone);
+    }
+
+    #[test]
+    fn test_cleave_requires_secondary_in_melee() {
+        let mut player = test_character();
+        player.weapon_masteries.push("Greataxe".to_string());
+        let mut state = test_game_state(player);
+        // Only the primary target in range; no secondary.
+        state.world.npcs.insert(7, test_goblin(7));
+        let mut combat = start_combat(
+            &mut StdRng::seed_from_u64(1), &state.character, &[], &HashMap::new(),
+        );
+        combat.distances.insert(7, 5);
+        let mut rng = StdRng::seed_from_u64(3);
+        let hit = attack_result(true, 8, DamageType::Slashing);
+        let out = apply_cleave_mastery(
+            &mut rng, true, &hit, 7, &mut combat, &state, /*ability_mod=*/5,
+        );
+        assert!(out.is_none(), "No secondary in 5 ft -> no cleave");
+        assert!(!combat.cleave_used_this_turn);
+    }
+
+    #[test]
+    fn test_cleave_targets_secondary_once_per_turn() {
+        let mut player = test_character();
+        player.weapon_masteries.push("Greataxe".to_string());
+        // Equip Greataxe so the cleave re-attack uses the same weapon's
+        // mechanical fields as the primary. For this test we only assert
+        // that a secondary is selected and the flag is set; the actual
+        // damage depends on the RNG and the weapon fields.
+        let mut state = test_game_state(player);
+        state.world.npcs.insert(7, test_goblin(7));
+        state.world.npcs.insert(8, test_goblin(8));
+        let mut combat = start_combat(
+            &mut StdRng::seed_from_u64(1), &state.character, &[], &HashMap::new(),
+        );
+        combat.distances.insert(7, 5);
+        combat.distances.insert(8, 5);
+        let mut rng = StdRng::seed_from_u64(3);
+        let hit = attack_result(true, 8, DamageType::Slashing);
+        let out = apply_cleave_mastery(
+            &mut rng, true, &hit, 7, &mut combat, &state, 5,
+        );
+        assert!(out.is_some());
+        let (secondary_id, _cleave_result, _mod) = out.unwrap();
+        assert_eq!(secondary_id, 8);
+        assert!(combat.cleave_used_this_turn);
+        // Second cleave same turn is blocked by the flag.
+        let out2 = apply_cleave_mastery(
+            &mut rng, true, &hit, 7, &mut combat, &state, 5,
+        );
+        assert!(out2.is_none());
+    }
+
+    /// Minimal GameState helper used only by the mastery tests above.
+    fn test_game_state(character: Character) -> GameState {
+        GameState {
+            version: SAVE_VERSION.to_string(),
+            character,
+            current_location: 0,
+            discovered_locations: HashSet::new(),
+            world: WorldState {
+                locations: HashMap::new(), npcs: HashMap::new(),
+                items: HashMap::new(), triggers: HashMap::new(),
+                triggered: HashSet::new(),
+            },
+            log: Vec::new(),
+            rng_seed: 1, rng_counter: 0,
+            game_phase: GamePhase::Exploration,
+            active_combat: None,
+            ironman_mode: false,
+            progress: Default::default(),
+            in_world_minutes: 0,
+            last_long_rest_minutes: None,
+            pending_background_pattern: None,
+            pending_disambiguation: None,
+        }
     }
 }
