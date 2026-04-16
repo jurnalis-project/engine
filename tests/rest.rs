@@ -107,6 +107,8 @@ fn fake_combat() -> CombatState {
         slow_targets: HashMap::new(),
         cleave_used_this_turn: false,
         nick_used_this_turn: false,
+        death_save_successes: 0,
+        death_save_failures: 0,
     }
 }
 

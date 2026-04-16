@@ -494,6 +494,8 @@ mod tests {
             slow_targets: HashMap::new(),
             cleave_used_this_turn: false,
             nick_used_this_turn: false,
+            death_save_successes: 0,
+            death_save_failures: 0,
         });
         assert_eq!(check_rest_allowed(&state), Err(RestDenial::InCombat));
     }
@@ -758,6 +760,8 @@ mod tests {
             slow_targets: HashMap::new(),
             cleave_used_this_turn: false,
             nick_used_this_turn: false,
+            death_save_successes: 0,
+            death_save_failures: 0,
         });
         state.character.current_hp = 1;
         let before_time = state.in_world_minutes;

@@ -46,6 +46,8 @@ fn create_combat_state_json() -> String {
         slow_targets: HashMap::new(),
         cleave_used_this_turn: false,
         nick_used_this_turn: false,
+        death_save_successes: 0,
+        death_save_failures: 0,
     });
 
     serde_json::to_string(&state).unwrap()

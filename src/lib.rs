@@ -119,18 +119,30 @@ pub fn process_input(state_json: &str, input: &str) -> GameOutput {
 
     let old_state_json = state_json.to_string();
 
+    // GAME OVER early-exit. A character at 0 HP is truly defeated only when
+    // they are NOT in active combat (e.g. from trap damage outside combat)
+    // OR when they have accumulated three death save failures per SRD
+    // (see combat::CombatState::check_end / `death_save_failures`). While
+    // dying mid-combat they remain playable and must be allowed to continue
+    // processing combat turns (death saves, NPC damage, healing, etc.).
     if state.character.current_hp <= 0 {
-        let command = parser::parse(input);
-        if command == Command::NewGame {
-            let new_seed = state.rng_seed.wrapping_add(state.rng_counter);
-            return new_game(new_seed, state.ironman_mode);
+        let truly_defeated = state.active_combat.as_ref()
+            .map(|c| c.death_save_failures >= 3)
+            .unwrap_or(true);
+        if truly_defeated {
+            let command = parser::parse(input);
+            if command == Command::NewGame {
+                let new_seed = state.rng_seed.wrapping_add(state.rng_counter);
+                return new_game(new_seed, state.ironman_mode);
+            }
+            let text = vec![
+                "=== GAME OVER ===".to_string(),
+                "You have been defeated.".to_string(),
+                "Load a previous save or type `new game` to start over.".to_string(),
+            ];
+            return GameOutput::new(text, old_state_json, false);
         }
-        let text = vec![
-            "=== GAME OVER ===".to_string(),
-            "You have been defeated.".to_string(),
-            "Load a previous save or type `new game` to start over.".to_string(),
-        ];
-        return GameOutput::new(text, old_state_json, false);
+        // else: dying in combat; fall through to normal combat handling.
     }
 
     // --- Disambiguation selection routing (#62) ---
@@ -183,9 +195,30 @@ pub fn process_input(state_json: &str, input: &str) -> GameOutput {
         }
     };
 
+    // Death Saving Throws (issue #84): any healing path that restored HP
+    // above 0 this call should also clear the dying counters. Doing it here
+    // centralizes the invariant (HP > 0 => death_save_* == 0 in active
+    // combat) so individual healing sites don't each need to remember.
+    clear_dying_state_if_healed(&mut state);
+
     let new_state_json = serde_json::to_string(&state).unwrap();
     let state_changed = new_state_json != old_state_json;
     GameOutput::new(result, new_state_json, state_changed)
+}
+
+/// Clear the dying-state death save counters when the player's HP has been
+/// restored above 0 during an active combat. Used as a centralized
+/// invariant enforcement so healing sites (potions, spells, rests, feats)
+/// don't need to each remember to reset `death_save_successes` /
+/// `death_save_failures`.
+fn clear_dying_state_if_healed(state: &mut GameState) {
+    if state.character.current_hp > 0 {
+        if let Some(combat) = state.active_combat.as_mut() {
+            if combat.death_save_successes > 0 || combat.death_save_failures > 0 {
+                combat.reset_death_saves();
+            }
+        }
+    }
 }
 
 /// If `input` is a bare positive integer in `1..=candidates.len()`, return the
@@ -1660,6 +1693,37 @@ fn process_npc_turns(state: &mut GameState, rng: &mut StdRng) -> Vec<String> {
         }
 
         if combat.is_player_turn() {
+            // Death Saving Throws (issue #84): if the player is dying when
+            // their turn comes up, roll a death save and auto-end their turn.
+            // An unconscious character can't act; advance to the next
+            // combatant and let NPC turns continue. If the save stabilizes
+            // (nat 20 or third success) the player regains 1 HP and plays
+            // the turn normally. If the third failure lands, combat ends
+            // via `check_end` on the next loop iteration.
+            if combat.is_player_dying(state) {
+                let (d20, outcome) = combat.roll_death_save(rng, &mut state.character);
+                lines.extend(combat::narrate_death_save_outcome(d20, outcome));
+                match outcome {
+                    combat::DeathSaveOutcome::CritSuccess
+                    | combat::DeathSaveOutcome::Stable => {
+                        // Player is conscious again; yield the turn.
+                        state.active_combat = Some(combat);
+                        break;
+                    }
+                    combat::DeathSaveOutcome::Dead => {
+                        // check_end on next iteration will declare defeat.
+                        state.active_combat = Some(combat);
+                        continue;
+                    }
+                    _ => {
+                        // Still dying; skip this turn.
+                        combat.end_player_turn();
+                        combat.advance_turn(state);
+                        state.active_combat = Some(combat);
+                        continue;
+                    }
+                }
+            }
             state.active_combat = Some(combat);
             break;
         }
@@ -2356,6 +2420,69 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
 
     // Take combat out for the duration of action processing
     let mut combat = state.active_combat.take().unwrap();
+
+    // Death Saving Throws (issue #84): if it's the player's turn but they
+    // are dying, auto-roll a death save. Unconscious characters can't
+    // issue commands, so any player input received while they're at 0 HP
+    // simply triggers the save and advances to NPC turns. A stabilizing
+    // save (nat 20 / third success) returns the player to consciousness
+    // and lets their input run normally.
+    if combat.is_player_turn() && combat.is_player_dying(state) {
+        let (d20, outcome) = combat.roll_death_save(&mut rng, &mut state.character);
+        let mut lines = combat::narrate_death_save_outcome(d20, outcome);
+        match outcome {
+            combat::DeathSaveOutcome::CritSuccess
+            | combat::DeathSaveOutcome::Stable => {
+                // Player is conscious. Show prompt; let them issue a new
+                // command next turn (the current input is consumed by the
+                // death save, per SRD: rolling the save IS the turn's
+                // action when unconscious, and regaining consciousness
+                // mid-turn leaves no movement/action this turn).
+                combat.end_player_turn();
+                combat.advance_turn(state);
+                state.active_combat = Some(combat);
+                let npc_lines = process_npc_turns(state, &mut rng);
+                lines.extend(npc_lines);
+                if let Some(ref combat) = state.active_combat {
+                    if let Some(victory) = combat.check_end(state) {
+                        lines.extend(end_combat(state, victory));
+                        return lines;
+                    }
+                    if combat.is_player_turn() {
+                        append_player_turn_prompt(&mut lines, state, combat);
+                    }
+                }
+                return lines;
+            }
+            combat::DeathSaveOutcome::Dead => {
+                state.active_combat = Some(combat);
+                if let Some(victory) = state.active_combat.as_ref()
+                    .and_then(|c| c.check_end(state))
+                {
+                    lines.extend(end_combat(state, victory));
+                }
+                return lines;
+            }
+            _ => {
+                // Still dying: skip the player's turn, let NPCs act.
+                combat.end_player_turn();
+                combat.advance_turn(state);
+                state.active_combat = Some(combat);
+                let npc_lines = process_npc_turns(state, &mut rng);
+                lines.extend(npc_lines);
+                if let Some(ref combat) = state.active_combat {
+                    if let Some(victory) = combat.check_end(state) {
+                        lines.extend(end_combat(state, victory));
+                        return lines;
+                    }
+                    if combat.is_player_turn() {
+                        append_player_turn_prompt(&mut lines, state, combat);
+                    }
+                }
+                return lines;
+            }
+        }
+    }
 
     if !combat.is_player_turn() {
         // Put combat back so process_npc_turns can take it itself.
@@ -7809,6 +7936,8 @@ mod tests {
             slow_targets: HashMap::new(),
             cleave_used_this_turn: false,
             nick_used_this_turn: false,
+            death_save_successes: 0,
+            death_save_failures: 0,
         });
         npc_id
     }
@@ -7865,6 +7994,8 @@ mod tests {
             slow_targets: HashMap::new(),
             cleave_used_this_turn: false,
             nick_used_this_turn: false,
+            death_save_successes: 0,
+            death_save_failures: 0,
         });
         let _ = end_combat(&mut state, true);
         // Two goblins: 50 + 50 = 100 XP.
@@ -7919,6 +8050,8 @@ mod tests {
             slow_targets: HashMap::new(),
             cleave_used_this_turn: false,
             nick_used_this_turn: false,
+            death_save_successes: 0,
+            death_save_failures: 0,
         });
         let _ = end_combat(&mut state, true);
         // No XP should be awarded — the hostile is still alive.

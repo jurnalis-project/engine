@@ -127,13 +127,60 @@ pub struct CombatState {
     /// per SRD 2024).
     #[serde(default)]
     pub nick_used_this_turn: bool,
+    // ---- Death Saving Throws (issue #84) ---------------------------------
+    // Per SRD 5e, a player at 0 HP enters a dying state and rolls death
+    // saves at the start of each of their turns. Three successes stabilize
+    // the character (HP becomes 1); three failures kill them. A natural 20
+    // stabilizes immediately at 1 HP; a natural 1 counts as two failures.
+    // Damage while dying adds a failure (two on a crit); damage in a single
+    // hit that equals or exceeds max HP causes instant death.
+    //
+    // Both counters default to 0 for older saves (pre-DST) via
+    // `#[serde(default)]`.
+    /// Number of death save successes accumulated in the current dying
+    /// episode. Cleared on stabilize, heal, or crit success.
+    #[serde(default)]
+    pub death_save_successes: u8,
+    /// Number of death save failures accumulated in the current dying
+    /// episode. Cleared on stabilize, heal, or crit success. Reaching 3
+    /// ends combat in defeat.
+    #[serde(default)]
+    pub death_save_failures: u8,
+}
+
+/// Outcome of a single Death Saving Throw or damage-while-dying event.
+///
+/// Emitted by `CombatState::apply_death_save_roll` and
+/// `CombatState::apply_damage_while_dying` so the orchestrator can narrate
+/// the result and check for combat-ending transitions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeathSaveOutcome {
+    /// Rolled 10-19 (or 2-9, etc.) with non-terminal counter change.
+    Success,
+    /// Rolled 2-9 (or damage-while-dying).
+    Failure,
+    /// Natural 20: character stabilizes at 1 HP immediately.
+    CritSuccess,
+    /// Natural 1 (or a crit hit while dying): counts as two failures but
+    /// combat is not yet over.
+    CritFailure,
+    /// Accumulated three successes: character is stable (HP 1).
+    Stable,
+    /// Accumulated three failures (or instant death via massive damage):
+    /// the character has died.
+    Dead,
 }
 
 impl CombatState {
     /// Check if combat is over. Returns Some(true) for victory, Some(false) for defeat.
+    ///
+    /// Per SRD Death Saving Throws (issue #84), 0 HP alone does NOT end
+    /// combat in defeat -- the player is dying but still in play. Defeat is
+    /// declared only after three death save failures (see
+    /// `death_save_failures`) or instant death via massive damage.
     pub fn check_end(&self, state: &GameState) -> Option<bool> {
-        if state.character.current_hp <= 0 {
-            return Some(false); // defeat
+        if state.character.current_hp <= 0 && self.death_save_failures >= 3 {
+            return Some(false); // defeat: player has died
         }
         let all_dead = self.initiative_order.iter().all(|(c, _)| match c {
             Combatant::Player => true,
@@ -145,6 +192,109 @@ impl CombatState {
             }
         });
         if all_dead { Some(true) } else { None }
+    }
+
+    /// True when the player is in the dying state: HP at or below 0 but
+    /// fewer than three accumulated death save failures.
+    pub fn is_player_dying(&self, state: &GameState) -> bool {
+        state.character.current_hp <= 0 && self.death_save_failures < 3
+    }
+
+    /// Clear both death save counters. Called when the character is healed
+    /// out of dying, stabilizes via three successes, or rolls a natural 20
+    /// on a death save (per SRD).
+    pub fn reset_death_saves(&mut self) {
+        self.death_save_successes = 0;
+        self.death_save_failures = 0;
+    }
+
+    /// Apply the outcome of a single Death Saving Throw to combat state.
+    ///
+    /// `d20` is the raw d20 roll (1..=20). The character argument is
+    /// mutated only on stabilization (HP set to 1 on a natural 20 or on
+    /// reaching three successes). Returns the narration-friendly outcome
+    /// and updates `death_save_successes`/`death_save_failures`.
+    pub fn apply_death_save_roll(
+        &mut self,
+        character: &mut crate::character::Character,
+        d20: i32,
+    ) -> DeathSaveOutcome {
+        // Natural 20: the character regains 1 HP and becomes conscious
+        // (dying state ends immediately).
+        if d20 >= 20 {
+            character.current_hp = 1;
+            self.reset_death_saves();
+            return DeathSaveOutcome::CritSuccess;
+        }
+        // Natural 1: counts as two failures.
+        if d20 <= 1 {
+            self.death_save_failures = self.death_save_failures.saturating_add(2).min(3);
+            if self.death_save_failures >= 3 {
+                return DeathSaveOutcome::Dead;
+            }
+            return DeathSaveOutcome::CritFailure;
+        }
+        if d20 >= 10 {
+            self.death_save_successes = self.death_save_successes.saturating_add(1);
+            if self.death_save_successes >= 3 {
+                // Stable: regain 1 HP, reset counters per SRD.
+                character.current_hp = 1;
+                self.reset_death_saves();
+                return DeathSaveOutcome::Stable;
+            }
+            return DeathSaveOutcome::Success;
+        }
+        // d20 in 2..=9
+        self.death_save_failures = self.death_save_failures.saturating_add(1);
+        if self.death_save_failures >= 3 {
+            return DeathSaveOutcome::Dead;
+        }
+        DeathSaveOutcome::Failure
+    }
+
+    /// Roll a death save with the given RNG and apply it. Returns the raw
+    /// d20 roll alongside the outcome so the orchestrator can narrate the
+    /// roll result ("Death save: 14 — success.") and the SRD rules.
+    pub fn roll_death_save(
+        &mut self,
+        rng: &mut impl Rng,
+        character: &mut crate::character::Character,
+    ) -> (i32, DeathSaveOutcome) {
+        let d20 = roll_d20(rng);
+        let outcome = self.apply_death_save_roll(character, d20);
+        (d20, outcome)
+    }
+
+    /// Apply damage received while the character is already at 0 HP.
+    ///
+    /// Per SRD: any attack against a creature at 0 HP causes one failed
+    /// death save (two on a critical hit). A single hit that deals damage
+    /// equal to or greater than the character's HP maximum causes instant
+    /// death. The caller has already deducted `damage` from `current_hp`;
+    /// this helper only updates the death save counters and returns the
+    /// outcome.
+    pub fn apply_damage_while_dying(
+        &mut self,
+        character: &mut crate::character::Character,
+        damage: i32,
+        is_crit: bool,
+    ) -> DeathSaveOutcome {
+        // Instant death via massive damage (SRD): a single hit of damage
+        // >= max_hp while dying kills outright.
+        if damage >= character.max_hp && character.max_hp > 0 {
+            self.death_save_failures = 3;
+            return DeathSaveOutcome::Dead;
+        }
+        let add = if is_crit { 2 } else { 1 };
+        self.death_save_failures = self.death_save_failures.saturating_add(add).min(3);
+        if self.death_save_failures >= 3 {
+            return DeathSaveOutcome::Dead;
+        }
+        if is_crit {
+            DeathSaveOutcome::CritFailure
+        } else {
+            DeathSaveOutcome::Failure
+        }
     }
 
     /// Get the current combatant.
@@ -218,6 +368,81 @@ impl CombatState {
                     }
                 }
             }
+        }
+    }
+}
+
+/// Narrate the outcome of a Death Saving Throw.
+///
+/// Returns human-readable lines describing the roll result and any state
+/// transitions (stabilize, defeat, crit). The caller passes the raw d20
+/// roll value alongside the outcome variant. Kept as a free function so
+/// callers (orchestrator and tests) can format narration deterministically
+/// from a known (roll, outcome) pair.
+pub fn narrate_death_save_outcome(d20: i32, outcome: DeathSaveOutcome) -> Vec<String> {
+    let mut lines = Vec::new();
+    match outcome {
+        DeathSaveOutcome::CritSuccess => {
+            lines.push(format!(
+                "Death saving throw: {} — natural 20! You regain 1 HP and rise, conscious.",
+                d20,
+            ));
+        }
+        DeathSaveOutcome::Stable => {
+            lines.push(format!(
+                "Death saving throw: {} — success. That's three! You stabilize at 1 HP.",
+                d20,
+            ));
+        }
+        DeathSaveOutcome::Success => {
+            lines.push(format!(
+                "Death saving throw: {} — success.",
+                d20,
+            ));
+        }
+        DeathSaveOutcome::Failure => {
+            lines.push(format!(
+                "Death saving throw: {} — failure.",
+                d20,
+            ));
+        }
+        DeathSaveOutcome::CritFailure => {
+            lines.push(format!(
+                "Death saving throw: {} — natural 1! That counts as two failures.",
+                d20,
+            ));
+        }
+        DeathSaveOutcome::Dead => {
+            lines.push(format!(
+                "Death saving throw: {} — failure. Three failures accumulated.",
+                d20,
+            ));
+        }
+    }
+    lines
+}
+
+/// Narrate the outcome of damage received while already dying.
+///
+/// Returns human-readable lines describing the failure(s) added by the hit
+/// and any state transition (instant death via massive damage or reaching
+/// three failures). Emits an empty vec when the outcome is benign
+/// (Success/Stable/CritSuccess shouldn't occur from damage but are handled
+/// defensively).
+pub fn narrate_damage_while_dying_outcome(outcome: DeathSaveOutcome) -> Vec<String> {
+    match outcome {
+        DeathSaveOutcome::Failure => {
+            vec!["The hit lands on a dying target — one death save failure.".to_string()]
+        }
+        DeathSaveOutcome::CritFailure => {
+            vec!["A critical hit on a dying target — two death save failures.".to_string()]
+        }
+        DeathSaveOutcome::Dead => {
+            vec!["The damage is overwhelming — you have fallen.".to_string()]
+        }
+        // These outcomes shouldn't arise from damage; return empty defensively.
+        DeathSaveOutcome::Success | DeathSaveOutcome::Stable | DeathSaveOutcome::CritSuccess => {
+            Vec::new()
         }
     }
 }
@@ -312,6 +537,8 @@ pub fn start_combat(
         slow_targets: HashMap::new(),
         cleave_used_this_turn: false,
         nick_used_this_turn: false,
+        death_save_successes: 0,
+        death_save_failures: 0,
     }
 }
 
@@ -797,9 +1024,11 @@ pub fn resolve_npc_turn(
     let melee_attack = npc_attacks.iter().find(|a| a.reach > 0 && distance <= a.reach as u32).cloned();
     if let Some(attack) = melee_attack {
         // Multiattack loop: roll `multiattack` separate attacks against the player.
-        // Stops early if the player is reduced to 0 HP mid-action.
+        // If the player is already dying (HP <= 0), additional hits add death
+        // save failures (per SRD). Multiattack stops only when the player has
+        // accumulated three failures -- otherwise enemies keep swinging.
         for i in 0..npc_multiattack {
-            if state.character.current_hp <= 0 {
+            if state.character.current_hp <= 0 && combat.death_save_failures >= 3 {
                 break;
             }
             // Sap disadvantage applies only to the first attack of the turn.
@@ -810,6 +1039,7 @@ pub fn resolve_npc_turn(
             let disadv = if result.disadvantage { " (with disadvantage)" } else { "" };
 
             if result.hit {
+                let was_dying = state.character.current_hp <= 0;
                 state.character.current_hp -= result.damage;
                 if result.natural_20 {
                     lines.push(format!("{} attacks with {} -- CRITICAL HIT! {} {} damage!",
@@ -819,6 +1049,14 @@ pub fn resolve_npc_turn(
                         npc_name, result.weapon_name, result.attack_roll,
                         attack.hit_bonus, result.total_attack, player_ac, disadv,
                         result.damage, result.damage_type));
+                }
+                // Damage-while-dying: if the player was already at 0 HP when
+                // this hit landed, add a death save failure (two on a crit).
+                if was_dying {
+                    let outcome = combat.apply_damage_while_dying(
+                        &mut state.character, result.damage, result.natural_20,
+                    );
+                    lines.extend(narrate_damage_while_dying_outcome(outcome));
                 }
             } else if result.natural_1 {
                 lines.push(format!("{} attacks with {} -- natural 1, miss!", npc_name, result.weapon_name));
@@ -837,7 +1075,7 @@ pub fn resolve_npc_turn(
     }).cloned();
     if let Some(attack) = ranged_attack {
         for i in 0..npc_multiattack {
-            if state.character.current_hp <= 0 {
+            if state.character.current_hp <= 0 && combat.death_save_failures >= 3 {
                 break;
             }
             let iter_disadv = grappled || (sapped_first_attack && i == 0);
@@ -847,6 +1085,7 @@ pub fn resolve_npc_turn(
             let disadv = if result.disadvantage { " (with disadvantage)" } else { "" };
 
             if result.hit {
+                let was_dying = state.character.current_hp <= 0;
                 state.character.current_hp -= result.damage;
                 if result.natural_20 {
                     lines.push(format!("{} fires {} -- CRITICAL HIT! {} {} damage!",
@@ -856,6 +1095,12 @@ pub fn resolve_npc_turn(
                         npc_name, result.weapon_name, result.attack_roll,
                         attack.hit_bonus, result.total_attack, player_ac, disadv,
                         result.damage, result.damage_type));
+                }
+                if was_dying {
+                    let outcome = combat.apply_damage_while_dying(
+                        &mut state.character, result.damage, result.natural_20,
+                    );
+                    lines.extend(narrate_damage_while_dying_outcome(outcome));
                 }
             } else if result.natural_1 {
                 lines.push(format!("{} fires {} -- natural 1, miss!", npc_name, result.weapon_name));
@@ -969,9 +1214,16 @@ pub fn retreat(
 
             if let Some((npc_name, result)) = resolve_opportunity_attack(rng, npc_id, state, player_ac, old_distance) {
                 if result.hit {
+                    let was_dying = state.character.current_hp <= 0;
                     state.character.current_hp -= result.damage;
                     lines.push(format!("{} makes an opportunity attack with {} -- hit for {} {} damage!",
                         npc_name, result.weapon_name, result.damage, result.damage_type));
+                    if was_dying {
+                        let outcome = combat.apply_damage_while_dying(
+                            &mut state.character, result.damage, result.natural_20,
+                        );
+                        lines.extend(narrate_damage_while_dying_outcome(outcome));
+                    }
                 } else {
                     lines.push(format!("{} makes an opportunity attack with {} -- miss!",
                         npc_name, result.weapon_name));
@@ -2092,10 +2344,14 @@ mod tests {
 
     #[test]
     fn test_combat_end_defeat() {
+        // Per SRD Death Saving Throws (issue #84), 0 HP alone does NOT end
+        // combat in defeat -- the player enters a dying state and rolls
+        // death saves. Defeat only occurs after three death save failures.
         let mut state = test_state_with_goblin();
         state.character.current_hp = 0;
         let mut rng = StdRng::seed_from_u64(42);
-        let combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        combat.death_save_failures = 3;
         assert_eq!(combat.check_end(&state), Some(false));
     }
 
@@ -2227,6 +2483,8 @@ mod tests {
             slow_targets: HashMap::new(),
             cleave_used_this_turn: false,
             nick_used_this_turn: false,
+            death_save_successes: 0,
+            death_save_failures: 0,
         };
 
         // Kill the first goblin (the one with stats)
@@ -3068,30 +3326,37 @@ mod tests {
     }
 
     #[test]
-    fn test_npc_multiattack_stops_when_player_drops_to_zero() {
-        // If the first attack reduces the player to 0 HP, the second attack
-        // should not fire. We force this by setting player HP very low.
+    fn test_npc_multiattack_continues_on_dying_player_until_three_failures() {
+        // Per SRD Death Saving Throws (issue #84), when the first attack
+        // knocks the player to 0 HP, subsequent attacks in the same
+        // multiattack add failures (2 on crit, 1 otherwise). Multiattack
+        // continues until the player has accumulated three death save
+        // failures (instant death via massive damage, or three hits).
         let mut rng = StdRng::seed_from_u64(42);
         let mut state = test_state_with_goblin();
         let stats = state.world.npcs.get_mut(&0).unwrap().combat_stats.as_mut().unwrap();
         stats.multiattack = 3;
         stats.attacks.retain(|a| a.name == "Scimitar");
-        // Give the goblin a large guaranteed-damage attack: bump the bonus huge.
-        // We make the attack always hit by raising hit_bonus to overcome any AC,
-        // and damage_bonus to guarantee the player drops in one hit.
+        // Make the attack always hit but keep damage well below max_hp so no
+        // single hit triggers the massive-damage instant-death rule.
         stats.attacks[0].hit_bonus = 50;
         stats.attacks[0].damage_bonus = 100;
-        state.character.current_hp = 1; // dies on the first hit
+        state.character.current_hp = 1;
+        state.character.max_hp = 10_000; // ensure damage < max_hp per hit
 
         let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
         combat.distances.insert(0, 5);
 
         let lines = resolve_npc_turn(&mut rng, 0, &mut state, &mut combat);
-        // Should have stopped after the first attack.
         let attack_lines = count_lines_with("Scimitar", &lines);
-        assert_eq!(attack_lines, 1,
-            "multiattack should stop when player drops to 0, got {} lines: {:#?}",
+        // At least one attack lands (the killing blow), and multiattack may
+        // continue up to three times adding death save failures. Must not
+        // exceed the configured multiattack count.
+        assert!(attack_lines >= 1 && attack_lines <= 3,
+            "expected between 1 and 3 Scimitar attacks, got {}: {:#?}",
             attack_lines, lines);
+        assert!(combat.death_save_failures >= 1,
+            "expected at least one DST failure from additional hits: {:#?}", lines);
     }
 
     #[test]
@@ -3504,5 +3769,231 @@ mod tests {
             pending_background_pattern: None,
             pending_disambiguation: None,
         }
+    }
+
+    // ---------- Death Saving Throws (issue #84) --------------------------
+    //
+    // Per SRD 5e, a player character reduced to 0 HP does not immediately
+    // die: they fall unconscious and roll Death Saving Throws at the start
+    // of each of their turns. Three successes stabilize; three failures
+    // kill. A natural 20 stabilizes immediately at 1 HP. A natural 1 counts
+    // as two failures. Damage while at 0 HP adds a failure (two for a crit),
+    // and damage equal to or exceeding the character's HP maximum in a
+    // single hit causes instant death. Healing any amount restores the
+    // character and resets the saves.
+
+    #[test]
+    fn test_check_end_does_not_defeat_at_zero_hp_when_dying_state_fresh() {
+        let mut state = test_state_with_goblin();
+        state.character.current_hp = 0;
+        let mut rng = StdRng::seed_from_u64(42);
+        let combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        // Fresh dying: 0 successes, 0 failures -- combat continues.
+        assert_eq!(combat.check_end(&state), None,
+            "Combat should continue while player is dying (not yet 3 failures)");
+    }
+
+    #[test]
+    fn test_check_end_defeats_after_three_death_save_failures() {
+        let mut state = test_state_with_goblin();
+        state.character.current_hp = 0;
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        combat.death_save_failures = 3;
+        assert_eq!(combat.check_end(&state), Some(false),
+            "Three death save failures should result in defeat");
+    }
+
+    #[test]
+    fn test_is_player_dying_true_at_zero_hp_with_failures_below_three() {
+        let mut state = test_state_with_goblin();
+        state.character.current_hp = 0;
+        let mut rng = StdRng::seed_from_u64(42);
+        let combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        assert!(combat.is_player_dying(&state));
+    }
+
+    #[test]
+    fn test_is_player_dying_false_when_hp_positive() {
+        let state = test_state_with_goblin();
+        let mut rng = StdRng::seed_from_u64(42);
+        let combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        assert!(!combat.is_player_dying(&state));
+    }
+
+    #[test]
+    fn test_death_save_roll_10_or_higher_counts_as_success() {
+        let mut state = test_state_with_goblin();
+        state.character.current_hp = 0;
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let outcome = combat.apply_death_save_roll(&mut state.character, 15);
+        assert_eq!(outcome, DeathSaveOutcome::Success);
+        assert_eq!(combat.death_save_successes, 1);
+        assert_eq!(combat.death_save_failures, 0);
+    }
+
+    #[test]
+    fn test_death_save_roll_below_10_counts_as_failure() {
+        let mut state = test_state_with_goblin();
+        state.character.current_hp = 0;
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let outcome = combat.apply_death_save_roll(&mut state.character, 5);
+        assert_eq!(outcome, DeathSaveOutcome::Failure);
+        assert_eq!(combat.death_save_successes, 0);
+        assert_eq!(combat.death_save_failures, 1);
+    }
+
+    #[test]
+    fn test_death_save_natural_1_counts_as_two_failures() {
+        let mut state = test_state_with_goblin();
+        state.character.current_hp = 0;
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let outcome = combat.apply_death_save_roll(&mut state.character, 1);
+        assert_eq!(outcome, DeathSaveOutcome::CritFailure);
+        assert_eq!(combat.death_save_failures, 2);
+    }
+
+    #[test]
+    fn test_death_save_natural_20_stabilizes_at_1_hp() {
+        let mut state = test_state_with_goblin();
+        state.character.current_hp = 0;
+        state.character.max_hp = 20;
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        combat.death_save_successes = 1;
+        combat.death_save_failures = 2;
+        let outcome = combat.apply_death_save_roll(&mut state.character, 20);
+        assert_eq!(outcome, DeathSaveOutcome::CritSuccess);
+        assert_eq!(state.character.current_hp, 1);
+        assert_eq!(combat.death_save_successes, 0,
+            "Nat 20 clears death save counters");
+        assert_eq!(combat.death_save_failures, 0,
+            "Nat 20 clears death save counters");
+    }
+
+    #[test]
+    fn test_three_death_save_successes_stabilize_at_1_hp() {
+        let mut state = test_state_with_goblin();
+        state.character.current_hp = 0;
+        state.character.max_hp = 20;
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        combat.death_save_successes = 2;
+        let outcome = combat.apply_death_save_roll(&mut state.character, 10);
+        assert_eq!(outcome, DeathSaveOutcome::Stable);
+        assert_eq!(state.character.current_hp, 1,
+            "Reaching 3 successes sets HP to 1 (stable)");
+        assert_eq!(combat.death_save_successes, 0);
+        assert_eq!(combat.death_save_failures, 0);
+    }
+
+    #[test]
+    fn test_three_death_save_failures_mark_dead() {
+        let mut state = test_state_with_goblin();
+        state.character.current_hp = 0;
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        combat.death_save_failures = 2;
+        let outcome = combat.apply_death_save_roll(&mut state.character, 5);
+        assert_eq!(outcome, DeathSaveOutcome::Dead);
+        assert_eq!(combat.death_save_failures, 3);
+        assert_eq!(combat.check_end(&state), Some(false),
+            "After three failures, combat ends in defeat");
+    }
+
+    #[test]
+    fn test_damage_while_dying_adds_failure() {
+        let mut state = test_state_with_goblin();
+        state.character.current_hp = 0;
+        state.character.max_hp = 20;
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let outcome = combat.apply_damage_while_dying(&mut state.character, 5, false);
+        assert_eq!(outcome, DeathSaveOutcome::Failure);
+        assert_eq!(combat.death_save_failures, 1);
+    }
+
+    #[test]
+    fn test_crit_while_dying_adds_two_failures() {
+        let mut state = test_state_with_goblin();
+        state.character.current_hp = 0;
+        state.character.max_hp = 20;
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let outcome = combat.apply_damage_while_dying(&mut state.character, 5, true);
+        assert_eq!(outcome, DeathSaveOutcome::CritFailure);
+        assert_eq!(combat.death_save_failures, 2);
+    }
+
+    #[test]
+    fn test_damage_exceeding_max_hp_while_dying_is_instant_death() {
+        let mut state = test_state_with_goblin();
+        state.character.current_hp = 0;
+        state.character.max_hp = 20;
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        // damage >= max_hp in one hit is instant death (massive damage SRD rule).
+        let outcome = combat.apply_damage_while_dying(&mut state.character, 20, false);
+        assert_eq!(outcome, DeathSaveOutcome::Dead);
+        assert_eq!(combat.death_save_failures, 3);
+        assert_eq!(combat.check_end(&state), Some(false));
+    }
+
+    #[test]
+    fn test_healing_clears_death_save_state() {
+        let mut state = test_state_with_goblin();
+        state.character.current_hp = 0;
+        state.character.max_hp = 20;
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        combat.death_save_successes = 1;
+        combat.death_save_failures = 2;
+        // Simulate healing.
+        state.character.current_hp = 5;
+        combat.reset_death_saves();
+        assert_eq!(combat.death_save_successes, 0);
+        assert_eq!(combat.death_save_failures, 0);
+        assert!(!combat.is_player_dying(&state));
+    }
+
+    #[test]
+    fn test_fresh_combat_has_zero_death_save_counters() {
+        let state = test_state_with_goblin();
+        let mut rng = StdRng::seed_from_u64(42);
+        let combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        assert_eq!(combat.death_save_successes, 0);
+        assert_eq!(combat.death_save_failures, 0);
+    }
+
+    #[test]
+    fn test_death_save_state_serde_roundtrip() {
+        let state = test_state_with_goblin();
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        combat.death_save_successes = 2;
+        combat.death_save_failures = 1;
+        let json = serde_json::to_string(&combat).unwrap();
+        let round_tripped: CombatState = serde_json::from_str(&json).unwrap();
+        assert_eq!(round_tripped.death_save_successes, 2);
+        assert_eq!(round_tripped.death_save_failures, 1);
+    }
+
+    #[test]
+    fn test_death_save_state_serde_back_compat_legacy_save() {
+        // Older saves (pre-DST) have no death_save_* fields. They must still
+        // deserialize, defaulting the counters to 0.
+        let state = test_state_with_goblin();
+        let mut rng = StdRng::seed_from_u64(42);
+        let combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let mut json: serde_json::Value = serde_json::to_value(&combat).unwrap();
+        json.as_object_mut().unwrap().remove("death_save_successes");
+        json.as_object_mut().unwrap().remove("death_save_failures");
+        let round_tripped: CombatState = serde_json::from_value(json)
+            .expect("Old saves without death_save_* fields should deserialize");
+        assert_eq!(round_tripped.death_save_successes, 0);
+        assert_eq!(round_tripped.death_save_failures, 0);
     }
 }
