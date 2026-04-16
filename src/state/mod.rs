@@ -1,10 +1,10 @@
 // jurnalis-engine/src/state/mod.rs
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use crate::types::{LocationId, NpcId, ItemId, TriggerId, Direction};
+use crate::types::{LocationId, NpcId, ItemId, TriggerId, Direction, Alignment};
 use crate::character::Character;
 use crate::conditions::{ActiveCondition, ConditionType};
-use crate::combat::monsters::{CreatureType, Size, Alignment, default_multiattack};
+use crate::combat::monsters::{CreatureType, Size, default_multiattack};
 
 pub const SAVE_VERSION: &str = "0.1.0";
 

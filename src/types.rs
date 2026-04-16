@@ -150,6 +150,47 @@ pub type NpcId = u32;
 pub type ItemId = u32;
 pub type TriggerId = u32;
 
+/// Nine-axis alignment plus Unaligned. Shared between characters (chosen at
+/// creation) and monsters (declared per stat block). Canonical definition
+/// lives here in `types.rs` because it is referenced across feature modules
+/// (`character`, `combat::monsters`, `state`), per the module-isolation
+/// decision (shared types belong in `types.rs` / `state/`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Alignment {
+    LawfulGood,
+    NeutralGood,
+    ChaoticGood,
+    LawfulNeutral,
+    TrueNeutral,
+    ChaoticNeutral,
+    LawfulEvil,
+    NeutralEvil,
+    ChaoticEvil,
+    Unaligned,
+}
+
+impl Default for Alignment {
+    fn default() -> Self { Alignment::Unaligned }
+}
+
+impl std::fmt::Display for Alignment {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Alignment::LawfulGood => write!(f, "Lawful Good"),
+            Alignment::NeutralGood => write!(f, "Neutral Good"),
+            Alignment::ChaoticGood => write!(f, "Chaotic Good"),
+            Alignment::LawfulNeutral => write!(f, "Lawful Neutral"),
+            // SRD labels "TrueNeutral" as simply "Neutral" in prose.
+            Alignment::TrueNeutral => write!(f, "Neutral"),
+            Alignment::ChaoticNeutral => write!(f, "Chaotic Neutral"),
+            Alignment::LawfulEvil => write!(f, "Lawful Evil"),
+            Alignment::NeutralEvil => write!(f, "Neutral Evil"),
+            Alignment::ChaoticEvil => write!(f, "Chaotic Evil"),
+            Alignment::Unaligned => write!(f, "Unaligned"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -171,5 +212,48 @@ mod tests {
         assert_eq!(Skill::Arcana.ability(), Ability::Intelligence);
         assert_eq!(Skill::Perception.ability(), Ability::Wisdom);
         assert_eq!(Skill::Persuasion.ability(), Ability::Charisma);
+    }
+
+    #[test]
+    fn test_alignment_default_is_unaligned() {
+        assert_eq!(Alignment::default(), Alignment::Unaligned);
+    }
+
+    #[test]
+    fn test_alignment_exhaustive_variants() {
+        // Exhaustiveness: the ten canonical alignments (9 + Unaligned).
+        let _ = match Alignment::TrueNeutral {
+            Alignment::LawfulGood | Alignment::NeutralGood | Alignment::ChaoticGood
+            | Alignment::LawfulNeutral | Alignment::TrueNeutral | Alignment::ChaoticNeutral
+            | Alignment::LawfulEvil | Alignment::NeutralEvil | Alignment::ChaoticEvil
+            | Alignment::Unaligned => (),
+        };
+    }
+
+    #[test]
+    fn test_alignment_serde_round_trip() {
+        for al in [
+            Alignment::LawfulGood,
+            Alignment::NeutralGood,
+            Alignment::ChaoticGood,
+            Alignment::LawfulNeutral,
+            Alignment::TrueNeutral,
+            Alignment::ChaoticNeutral,
+            Alignment::LawfulEvil,
+            Alignment::NeutralEvil,
+            Alignment::ChaoticEvil,
+            Alignment::Unaligned,
+        ] {
+            let json = serde_json::to_string(&al).unwrap();
+            let back: Alignment = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, al);
+        }
+    }
+
+    #[test]
+    fn test_alignment_display() {
+        assert_eq!(Alignment::LawfulGood.to_string(), "Lawful Good");
+        assert_eq!(Alignment::TrueNeutral.to_string(), "Neutral");
+        assert_eq!(Alignment::Unaligned.to_string(), "Unaligned");
     }
 }

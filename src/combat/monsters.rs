@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
-use crate::types::Ability;
+use crate::types::{Ability, Alignment};
 use crate::state::{CombatStats, NpcAttack, DamageType};
 use crate::conditions::ConditionType;
 
@@ -44,25 +44,6 @@ pub enum Size {
 
 impl Default for Size {
     fn default() -> Self { Size::Medium }
-}
-
-/// Nine-axis alignment plus Unaligned.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum Alignment {
-    LawfulGood,
-    NeutralGood,
-    ChaoticGood,
-    LawfulNeutral,
-    TrueNeutral,
-    ChaoticNeutral,
-    LawfulEvil,
-    NeutralEvil,
-    ChaoticEvil,
-    Unaligned,
-}
-
-impl Default for Alignment {
-    fn default() -> Self { Alignment::Unaligned }
 }
 
 /// Default value for `CombatStats.multiattack` when absent from older saves.
