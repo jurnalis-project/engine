@@ -1441,6 +1441,31 @@ pub fn apply_cleave_mastery(
     Some((secondary_id, cleave_result, ability_mod_used))
 }
 
+/// Nick: when the off-hand weapon has the Nick mastery and the character
+/// has that mastery unlocked, the off-hand Light-weapon extra attack is
+/// made as part of the Attack action instead of as a bonus action. The
+/// benefit is once per turn.
+///
+/// The orchestrator uses this to decide whether
+///   (a) the off-hand attack may proceed BEFORE the main-hand Attack
+///       action is used (Nick folds into the Attack action), and
+///   (b) the bonus-action slot should be consumed after the swing.
+///
+/// Returns true when Nick applies (so the caller should skip the
+/// "requires bonus action" gate and skip consuming the bonus action).
+/// Also flips `nick_used_this_turn` on success so a second Nick swing in
+/// the same turn falls back to normal Two-Weapon-Fighting rules.
+pub fn apply_nick_mastery(
+    has_mastery: bool,
+    combat: &mut CombatState,
+) -> bool {
+    if !has_mastery || combat.nick_used_this_turn {
+        return false;
+    }
+    combat.nick_used_this_turn = true;
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3398,6 +3423,31 @@ mod tests {
             &mut rng, true, &hit, 7, &mut combat, &state, 5,
         );
         assert!(out2.is_none());
+    }
+
+    #[test]
+    fn test_nick_mastery_fires_once_per_turn() {
+        let player = test_character();
+        let mut combat = start_combat(
+            &mut StdRng::seed_from_u64(1), &player, &[], &HashMap::new(),
+        );
+        // First Nick swing: applies, consumes the once-per-turn slot.
+        assert!(apply_nick_mastery(true, &mut combat));
+        assert!(combat.nick_used_this_turn);
+        // Second Nick swing in the same turn: does not apply. A second
+        // off-hand attack still works via normal TWF rules (bonus action)
+        // because the orchestrator decides that based on this return.
+        assert!(!apply_nick_mastery(true, &mut combat));
+    }
+
+    #[test]
+    fn test_nick_mastery_no_op_without_mastery() {
+        let player = test_character();
+        let mut combat = start_combat(
+            &mut StdRng::seed_from_u64(1), &player, &[], &HashMap::new(),
+        );
+        assert!(!apply_nick_mastery(false, &mut combat));
+        assert!(!combat.nick_used_this_turn);
     }
 
     /// Minimal GameState helper used only by the mastery tests above.
