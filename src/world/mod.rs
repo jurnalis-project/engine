@@ -17,6 +17,30 @@ pub fn generate_world(rng: &mut impl Rng, location_count: usize) -> WorldState {
     let npc_count = location_count / 3 + 1;
     let mut npcs = npc::generate_npcs(rng, &location_refs, npc_count);
 
+    // Guarantee at least one hostile NPC. Disposition assignment in
+    // `npc::generate_npcs` is uniform random, so small worlds can land on
+    // zero hostiles, which makes the starting "Defeat a hostile foe"
+    // objective (seeded in `lib.rs` per `docs/specs/objective-quest-system.md`)
+    // uncompletable. If we see zero hostiles, promote one NPC in place.
+    // Preference order: Guard role (thematically hostile-adjacent), then the
+    // lowest-id NPC. Selection is deterministic (no RNG draws here) so that
+    // worlds which already had a hostile continue generating byte-for-byte
+    // the same items/triggers as before this guarantee existed.
+    if !npcs.is_empty()
+        && !npcs.values().any(|n| n.disposition == Disposition::Hostile)
+    {
+        let promote_id = npcs
+            .values()
+            .filter(|n| n.role == crate::state::NpcRole::Guard)
+            .map(|n| n.id)
+            .min()
+            .or_else(|| npcs.keys().copied().min())
+            .expect("npcs is non-empty");
+        if let Some(npc) = npcs.get_mut(&promote_id) {
+            npc.disposition = Disposition::Hostile;
+        }
+    }
+
     // Assign combat stats to hostile NPCs from the SRD monster table, biased
     // by the NPC's location index (depth proxy). See `docs/specs/world-generation.md`
     // for the tier windows. Ensures first-encounter enemies are survivable at
@@ -151,6 +175,50 @@ mod tests {
                     "seed {}: hostile '{}' at location {} (depth tier lo={},hi={}) has max_hp {}",
                     seed, npc.name, npc.location, lo, hi, stats.max_hp
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn test_every_seed_produces_at_least_one_hostile_npc() {
+        // Root cause hypothesis: uniform random disposition selection in
+        // `npc::generate_npcs()` can, for small NPC counts, produce worlds
+        // with zero hostile NPCs. This makes the starting "Defeat a hostile
+        // foe" objective (seeded in lib.rs per objective-quest-system.md)
+        // uncompletable. `generate_world()` must guarantee >=1 hostile NPC.
+        //
+        // See: docs/specs/world-generation.md, docs/specs/objective-quest-system.md
+        for seed in 0..2000u64 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let world = generate_world(&mut rng, 10);
+            let hostile_count = world.npcs.values()
+                .filter(|n| n.disposition == crate::state::Disposition::Hostile)
+                .count();
+            assert!(
+                hostile_count >= 1,
+                "seed {}: generated world has zero hostile NPCs (total npcs={})",
+                seed, world.npcs.len()
+            );
+        }
+    }
+
+    #[test]
+    fn test_force_converted_hostile_has_combat_stats() {
+        // Any hostile NPC created by the post-gen guarantee must still have
+        // combat_stats assigned (via the existing depth-tiered logic).
+        // Exercises many seeds so that both the "already has a hostile" path
+        // and the "force-convert" path are covered.
+        for seed in 0..2000u64 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let world = generate_world(&mut rng, 10);
+            for npc in world.npcs.values() {
+                if npc.disposition == crate::state::Disposition::Hostile {
+                    assert!(
+                        npc.combat_stats.is_some(),
+                        "seed {}: hostile NPC '{}' (id={}) missing combat_stats",
+                        seed, npc.name, npc.id
+                    );
+                }
             }
         }
     }
