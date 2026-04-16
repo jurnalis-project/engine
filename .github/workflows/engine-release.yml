@@ -2,11 +2,10 @@ name: Engine Release
 
 on:
   push:
-    branches: [main]
-    paths:
-      - "Cargo.toml"
-    tags:
-      - "engine-v*"
+    branches:
+      - main
+      - 'release/**'
+      - 'hotfix/**'
   workflow_dispatch:
 
 permissions:
@@ -109,7 +108,7 @@ jobs:
   release:
     name: Create GitHub release
     needs: build
-    if: startsWith(github.ref, 'refs/tags/engine-v')
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -127,7 +126,6 @@ jobs:
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "Engine version: $version"
 
       - name: Download artifacts
         uses: actions/download-artifact@v4
@@ -135,41 +133,11 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Build changelog
-        id: changelog
-        run: |
-          set -euo pipefail
-          tag="${GITHUB_REF_NAME}"
-
-          # Nearest previous engine-v* tag by creator date, excluding the current tag.
-          prev_tag=$(git tag --list 'engine-v*' --sort=-creatordate \
-            | grep -v -x -F "$tag" \
-            | head -n1 || true)
-
-          {
-            echo "## Changes"
-            echo
-            if [ -n "$prev_tag" ]; then
-              git log --pretty=format:'- %h %s' "$prev_tag"..HEAD -- jurnalis-engine
-              echo
-              echo
-              echo "Full diff: $prev_tag...$tag"
-            else
-              echo "Initial engine release."
-              echo
-              git log --pretty=format:'- %h %s' HEAD -- jurnalis-engine
-            fi
-          } > CHANGELOG_BODY.md
-
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "--- CHANGELOG_BODY.md ---"
-          cat CHANGELOG_BODY.md
-
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.changelog.outputs.tag }}
           name: jurnalis-engine v${{ steps.version.outputs.version }}
-          body_path: CHANGELOG_BODY.md
+          tag_name: ${{ steps.version.outputs.version }}
+          generate_release_notes: true
           files: dist/*
           fail_on_unmatched_files: true
