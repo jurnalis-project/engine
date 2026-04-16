@@ -1093,6 +1093,9 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
                             if let Some(trigger) = state.world.triggers.get(&tid).cloned() {
                                 let check_result = match &trigger.trigger_type {
                                     state::TriggerType::SkillCheck(skill) => {
+                                        let disadv = armor_disadvantage_for_ability(
+                                            &state.character, skill.ability(),
+                                        );
                                         let result = rules::checks::skill_check(
                                             &mut rng,
                                             *skill,
@@ -1100,7 +1103,7 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
                                             &state.character.skill_proficiencies,
                                             state.character.proficiency_bonus(),
                                             trigger.dc,
-                                            false, false,
+                                            false, disadv,
                                         );
                                         let narration = narration::narrate_skill_check(&mut rng, &skill.to_string(), &result);
                                         Some((result.success, narration))
@@ -1108,10 +1111,13 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
                                     state::TriggerType::SavingThrow(ability) => {
                                         let score = state.character.ability_scores.get(ability).copied().unwrap_or(10);
                                         let is_prof = state.character.is_proficient_in_save(*ability);
+                                        let disadv = armor_disadvantage_for_ability(
+                                            &state.character, *ability,
+                                        );
                                         let result = rules::checks::ability_check(
                                             &mut rng, score,
                                             state.character.proficiency_bonus(),
-                                            is_prof, trigger.dc, false, false,
+                                            is_prof, trigger.dc, false, disadv,
                                         );
                                         let narration = narration::narrate_skill_check(&mut rng, &format!("{} save", ability), &result);
                                         Some((result.success, narration))
@@ -1321,13 +1327,16 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
         Command::Check(skill_name) => {
             match parser::resolve_skill(&skill_name) {
                 Some(skill) => {
+                    let disadv = armor_disadvantage_for_ability(
+                        &state.character, skill.ability(),
+                    );
                     let result = rules::checks::skill_check(
                         &mut rng, skill,
                         &state.character.ability_scores,
                         &state.character.skill_proficiencies,
                         state.character.proficiency_bonus(),
                         15, // Default DC for voluntary checks
-                        false, false,
+                        false, disadv,
                     );
                     vec![narration::narrate_skill_check(&mut rng, &skill.to_string(), &result)]
                 }
@@ -1476,6 +1485,7 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
                                 if lines.is_empty() {
                                     lines.push(narration::templates::EQUIP_WEAR.replace("{item}", &item.name));
                                 }
+                                update_armor_proficiency_state(state, *category, &mut lines);
                             }
                             lines
                         }
@@ -1531,6 +1541,8 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
                     }
                     if state.character.equipped.body == Some(item_id) {
                         state.character.equipped.body = None;
+                        // Body slot is now empty -> no nonproficient armor worn.
+                        state.character.wearing_nonproficient_armor = false;
                     }
 
                     if is_weapon {
@@ -1547,6 +1559,14 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
             // Check if caster
             if state.character.known_spells.is_empty() {
                 return vec![narration::templates::CAST_NOT_A_CASTER.to_string()];
+            }
+            // SRD 2024 Armor Training: wearing non-proficient armor blocks
+            // all spellcasting (see docs/reference/equipment.md).
+            if state.character.wearing_nonproficient_armor {
+                return vec![
+                    "You can't cast spells while wearing armor you're not proficient with."
+                        .to_string(),
+                ];
             }
             // Check if spell is known
             let spell_def = match spells::find_spell(&spell) {
@@ -3118,6 +3138,15 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                 state.active_combat = Some(combat);
                 return vec![narration::templates::CAST_NOT_A_CASTER.to_string()];
             }
+            // SRD 2024 Armor Training: wearing non-proficient armor blocks
+            // all spellcasting (see docs/reference/equipment.md).
+            if state.character.wearing_nonproficient_armor {
+                state.active_combat = Some(combat);
+                return vec![
+                    "You can't cast spells while wearing armor you're not proficient with."
+                        .to_string(),
+                ];
+            }
             // Check if spell is known
             let spell_def = match spells::find_spell(&spell) {
                 Some(def) if state.character.known_spells.iter().any(|s| s.to_lowercase() == def.name.to_lowercase()) => def,
@@ -4237,6 +4266,48 @@ fn check_and_enter_asi_phase(state: &mut GameState) -> Vec<String> {
     asi_menu_lines(state)
 }
 
+/// Returns true when the character is wearing non-proficient armor AND the
+/// supplied ability is STR or DEX. Per SRD 2024 Armor Training, any D20 Test
+/// using STR or DEX has Disadvantage while the wearer lacks training; other
+/// abilities (CON, INT, WIS, CHA) are unaffected. Used by skill-check and
+/// saving-throw resolution in `lib.rs`.
+fn armor_disadvantage_for_ability(
+    character: &crate::character::Character,
+    ability: types::Ability,
+) -> bool {
+    if !character.wearing_nonproficient_armor {
+        return false;
+    }
+    matches!(ability, types::Ability::Strength | types::Ability::Dexterity)
+}
+
+/// After body armor has been assigned to the body slot, update
+/// `character.wearing_nonproficient_armor` based on whether the wearer's class
+/// is trained with this armor's category. When the wearer is NOT proficient,
+/// append the SRD "Armor Training" warning line to `lines`.
+///
+/// Kept at the orchestrator layer so `equipment/` stays oblivious to classes
+/// and `character/` does not import narration templates (module-isolation
+/// rule). Callers pass the armor's category — shields are not routed here
+/// since shields occupy the off-hand slot and are not yet enforced.
+fn update_armor_proficiency_state(
+    state: &mut GameState,
+    category: state::ArmorCategory,
+    lines: &mut Vec<String>,
+) {
+    let profs = state.character.class.armor_proficiencies();
+    if profs.contains(&category) {
+        state.character.wearing_nonproficient_armor = false;
+    } else {
+        state.character.wearing_nonproficient_armor = true;
+        lines.push(
+            "You are not proficient with this armor. You have Disadvantage on \
+STR/DEX checks and attack rolls, and cannot cast spells."
+                .to_string(),
+        );
+    }
+}
+
 fn handle_equip_command(state: &mut GameState, target_str: &str) -> Vec<String> {
     let words: Vec<&str> = target_str.split_whitespace().collect();
     let (target_name, force_off_hand) = if words.len() >= 3
@@ -4335,6 +4406,7 @@ fn handle_equip_command(state: &mut GameState, target_str: &str) -> Vec<String> 
                         if result_lines.is_empty() {
                             result_lines.push(narration::templates::EQUIP_WEAR.replace("{item}", &item.name));
                         }
+                        update_armor_proficiency_state(state, *category, &mut result_lines);
                     }
                     result_lines
                 }
@@ -4381,7 +4453,11 @@ fn handle_unequip_command(state: &mut GameState, target_str: &str) -> Vec<String
             );
             if state.character.equipped.main_hand == Some(item_id) { state.character.equipped.main_hand = None; }
             if state.character.equipped.off_hand == Some(item_id) { state.character.equipped.off_hand = None; }
-            if state.character.equipped.body == Some(item_id) { state.character.equipped.body = None; }
+            if state.character.equipped.body == Some(item_id) {
+                state.character.equipped.body = None;
+                // Body slot is now empty -> no nonproficient armor worn.
+                state.character.wearing_nonproficient_armor = false;
+            }
             if is_weapon {
                 vec![narration::templates::UNEQUIP_WEAPON.replace("{item}", &name)]
             } else {

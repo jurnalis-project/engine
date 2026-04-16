@@ -1,6 +1,7 @@
 // jurnalis-engine/src/character/class.rs
 use serde::{Deserialize, Serialize};
 use crate::types::{Ability, Skill};
+use crate::state::ArmorCategory;
 
 /// Per-class feature-use tracking. All fields default so older saves
 /// deserialize cleanly.
@@ -235,6 +236,46 @@ impl Class {
             Class::Fighter => 3,
             Class::Barbarian | Class::Paladin | Class::Ranger => 2,
             _ => 0,
+        }
+    }
+
+    /// Armor categories the class is trained with per SRD 2024. A character
+    /// wearing armor whose category is NOT in this list suffers the SRD
+    /// "Armor Training" penalty: Disadvantage on any D20 Test involving STR
+    /// or DEX, and cannot cast spells. See `docs/reference/equipment.md` and
+    /// `docs/specs/equipment-system.md`.
+    ///
+    /// Shields are listed as their own category; if `Shield` is not in this
+    /// list the character gets no AC benefit from a shield (not yet enforced
+    /// — tracked separately).
+    pub fn armor_proficiencies(&self) -> Vec<ArmorCategory> {
+        match self {
+            Class::Barbarian => vec![
+                ArmorCategory::Light, ArmorCategory::Medium, ArmorCategory::Shield,
+            ],
+            Class::Bard => vec![ArmorCategory::Light],
+            Class::Cleric => vec![
+                ArmorCategory::Light, ArmorCategory::Medium, ArmorCategory::Shield,
+            ],
+            Class::Druid => vec![
+                ArmorCategory::Light, ArmorCategory::Medium, ArmorCategory::Shield,
+            ],
+            Class::Fighter => vec![
+                ArmorCategory::Light, ArmorCategory::Medium, ArmorCategory::Heavy,
+                ArmorCategory::Shield,
+            ],
+            Class::Monk => Vec::new(),
+            Class::Paladin => vec![
+                ArmorCategory::Light, ArmorCategory::Medium, ArmorCategory::Heavy,
+                ArmorCategory::Shield,
+            ],
+            Class::Ranger => vec![
+                ArmorCategory::Light, ArmorCategory::Medium, ArmorCategory::Shield,
+            ],
+            Class::Rogue => vec![ArmorCategory::Light],
+            Class::Sorcerer => Vec::new(),
+            Class::Warlock => vec![ArmorCategory::Light],
+            Class::Wizard => Vec::new(),
         }
     }
 

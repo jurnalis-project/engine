@@ -764,6 +764,13 @@ pub fn resolve_player_attack(
             disadvantage = true; // Long range
         }
     }
+    // SRD 2024 Armor Training: wearing non-proficient armor imposes
+    // Disadvantage on any D20 Test using STR or DEX, which includes every
+    // weapon attack roll (STR for melee, DEX for ranged/finesse). See
+    // docs/reference/equipment.md and docs/specs/equipment-system.md.
+    if player.wearing_nonproficient_armor {
+        disadvantage = true;
+    }
 
     // Attacker-side conditions: Invisible grants advantage; Poisoned/Blinded/Prone/
     // Frightened/Restrained impose disadvantage.

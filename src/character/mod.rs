@@ -100,6 +100,15 @@ pub struct Character {
     /// `docs/specs/weapon-mastery.md`.
     #[serde(default)]
     pub weapon_masteries: Vec<String>,
+    /// True when the character is wearing body armor whose category is NOT in
+    /// their class's `armor_proficiencies()` list. Per SRD 2024 Armor
+    /// Training: imposes Disadvantage on any D20 Test using STR or DEX and
+    /// blocks spellcasting. Set by `handle_equip_command` when an armor piece
+    /// lands in the body slot; cleared by `handle_unequip_command` when body
+    /// armor is removed. Shields are tracked separately (not yet enforced).
+    /// `#[serde(default)]` so legacy saves deserialize to `false`.
+    #[serde(default)]
+    pub wearing_nonproficient_armor: bool,
 }
 
 impl Character {
@@ -230,6 +239,7 @@ pub fn create_character(
         general_feats: Vec::new(),
         alignment: Alignment::default(),
         weapon_masteries,
+        wearing_nonproficient_armor: false,
     }
 }
 
