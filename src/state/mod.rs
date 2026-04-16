@@ -61,6 +61,32 @@ pub struct GameState {
     /// Consumed and cleared at character finalization (ChooseName step).
     #[serde(default)]
     pub pending_background_pattern: Option<u8>,
+    /// Transient state used after the engine emits a disambiguation prompt.
+    /// Carries the verb prefix (e.g. "take", "equip off hand") and the exact
+    /// candidate names the prompt listed, in display order. When set, the
+    /// orchestrator reroutes a numeric input ("1", "2", ...) into the
+    /// original command with the chosen candidate substituted. Any other
+    /// input clears this field before normal parsing runs. See
+    /// `docs/specs/command-parser.md` (§ Disambiguation).
+    #[serde(default)]
+    pub pending_disambiguation: Option<PendingDisambiguation>,
+}
+
+/// Carries the context needed to resolve a numeric selection after a
+/// disambiguation prompt. `verb_prefix` is the command head to re-apply
+/// (e.g. `"take"`, `"talk to"`, `"equip"`); `candidates` is the ordered list
+/// of exact entity names the prompt displayed (1-indexed to the player);
+/// `verb_suffix` is an optional trailing modifier that sits AFTER the
+/// candidate name (e.g. `"off hand"` for `equip <weapon> off hand`). The
+/// orchestrator reconstructs the resolved input as
+/// `"{verb_prefix} {candidates[n-1]} {verb_suffix}"`, trimming any empty
+/// segments, and re-dispatches.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingDisambiguation {
+    pub verb_prefix: String,
+    pub candidates: Vec<String>,
+    #[serde(default)]
+    pub verb_suffix: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -444,6 +470,7 @@ mod tests {
             in_world_minutes: 0,
             last_long_rest_minutes: None,
             pending_background_pattern: None,
+            pending_disambiguation: None,
         }
     }
 

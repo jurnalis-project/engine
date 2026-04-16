@@ -73,6 +73,7 @@ fn make_exploration_state(class: Class) -> GameState {
         in_world_minutes: 0,
         last_long_rest_minutes: None,
         pending_background_pattern: None,
+        pending_disambiguation: None,
     }
 }
 

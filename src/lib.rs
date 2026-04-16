@@ -20,7 +20,7 @@ use rand::rngs::StdRng;
 use output::GameOutput;
 use parser::Command;
 use parser::resolver::{self, ResolveResult};
-use state::{GameState, GamePhase, CreationStep, SAVE_VERSION};
+use state::{GameState, GamePhase, CreationStep, PendingDisambiguation, SAVE_VERSION};
 use character::{race::Race, class::Class, background::Background, STANDARD_ARRAY, generate_random_scores};
 use character::feat::{FeatDef, FeatCategory, FeatEffect};
 #[cfg(test)]
@@ -70,6 +70,7 @@ pub fn new_game(seed: u64, ironman_mode: bool) -> GameOutput {
         in_world_minutes: 0,
         last_long_rest_minutes: None,
         pending_background_pattern: None,
+        pending_disambiguation: None,
     };
 
     let state_json = serde_json::to_string(&state).unwrap();
@@ -114,6 +115,45 @@ pub fn process_input(state_json: &str, input: &str) -> GameOutput {
         return GameOutput::new(text, old_state_json, false);
     }
 
+    // --- Disambiguation selection routing (#62) ---
+    //
+    // If the previous turn emitted a disambiguation prompt, `pending_disambiguation`
+    // carries the verb prefix and the numbered list of candidate names. We take
+    // the pending state upfront so it is cleared regardless of which branch runs
+    // below (spec: "no dangling pending state"). If the input is a valid numeric
+    // selection within the candidate range, rewrite it to the original verb +
+    // exact candidate name and re-dispatch. Any other input (non-numeric or
+    // out-of-range) falls through to normal parsing with pending cleared.
+    //
+    // This routing is scoped to Exploration and Combat. Character-creation
+    // phases use their own numeric menus and never set pending_disambiguation,
+    // so the field is guaranteed to be None there; we still gate the
+    // replacement on phase to stay defensive against future changes.
+    let pending = state.pending_disambiguation.take();
+    let rewritten_input: String = match &pending {
+        Some(pd)
+            if state.active_combat.is_some()
+                || matches!(state.game_phase, GamePhase::Exploration) =>
+        {
+            match resolve_numeric_selection(input, &pd.candidates) {
+                Some(name) => {
+                    // Join prefix + name + suffix with single spaces, then
+                    // collapse any double spaces that arise from empty parts.
+                    let parts = [pd.verb_prefix.as_str(), name.as_str(), pd.verb_suffix.as_str()];
+                    parts
+                        .iter()
+                        .filter(|p| !p.is_empty())
+                        .copied()
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                }
+                None => input.to_string(),
+            }
+        }
+        _ => input.to_string(),
+    };
+    let input = rewritten_input.as_str();
+
     let result = if state.active_combat.is_some() {
         handle_combat(&mut state, input)
     } else {
@@ -128,6 +168,55 @@ pub fn process_input(state_json: &str, input: &str) -> GameOutput {
     let new_state_json = serde_json::to_string(&state).unwrap();
     let state_changed = new_state_json != old_state_json;
     GameOutput::new(result, new_state_json, state_changed)
+}
+
+/// If `input` is a bare positive integer in `1..=candidates.len()`, return the
+/// corresponding candidate name. Otherwise return None. The input must be
+/// entirely numeric (no extra words, no sign) so that inputs like "1 sword"
+/// or "-1" fall through to normal parsing.
+fn resolve_numeric_selection(input: &str, candidates: &[String]) -> Option<String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let n: usize = trimmed.parse().ok()?;
+    if n == 0 || n > candidates.len() {
+        return None;
+    }
+    Some(candidates[n - 1].clone())
+}
+
+/// Emit a disambiguation prompt AND store the pending selection context on
+/// the game state so a subsequent numeric input ("1", "2", ...) from the
+/// player routes back to the original command. `verb_prefix` is the command
+/// head to re-apply when resolving (e.g. `"take"`, `"talk to"`, `"equip"`).
+/// `matches` is the list of (id, name) pairs to display, in the order they
+/// will be numbered; only the names are stored for later re-dispatch (the
+/// numeric index maps to `matches[n-1].1`).
+fn emit_disambiguation(
+    state: &mut GameState,
+    verb_prefix: &str,
+    matches: &[(usize, String)],
+) -> Vec<String> {
+    emit_disambiguation_with_suffix(state, verb_prefix, "", matches)
+}
+
+/// Like `emit_disambiguation`, but includes a trailing modifier that sits
+/// AFTER the resolved candidate name. Used for commands with positional
+/// suffixes such as `equip <weapon> off hand`, where the off-hand marker
+/// must survive the re-dispatch.
+fn emit_disambiguation_with_suffix(
+    state: &mut GameState,
+    verb_prefix: &str,
+    verb_suffix: &str,
+    matches: &[(usize, String)],
+) -> Vec<String> {
+    state.pending_disambiguation = Some(PendingDisambiguation {
+        verb_prefix: verb_prefix.to_string(),
+        candidates: matches.iter().map(|(_, name)| name.clone()).collect(),
+        verb_suffix: verb_suffix.to_string(),
+    });
+    resolver::format_disambiguation(matches)
 }
 
 fn handle_creation(state: &mut GameState, input: &str, step: CreationStep) -> Vec<String> {
@@ -869,7 +958,7 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
                         }
                         vec![format!("You don't see any \"{}\" here.", target)]
                     }
-                    ResolveResult::Ambiguous(matches) => resolver::format_disambiguation(&matches),
+                    ResolveResult::Ambiguous(matches) => emit_disambiguation(state, "look", &matches),
                     ResolveResult::NotFound => vec![format!("You don't see any \"{}\" here.", target)],
                 };
             } else {
@@ -1031,7 +1120,7 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
                         vec![narration::templates::NPC_NOT_FOUND.replace("{name}", &name)]
                     }
                 }
-                ResolveResult::Ambiguous(matches) => resolver::format_disambiguation(&matches),
+                ResolveResult::Ambiguous(matches) => emit_disambiguation(state, "talk to", &matches),
                 ResolveResult::NotFound => vec![narration::templates::NPC_NOT_FOUND.replace("{name}", &name)],
             }
         }
@@ -1064,7 +1153,7 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
 
                     lines
                 }
-                ResolveResult::Ambiguous(matches) => resolver::format_disambiguation(&matches),
+                ResolveResult::Ambiguous(matches) => emit_disambiguation(state, "take", &matches),
                 ResolveResult::NotFound => vec![narration::templates::ITEM_NOT_FOUND.replace("{item}", &item_name)],
             }
         }
@@ -1099,7 +1188,7 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
                     let name = state.world.items.get(&item_id).map(|i| i.name.clone()).unwrap_or_else(|| item_name.clone());
                     vec![narration::templates::DROP_ITEM.replace("{item}", &name)]
                 }
-                ResolveResult::Ambiguous(matches) => resolver::format_disambiguation(&matches),
+                ResolveResult::Ambiguous(matches) => emit_disambiguation(state, "drop", &matches),
                 ResolveResult::NotFound => vec![format!("You don't have any \"{}\".", item_name)],
             }
         }
@@ -1295,7 +1384,10 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
                         _ => vec![narration::templates::EQUIP_CANT.replace("{item}", &item.name)],
                     }
                 }
-                ResolveResult::Ambiguous(matches) => resolver::format_disambiguation(&matches),
+                ResolveResult::Ambiguous(matches) => {
+                    let suffix = if force_off_hand { "off hand" } else { "" };
+                    emit_disambiguation_with_suffix(state, "equip", suffix, &matches)
+                }
                 ResolveResult::NotFound => vec![narration::templates::EQUIP_NOT_FOUND.replace("{name}", &target_name)],
             }
         }
@@ -1349,7 +1441,7 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
                         vec![narration::templates::UNEQUIP_ARMOR.replace("{item}", &name)]
                     }
                 }
-                ResolveResult::Ambiguous(matches) => resolver::format_disambiguation(&matches),
+                ResolveResult::Ambiguous(matches) => emit_disambiguation(state, "unequip", &matches),
                 ResolveResult::NotFound => vec![narration::templates::UNEQUIP_NOT_EQUIPPED.replace("{name}", &target_str)],
             }
         }
@@ -2385,7 +2477,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                 }
                 ResolveResult::Ambiguous(matches) => {
                     state.active_combat = Some(combat);
-                    return resolver::format_disambiguation(&matches);
+                    return emit_disambiguation(state, "attack", &matches);
                 }
                 ResolveResult::NotFound => {
                     state.active_combat = Some(combat);
@@ -2415,7 +2507,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                 }
                 ResolveResult::Ambiguous(matches) => {
                     state.active_combat = Some(combat);
-                    return resolver::format_disambiguation(&matches);
+                    return emit_disambiguation(state, "approach", &matches);
                 }
                 ResolveResult::NotFound => {
                     state.active_combat = Some(combat);
@@ -2679,7 +2771,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                 }
                 ResolveResult::Ambiguous(matches) => {
                     state.active_combat = Some(combat);
-                    return resolver::format_disambiguation(&matches);
+                    return emit_disambiguation(state, "offhand attack", &matches);
                 }
                 ResolveResult::NotFound => {
                     state.active_combat = Some(combat);
@@ -2867,7 +2959,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                         }
                         ResolveResult::Ambiguous(matches) => {
                             state.active_combat = Some(combat);
-                            return resolver::format_disambiguation(&matches);
+                            return emit_disambiguation(state, "cast fire bolt at", &matches);
                         }
                         ResolveResult::NotFound => {
                             state.active_combat = Some(combat);
@@ -2937,7 +3029,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                         ResolveResult::Ambiguous(matches) => {
                             state.character.spell_slots_remaining[0] += 1; // refund
                             state.active_combat = Some(combat);
-                            return resolver::format_disambiguation(&matches);
+                            return emit_disambiguation(state, "cast magic missile at", &matches);
                         }
                         ResolveResult::NotFound => {
                             state.character.spell_slots_remaining[0] += 1; // refund
@@ -3330,7 +3422,7 @@ fn resolve_use_item(
                 }
             }
         }
-        ResolveResult::Ambiguous(matches) => (resolver::format_disambiguation(&matches), false),
+        ResolveResult::Ambiguous(matches) => (emit_disambiguation(state, "use", &matches), false),
         ResolveResult::NotFound => (vec![format!("You don't have any \"{}\".", item_name)], false),
     }
 }
@@ -3952,7 +4044,10 @@ fn handle_equip_command(state: &mut GameState, target_str: &str) -> Vec<String> 
                 _ => vec![narration::templates::EQUIP_CANT.replace("{item}", &item.name)],
             }
         }
-        ResolveResult::Ambiguous(matches) => resolver::format_disambiguation(&matches),
+        ResolveResult::Ambiguous(matches) => {
+            let suffix = if force_off_hand { "off hand" } else { "" };
+            emit_disambiguation_with_suffix(state, "equip", suffix, &matches)
+        }
         ResolveResult::NotFound => vec![narration::templates::EQUIP_NOT_FOUND.replace("{name}", &target_name)],
     }
 }
@@ -3996,7 +4091,7 @@ fn handle_unequip_command(state: &mut GameState, target_str: &str) -> Vec<String
                 vec![narration::templates::UNEQUIP_ARMOR.replace("{item}", &name)]
             }
         }
-        ResolveResult::Ambiguous(matches) => resolver::format_disambiguation(&matches),
+        ResolveResult::Ambiguous(matches) => emit_disambiguation(state, "unequip", &matches),
         ResolveResult::NotFound => vec![narration::templates::UNEQUIP_NOT_EQUIPPED.replace("{name}", target_str)],
     }
 }
@@ -4114,7 +4209,7 @@ fn handle_attune_command(state: &mut GameState, target_str: &str) -> Vec<String>
             state.character.attuned_items.push(item_id);
             vec![format!("You attune to the {}. You feel its power resonate with you.", item.name)]
         }
-        ResolveResult::Ambiguous(matches) => resolver::format_disambiguation(&matches),
+        ResolveResult::Ambiguous(matches) => emit_disambiguation(state, "attune", &matches),
         ResolveResult::NotFound => vec![format!("You don't have any \"{}\".", target)],
     }
 }
@@ -4143,7 +4238,7 @@ fn handle_unattune_command(state: &mut GameState, target_str: &str) -> Vec<Strin
             state.character.attuned_items.retain(|&i| i != item_id);
             vec![format!("You release your attunement to the {}.", name)]
         }
-        ResolveResult::Ambiguous(matches) => resolver::format_disambiguation(&matches),
+        ResolveResult::Ambiguous(matches) => emit_disambiguation(state, "unattune", &matches),
         ResolveResult::NotFound => vec![format!("You are not attuned to any \"{}\".", target)],
     }
 }
@@ -6908,6 +7003,7 @@ mod tests {
             in_world_minutes: 0,
             last_long_rest_minutes: None,
             pending_background_pattern: None,
+            pending_disambiguation: None,
         }
     }
 
@@ -7072,6 +7168,7 @@ mod tests {
             in_world_minutes: 0,
             last_long_rest_minutes: None,
             pending_background_pattern: None,
+            pending_disambiguation: None,
         }
     }
 
@@ -7764,6 +7861,7 @@ mod tests {
             in_world_minutes: 0,
             last_long_rest_minutes: None,
             pending_background_pattern: None,
+            pending_disambiguation: None,
         }
     }
 
