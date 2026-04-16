@@ -96,6 +96,8 @@ pub const SRD_WEAPONS: &[WeaponDef] = &[
     WeaponDef { name: "Hand Crossbow", category: WeaponCategory::Martial, cost_cp: 7500, damage_dice: 1, damage_die: 6, damage_type: DamageType::Piercing, weight_qp: 12, properties: AMMUNITION | LIGHT | LOADING, versatile_die: 0, range_normal: 30, range_long: 120 },
     WeaponDef { name: "Heavy Crossbow", category: WeaponCategory::Martial, cost_cp: 5000, damage_dice: 1, damage_die: 10, damage_type: DamageType::Piercing, weight_qp: 72, properties: AMMUNITION | HEAVY | LOADING | TWO_HANDED, versatile_die: 0, range_normal: 100, range_long: 400 },
     WeaponDef { name: "Longbow", category: WeaponCategory::Martial, cost_cp: 5000, damage_dice: 1, damage_die: 8, damage_type: DamageType::Piercing, weight_qp: 8, properties: AMMUNITION | HEAVY | TWO_HANDED, versatile_die: 0, range_normal: 150, range_long: 600 },
+    WeaponDef { name: "Musket", category: WeaponCategory::Martial, cost_cp: 50000, damage_dice: 1, damage_die: 12, damage_type: DamageType::Piercing, weight_qp: 40, properties: AMMUNITION | LOADING | TWO_HANDED, versatile_die: 0, range_normal: 40, range_long: 120 },
+    WeaponDef { name: "Pistol", category: WeaponCategory::Martial, cost_cp: 25000, damage_dice: 1, damage_die: 10, damage_type: DamageType::Piercing, weight_qp: 12, properties: AMMUNITION | LOADING, versatile_die: 0, range_normal: 30, range_long: 90 },
     WeaponDef { name: "Net", category: WeaponCategory::Martial, cost_cp: 100, damage_dice: 0, damage_die: 0, damage_type: DamageType::Bludgeoning, weight_qp: 12, properties: SPECIAL | THROWN, versatile_die: 0, range_normal: 5, range_long: 15 },
 ];
 
@@ -265,7 +267,7 @@ mod tests {
 
     #[test]
     fn test_srd_weapons_count() {
-        assert_eq!(SRD_WEAPONS.len(), 37);
+        assert_eq!(SRD_WEAPONS.len(), 39);
     }
 
     #[test]
@@ -338,6 +340,42 @@ mod tests {
         assert_eq!(net.damage_die, 0);
         assert!(net.properties & SPECIAL != 0);
         assert!(net.properties & THROWN != 0);
+    }
+
+    // Hypothesis: SRD_WEAPONS is missing the two Martial Ranged firearms
+    // (Musket and Pistol) from the SRD reference (see
+    // docs/reference/equipment.md:182-183). Appending both WeaponDef entries
+    // to the Martial Ranged section should make these lookups succeed and
+    // preserve the SRD stats documented in the handoff for #52.
+    #[test]
+    fn test_firearms_present_in_srd_weapons() {
+        let musket = SRD_WEAPONS.iter().find(|w| w.name == "Musket")
+            .expect("Musket must be present in SRD_WEAPONS");
+        assert_eq!(musket.category, WeaponCategory::Martial);
+        assert_eq!(musket.damage_dice, 1);
+        assert_eq!(musket.damage_die, 12);
+        assert_eq!(musket.damage_type, DamageType::Piercing);
+        assert_eq!(musket.weight_qp, 40);
+        assert_eq!(musket.cost_cp, 50000);
+        assert_eq!(musket.range_normal, 40);
+        assert_eq!(musket.range_long, 120);
+        assert!(musket.properties & AMMUNITION != 0);
+        assert!(musket.properties & LOADING != 0);
+        assert!(musket.properties & TWO_HANDED != 0);
+
+        let pistol = SRD_WEAPONS.iter().find(|w| w.name == "Pistol")
+            .expect("Pistol must be present in SRD_WEAPONS");
+        assert_eq!(pistol.category, WeaponCategory::Martial);
+        assert_eq!(pistol.damage_dice, 1);
+        assert_eq!(pistol.damage_die, 10);
+        assert_eq!(pistol.damage_type, DamageType::Piercing);
+        assert_eq!(pistol.weight_qp, 12);
+        assert_eq!(pistol.cost_cp, 25000);
+        assert_eq!(pistol.range_normal, 30);
+        assert_eq!(pistol.range_long, 90);
+        assert!(pistol.properties & AMMUNITION != 0);
+        assert!(pistol.properties & LOADING != 0);
+        assert!(pistol.properties & TWO_HANDED == 0);
     }
 
     #[test]
