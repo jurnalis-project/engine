@@ -7,7 +7,7 @@ pub mod feat;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use rand::Rng;
-use crate::types::{Ability, Skill, ItemId};
+use crate::types::{Ability, Alignment, Skill, ItemId};
 use self::race::Race;
 use self::class::{Class, ClassFeatureState};
 use self::background::Background;
@@ -86,6 +86,12 @@ pub struct Character {
     /// Empty for characters who have never spent an ASI on a feat.
     #[serde(default)]
     pub general_feats: Vec<String>,
+    /// SRD alignment. Chosen during the `ChooseAlignment` creation step.
+    /// Defaults to `Alignment::Unaligned` for legacy saves predating the
+    /// field and for the placeholder character allocated before character
+    /// creation completes. See `docs/specs/character-system.md`.
+    #[serde(default)]
+    pub alignment: Alignment,
 }
 
 impl Character {
@@ -188,6 +194,7 @@ pub fn create_character(
         attuned_items: Vec::new(),
         origin_feat: None,
         general_feats: Vec::new(),
+        alignment: Alignment::default(),
     }
 }
 
@@ -565,6 +572,28 @@ mod tests {
         let c = create_character("Test".to_string(), Race::Human, Class::Fighter, test_scores(), vec![]);
         assert_eq!(c.origin_feat, None);
         assert!(c.general_feats.is_empty());
+    }
+
+    #[test]
+    fn test_new_character_defaults_to_unaligned() {
+        use crate::types::Alignment;
+        let c = create_character("Test".to_string(), Race::Human, Class::Fighter, test_scores(), vec![]);
+        // Newly created characters start Unaligned; the ChooseAlignment
+        // creation step sets the value later in the wizard.
+        assert_eq!(c.alignment, Alignment::Unaligned);
+    }
+
+    #[test]
+    fn test_character_missing_alignment_deserializes_default() {
+        use crate::types::Alignment;
+        // Legacy save predating the alignment field: JSON without the
+        // `alignment` key must deserialize to Alignment::Unaligned via
+        // #[serde(default)].
+        let c = create_character("Test".to_string(), Race::Human, Class::Fighter, test_scores(), vec![]);
+        let mut v: serde_json::Value = serde_json::to_value(&c).unwrap();
+        v.as_object_mut().unwrap().remove("alignment");
+        let loaded: Character = serde_json::from_value(v).unwrap();
+        assert_eq!(loaded.alignment, Alignment::Unaligned);
     }
 
     #[test]
