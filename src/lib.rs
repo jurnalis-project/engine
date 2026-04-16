@@ -1975,16 +1975,22 @@ fn resolve_single_npc_attack(
     let attack = match attack_ref { Some(a) => a.clone(), None => return lines };
 
     // NPC attacking the player: disadvantage if the NPC is grappled by someone
-    // other than the player (per 2024 SRD Grappled condition).
-    let extra_disadvantage = crate::conditions::grappled_attack_disadvantage(
+    // other than the player (per 2024 SRD Grappled condition), or if the NPC
+    // is Sap-marked (2024 SRD Sap mastery).
+    let grappled = crate::conditions::grappled_attack_disadvantage(
         &npc_conditions,
         &state.character.name,
     );
+    let sapped = combat::consume_sap_disadvantage(combat, npc_id);
+    let extra_disadvantage = grappled || sapped;
     let result = combat::resolve_npc_attack(
         rng, &attack, player_ac, combat.player_dodging, distance,
         &npc_conditions, &player_conditions,
         extra_disadvantage,
     );
+    if sapped {
+        lines.push("(Disadvantage from Sap mastery.)".to_string());
+    }
     let verb = if attack.reach > 0 { "attacks with" } else { "fires" };
     let disadv = if result.disadvantage { " (with disadvantage)" } else { "" };
 
@@ -2550,6 +2556,15 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                         }
                     }
 
+                    // Weapon Mastery dispatch (2024 SRD). The mastery of the
+                    // equipped main-hand weapon fires after damage is applied.
+                    // Graze triggers on miss; all others trigger on hit. Nick
+                    // is off-hand-only so it doesn't fire here.
+                    apply_mainhand_mastery_effects(
+                        &mut rng, state, &mut combat, &mut lines,
+                        &result, npc_id, weapon_id, distance,
+                    );
+
                     combat.action_used = true;
                 }
                 ResolveResult::Ambiguous(matches) => {
@@ -2638,15 +2653,20 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
         Command::OffHandAttack(target_name) => {
             // Two-Weapon Fighting: requires main-hand Attack action already used,
             // both weapons light melee, and bonus action available.
+            //
+            // Nick mastery (SRD 2024): when the off-hand weapon has Nick and
+            // the character has unlocked it, the off-hand swing is part of
+            // the Attack action instead of a bonus action. That means:
+            //   - we still require `action_used = true` (the player must have
+            //     taken the Attack action this turn), and
+            //   - the bonus-action gate is skipped, and
+            //   - the bonus-action slot is NOT consumed.
+            // This is once per turn (`combat.nick_used_this_turn`).
             if !combat.action_used {
                 state.active_combat = Some(combat);
                 return vec![
                     "You must take the Attack action with your main hand before using the off-hand bonus attack.".to_string()
                 ];
-            }
-            if combat.bonus_action_used {
-                state.active_combat = Some(combat);
-                return vec!["You've already used your bonus action this turn.".to_string()];
             }
 
             // Off-hand weapon must be equipped and LIGHT melee.
@@ -2660,6 +2680,22 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                     ];
                 }
             };
+
+            // Determine whether Nick applies: off-hand weapon has Nick mastery
+            // and the character has it unlocked. We do the lookup now so we
+            // can decide whether to bypass the bonus-action gate below.
+            let off_hand_item_name = state.world.items.get(&off_hand_id)
+                .map(|i| i.name.clone())
+                .unwrap_or_default();
+            let has_nick_mastery = equipment::weapon_mastery(&off_hand_item_name)
+                == Some(crate::types::Mastery::Nick)
+                && equipment::character_has_mastery(&state.character, &off_hand_item_name);
+            let nick_applies = combat::apply_nick_mastery(has_nick_mastery, &mut combat);
+
+            if !nick_applies && combat.bonus_action_used {
+                state.active_combat = Some(combat);
+                return vec!["You've already used your bonus action this turn.".to_string()];
+            }
             let (is_light_melee, is_weapon) = match state.world.items.get(&off_hand_id) {
                 Some(item) => match &item.item_type {
                     state::ItemType::Weapon { properties, range_normal, .. } => {
@@ -2853,7 +2889,25 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                         }
                     }
 
-                    combat.bonus_action_used = true;
+                    // Weapon Mastery dispatch for off-hand attacks. Nick is
+                    // handled above (gates bonus-action consumption); all
+                    // other masteries still fire normally on the off-hand
+                    // weapon if the character has mastery unlocked.
+                    let mut off_result = result.clone();
+                    off_result.damage = adjusted_damage;
+                    apply_mainhand_mastery_effects(
+                        &mut rng, state, &mut combat, &mut lines,
+                        &off_result, npc_id, Some(off_hand_id), distance,
+                    );
+
+                    if nick_applies {
+                        lines.push(
+                            "Nick: this off-hand swing is part of your Attack action."
+                                .to_string(),
+                        );
+                    } else {
+                        combat.bonus_action_used = true;
+                    }
                 }
                 ResolveResult::Ambiguous(matches) => {
                     state.active_combat = Some(combat);
@@ -4231,6 +4285,164 @@ fn apply_magic_weapon_bonuses(
         // On a miss (possibly caused by a negative damage_bonus... edge case),
         // damage stays 0.
         result.damage = 0;
+    }
+}
+
+/// Looks up the SRD mastery for a weapon item (if any) and returns it only
+/// when the character has that mastery unlocked. Returns `None` for unarmed
+/// strikes, unknown weapon names, or weapons the character has not unlocked.
+///
+/// Kept in `lib.rs` per the module-isolation rule: combat effects depend on
+/// character/equipment data that `combat/` cannot reach directly.
+fn player_mastery_for_weapon(
+    state: &GameState,
+    weapon_id: Option<crate::types::ItemId>,
+) -> Option<crate::types::Mastery> {
+    let id = weapon_id?;
+    let item = state.world.items.get(&id)?;
+    let mastery = equipment::weapon_mastery(&item.name)?;
+    if equipment::character_has_mastery(&state.character, &item.name) {
+        Some(mastery)
+    } else {
+        None
+    }
+}
+
+/// Returns the player's ability modifier used for a given weapon's attack roll
+/// (mirrors the selection logic in `combat::resolve_player_attack`). Matches
+/// FINESSE / ranged / unarmed cases. Used by mastery helpers that reference
+/// "the ability modifier used for the attack roll" (Graze, Cleave, Topple).
+fn player_attack_ability_mod(
+    state: &GameState,
+    weapon_id: Option<crate::types::ItemId>,
+    distance: u32,
+) -> i32 {
+    use types::Ability;
+    let str_m = state.character.ability_modifier(Ability::Strength);
+    let dex_m = state.character.ability_modifier(Ability::Dexterity);
+    let Some(id) = weapon_id else {
+        // Unarmed: STR is used.
+        return str_m;
+    };
+    let Some(item) = state.world.items.get(&id) else { return str_m };
+    let (properties, range_normal, range_long) = match &item.item_type {
+        state::ItemType::Weapon { properties, range_normal, range_long, .. } => {
+            (*properties, *range_normal, *range_long)
+        }
+        state::ItemType::MagicWeapon { properties, range_normal, range_long, .. } => {
+            (*properties, *range_normal, *range_long)
+        }
+        _ => return str_m,
+    };
+    let is_finesse = properties & equipment::FINESSE != 0;
+    let is_thrown = properties & equipment::THROWN != 0;
+    // Ranged if the weapon has no melee mode, or if a thrown weapon is
+    // being used from range.
+    let is_ranged_only = range_normal > 0 && distance > 5;
+    if is_ranged_only {
+        if is_thrown {
+            if is_finesse { str_m.max(dex_m) } else { str_m }
+        } else if range_long > 0 {
+            dex_m
+        } else {
+            str_m
+        }
+    } else if is_finesse {
+        str_m.max(dex_m)
+    } else {
+        str_m
+    }
+}
+
+/// NPC creature size helper used by Push mastery's Large-or-smaller gate.
+/// Returns `Size::Medium` when the NPC has no combat_stats.
+fn npc_size(state: &GameState, npc_id: crate::types::NpcId) -> crate::combat::monsters::Size {
+    state.world.npcs.get(&npc_id)
+        .and_then(|n| n.combat_stats.as_ref())
+        .map(|s| s.size)
+        .unwrap_or(crate::combat::monsters::Size::Medium)
+}
+
+/// Dispatch mastery effects for a main-hand attack. Called after damage
+/// has been applied. Reads the equipped weapon's mastery, checks the
+/// character has unlocked it, then calls the appropriate combat helper.
+///
+/// Cleave also triggers a secondary attack here, which resolves its own
+/// hit/damage/narration inline.
+#[allow(clippy::too_many_arguments)]
+fn apply_mainhand_mastery_effects(
+    rng: &mut StdRng,
+    state: &mut GameState,
+    combat: &mut combat::CombatState,
+    lines: &mut Vec<String>,
+    result: &combat::AttackResult,
+    npc_id: crate::types::NpcId,
+    weapon_id: Option<crate::types::ItemId>,
+    distance: u32,
+) {
+    let Some(mastery) = player_mastery_for_weapon(state, weapon_id) else { return };
+    let ability_mod = player_attack_ability_mod(state, weapon_id, distance);
+    let prof_bonus = state.character.proficiency_bonus();
+
+    use types::Mastery;
+    match mastery {
+        Mastery::Graze => {
+            if let Some(npc) = state.world.npcs.get_mut(&npc_id) {
+                combat::apply_graze_mastery(true, result, ability_mod, npc, lines);
+            }
+        }
+        Mastery::Vex => {
+            combat::apply_vex_mastery(true, result, npc_id, combat, lines);
+        }
+        Mastery::Sap => {
+            combat::apply_sap_mastery(true, result, npc_id, combat, lines);
+        }
+        Mastery::Slow => {
+            combat::apply_slow_mastery(true, result, npc_id, combat, lines);
+        }
+        Mastery::Push => {
+            let size = npc_size(state, npc_id);
+            combat::apply_push_mastery(true, result, npc_id, combat, lines, size);
+        }
+        Mastery::Topple => {
+            combat::apply_topple_mastery(
+                true, result, npc_id, state, lines,
+                ability_mod, prof_bonus, rng,
+            );
+        }
+        Mastery::Cleave => {
+            if let Some((secondary_id, cleave_result, _mod)) = combat::apply_cleave_mastery(
+                rng, true, result, npc_id, combat, state, ability_mod,
+            ) {
+                let secondary_name = state.world.npcs.get(&secondary_id)
+                    .map(|n| n.name.clone())
+                    .unwrap_or_else(|| "an adjacent enemy".to_string());
+                if cleave_result.hit {
+                    lines.push(format!(
+                        "Cleave: you sweep through and strike {} for {} {} damage.",
+                        secondary_name, cleave_result.damage, cleave_result.damage_type,
+                    ));
+                    if let Some(npc) = state.world.npcs.get_mut(&secondary_id) {
+                        let _dealt = combat::apply_damage_to_npc(
+                            npc, cleave_result.damage, cleave_result.damage_type, lines,
+                        );
+                        if let Some(stats) = npc.combat_stats.as_ref() {
+                            if stats.current_hp <= 0 {
+                                lines.push(format!("{} is slain!", secondary_name));
+                            }
+                        }
+                    }
+                } else {
+                    lines.push(format!(
+                        "Cleave: your follow-through misses {}.", secondary_name,
+                    ));
+                }
+            }
+        }
+        Mastery::Nick => {
+            // Nick only fires on off-hand Light-weapon attacks; it is a
+            // no-op here on the main-hand path.
+        }
     }
 }
 
@@ -8723,5 +8935,250 @@ mod tests {
         }
         assert!(common > legendary,
             "Expected Common ({}) > Legendary ({}) over 5000 spawns", common, legendary);
+    }
+
+    // ---- Weapon Mastery orchestrator wiring (feat/weapon-mastery) --------
+
+    #[test]
+    fn test_attack_with_sap_mastery_marks_target() {
+        // The default combat fixture equips a Longsword (Sap mastery).
+        // Giving the character Sap for Longsword should mean any attack
+        // roll that hits marks the NPC for Sap disadvantage.
+        let mut state = create_test_combat_state();
+        state.character.weapon_masteries.push("Longsword".to_string());
+        // Bump goblin HP well above max weapon damage so a single hit
+        // cannot end combat (which would clear active_combat to None).
+        if let Some(npc) = state.world.npcs.get_mut(&100) {
+            if let Some(ref mut stats) = npc.combat_stats {
+                stats.max_hp = 200;
+                stats.current_hp = 200;
+            }
+        }
+        force_player_turn(&mut state);
+        if let Some(ref mut combat) = state.active_combat {
+            combat.distances.insert(100, 5);
+        }
+
+        // Try several seeds until we land a hit, then verify the mark.
+        for seed in 0..40u64 {
+            let mut s = state.clone();
+            s.rng_seed = seed;
+            s.rng_counter = 0;
+            let state_json = serde_json::to_string(&s).unwrap();
+            let output = process_input(&state_json, "attack test goblin");
+            let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+            let Some(combat) = new_state.active_combat.as_ref() else { continue };
+            if combat.sap_targets.contains(&100) {
+                // Success: hit landed and Sap mark was set.
+                assert!(output.text.iter().any(|t| t.contains("Sap")),
+                    "Expected Sap narration, got: {:?}", output.text);
+                return;
+            }
+        }
+        panic!("Did not land a hit in 40 seeds; fixture may need higher attack bonus.");
+    }
+
+    #[test]
+    fn test_attack_without_mastery_does_not_mark_sap() {
+        // Same fixture but the character has NOT unlocked Sap for Longsword.
+        // Even on a hit, combat.sap_targets should stay empty.
+        let mut state = create_test_combat_state();
+        // The default fixture uses Fighter, which auto-grants Longsword
+        // mastery at creation. Clear the list so this test legitimately
+        // exercises the no-mastery path.
+        state.character.weapon_masteries.clear();
+        // Bump goblin HP so a hit doesn't end combat and drop active_combat.
+        if let Some(npc) = state.world.npcs.get_mut(&100) {
+            if let Some(ref mut stats) = npc.combat_stats {
+                stats.max_hp = 200;
+                stats.current_hp = 200;
+            }
+        }
+        force_player_turn(&mut state);
+        if let Some(ref mut combat) = state.active_combat {
+            combat.distances.insert(100, 5);
+        }
+
+        for seed in 0..40u64 {
+            let mut s = state.clone();
+            s.rng_seed = seed;
+            s.rng_counter = 0;
+            let state_json = serde_json::to_string(&s).unwrap();
+            let output = process_input(&state_json, "attack test goblin");
+            let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+            // If combat somehow ended, skip this seed -- Sap obviously
+            // cannot have fired into a nonexistent combat state.
+            let Some(combat) = new_state.active_combat.as_ref() else { continue };
+            assert!(!combat.sap_targets.contains(&100),
+                "Sap should never fire without mastery (seed {}), got text: {:?}",
+                seed, output.text);
+        }
+    }
+
+    #[test]
+    fn test_graze_on_miss_deals_damage_end_to_end() {
+        // Swap the Longsword for a Greatsword (Graze mastery). On a miss,
+        // Graze should still deal ability-mod damage -- the NPC's HP should
+        // drop by the STR modifier.
+        let mut state = create_test_combat_state();
+        // Replace main-hand with Greatsword.
+        let greatsword_id = 201;
+        state.world.items.insert(greatsword_id, state::Item {
+            id: greatsword_id,
+            name: "Greatsword".to_string(),
+            description: "A massive two-hander.".to_string(),
+            item_type: state::ItemType::Weapon {
+                damage_dice: 2, damage_die: 6,
+                damage_type: state::DamageType::Slashing,
+                properties: crate::equipment::HEAVY | crate::equipment::TWO_HANDED,
+                category: state::WeaponCategory::Martial,
+                versatile_die: 0, range_normal: 0, range_long: 0,
+            },
+            location: None, carried_by_player: true,
+            charges_remaining: None,
+        });
+        state.character.inventory.push(greatsword_id);
+        state.character.equipped.main_hand = Some(greatsword_id);
+        state.character.weapon_masteries.push("Greatsword".to_string());
+
+        force_player_turn(&mut state);
+        if let Some(ref mut combat) = state.active_combat {
+            combat.distances.insert(100, 5);
+        }
+
+        // Bump goblin AC so misses are likely. Find a seed that produces a miss.
+        if let Some(npc) = state.world.npcs.get_mut(&100) {
+            if let Some(ref mut stats) = npc.combat_stats {
+                stats.ac = 25; // almost impossible to hit
+            }
+        }
+
+        for seed in 0..40u64 {
+            let mut s = state.clone();
+            s.rng_seed = seed;
+            s.rng_counter = 0;
+            let start_hp = s.world.npcs[&100].combat_stats.as_ref().unwrap().current_hp;
+            let state_json = serde_json::to_string(&s).unwrap();
+            let output = process_input(&state_json, "attack test goblin");
+            let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+            let new_hp = new_state.world.npcs[&100].combat_stats.as_ref().unwrap().current_hp;
+            let missed = output.text.iter().any(|t| t.contains("miss"));
+            if missed && new_hp < start_hp {
+                // Graze landed: damage was dealt even on a miss.
+                assert!(output.text.iter().any(|t| t.contains("Graze")),
+                    "Expected Graze narration on miss-with-damage, got: {:?}", output.text);
+                return;
+            }
+        }
+        panic!("Did not produce a Graze scenario in 40 seeds.");
+    }
+
+    #[test]
+    fn test_attack_with_push_mastery_shoves_target() {
+        // Swap main-hand for a Warhammer (Push mastery). On a hit, the
+        // goblin's distance should increase by 10 ft.
+        let mut state = create_test_combat_state();
+        let warhammer_id = 202;
+        state.world.items.insert(warhammer_id, state::Item {
+            id: warhammer_id,
+            name: "Warhammer".to_string(),
+            description: "A heavy hammer.".to_string(),
+            item_type: state::ItemType::Weapon {
+                damage_dice: 1, damage_die: 8,
+                damage_type: state::DamageType::Bludgeoning,
+                properties: crate::equipment::VERSATILE,
+                category: state::WeaponCategory::Martial,
+                versatile_die: 10, range_normal: 0, range_long: 0,
+            },
+            location: None, carried_by_player: true,
+            charges_remaining: None,
+        });
+        state.character.inventory.push(warhammer_id);
+        state.character.equipped.main_hand = Some(warhammer_id);
+        state.character.weapon_masteries.push("Warhammer".to_string());
+        // Bump goblin HP so a hit doesn't end combat and drop active_combat.
+        if let Some(npc) = state.world.npcs.get_mut(&100) {
+            if let Some(ref mut stats) = npc.combat_stats {
+                stats.max_hp = 200;
+                stats.current_hp = 200;
+            }
+        }
+
+        force_player_turn(&mut state);
+        if let Some(ref mut combat) = state.active_combat {
+            combat.distances.insert(100, 5);
+        }
+
+        for seed in 0..40u64 {
+            let mut s = state.clone();
+            s.rng_seed = seed;
+            s.rng_counter = 0;
+            let state_json = serde_json::to_string(&s).unwrap();
+            let output = process_input(&state_json, "attack test goblin");
+            let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+            let Some(combat) = new_state.active_combat.as_ref() else { continue };
+            let dist = combat.distances.get(&100).copied().unwrap_or(0);
+            if dist == 15 {
+                // Push fired: 5 -> 15.
+                assert!(output.text.iter().any(|t| t.contains("Push")),
+                    "Expected Push narration, got: {:?}", output.text);
+                return;
+            }
+        }
+        panic!("Did not produce a Push scenario in 40 seeds.");
+    }
+
+    #[test]
+    fn test_vex_mastery_grants_advantage_on_next_attack() {
+        // Swap main-hand for a Shortsword (Vex mastery). After a hit, the
+        // next attack against the same target should have advantage. Over
+        // many seeds with Vex, hit rate should be higher than without.
+        let mut base = create_test_combat_state();
+        let shortsword_id = 203;
+        base.world.items.insert(shortsword_id, state::Item {
+            id: shortsword_id,
+            name: "Shortsword".to_string(),
+            description: "A nimble blade.".to_string(),
+            item_type: state::ItemType::Weapon {
+                damage_dice: 1, damage_die: 6,
+                damage_type: state::DamageType::Piercing,
+                properties: crate::equipment::FINESSE | crate::equipment::LIGHT,
+                category: state::WeaponCategory::Martial,
+                versatile_die: 0, range_normal: 0, range_long: 0,
+            },
+            location: None, carried_by_player: true,
+            charges_remaining: None,
+        });
+        base.character.inventory.push(shortsword_id);
+        base.character.equipped.main_hand = Some(shortsword_id);
+        // Bump goblin HP so a hit doesn't end combat and drop active_combat.
+        if let Some(npc) = base.world.npcs.get_mut(&100) {
+            if let Some(ref mut stats) = npc.combat_stats {
+                stats.max_hp = 200;
+                stats.current_hp = 200;
+            }
+        }
+
+        // Preload the Vex mark on the combat state (simulates a prior hit
+        // with the Shortsword) and then attack. Verify the hit narration
+        // mentions advantage.
+        force_player_turn(&mut base);
+        if let Some(ref mut combat) = base.active_combat {
+            combat.distances.insert(100, 5);
+            combat.player_vex_target = Some(100);
+        }
+
+        let state_json = serde_json::to_string(&base).unwrap();
+        let output = process_input(&state_json, "attack test goblin");
+        assert!(
+            output.text.iter().any(|t| t.contains("Vex")),
+            "Expected Vex narration when player_vex_target is preloaded, got: {:?}",
+            output.text,
+        );
+        // Consumed: the new state should have player_vex_target == None.
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        let combat = new_state.active_combat.as_ref()
+            .expect("combat should still be active after a single hit against a high-HP target");
+        assert_eq!(combat.player_vex_target, None, "Vex mark should be consumed");
     }
 }

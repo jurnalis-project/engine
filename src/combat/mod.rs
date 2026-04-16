@@ -782,23 +782,31 @@ pub fn resolve_npc_turn(
 
     // Orchestrator-side grappled disadvantage: if the NPC is grappled by
     // someone other than the player, attacking the player is at disadvantage.
-    let extra_disadvantage = conditions::grappled_attack_disadvantage(
+    let grappled = conditions::grappled_attack_disadvantage(
         &npc_conditions,
         &state.character.name,
     );
+    // Sap mastery: consume the mark so only the FIRST attack this turn is
+    // rolled with disadvantage. Multiattack follow-ups revert to normal.
+    let sapped_first_attack = consume_sap_disadvantage(combat, npc_id);
+    if sapped_first_attack {
+        lines.push("(Disadvantage from Sap mastery.)".to_string());
+    }
 
     // Check for melee attack
     let melee_attack = npc_attacks.iter().find(|a| a.reach > 0 && distance <= a.reach as u32).cloned();
     if let Some(attack) = melee_attack {
         // Multiattack loop: roll `multiattack` separate attacks against the player.
         // Stops early if the player is reduced to 0 HP mid-action.
-        for _ in 0..npc_multiattack {
+        for i in 0..npc_multiattack {
             if state.character.current_hp <= 0 {
                 break;
             }
+            // Sap disadvantage applies only to the first attack of the turn.
+            let iter_disadv = grappled || (sapped_first_attack && i == 0);
             let player_ac = crate::equipment::calculate_ac(&state.character, &state.world.items);
             let player_dodging = combat.player_dodging;
-            let result = resolve_npc_attack(rng, &attack, player_ac, player_dodging, distance, &npc_conditions, &player_conditions, extra_disadvantage);
+            let result = resolve_npc_attack(rng, &attack, player_ac, player_dodging, distance, &npc_conditions, &player_conditions, iter_disadv);
             let disadv = if result.disadvantage { " (with disadvantage)" } else { "" };
 
             if result.hit {
@@ -828,13 +836,14 @@ pub fn resolve_npc_turn(
         a.range_long > 0 && distance <= a.range_long as u32
     }).cloned();
     if let Some(attack) = ranged_attack {
-        for _ in 0..npc_multiattack {
+        for i in 0..npc_multiattack {
             if state.character.current_hp <= 0 {
                 break;
             }
+            let iter_disadv = grappled || (sapped_first_attack && i == 0);
             let player_ac = crate::equipment::calculate_ac(&state.character, &state.world.items);
             let player_dodging = combat.player_dodging;
-            let result = resolve_npc_attack(rng, &attack, player_ac, player_dodging, distance, &npc_conditions, &player_conditions, extra_disadvantage);
+            let result = resolve_npc_attack(rng, &attack, player_ac, player_dodging, distance, &npc_conditions, &player_conditions, iter_disadv);
             let disadv = if result.disadvantage { " (with disadvantage)" } else { "" };
 
             if result.hit {
@@ -859,8 +868,18 @@ pub fn resolve_npc_turn(
         return lines;
     }
 
-    // Move toward player
-    let move_amount = npc_speed as u32;
+    // Move toward player. Slow mastery (2024 SRD) reduces the NPC's Speed
+    // by up to 10 ft for this move; the reduction is reported once so the
+    // player can see why the NPC moved less.
+    let slow_reduction = slow_speed_reduction(combat, npc_id).max(0) as u32;
+    let effective_speed = (npc_speed as u32).saturating_sub(slow_reduction);
+    if slow_reduction > 0 {
+        lines.push(format!(
+            "(Slow: {}'s Speed reduced by {} ft this turn.)",
+            npc_name, slow_reduction,
+        ));
+    }
+    let move_amount = effective_speed;
     let new_distance = if distance > move_amount { distance - move_amount } else { 5 };
     combat.distances.insert(npc_id, new_distance);
     lines.push(format!("{} moves toward you. ({}ft -> {}ft)", npc_name, distance, new_distance));
