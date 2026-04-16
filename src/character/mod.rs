@@ -239,8 +239,9 @@ pub fn create_character(
 /// - Other full casters (Bard/Cleric/Druid/Sorcerer) and Warlock get a
 ///   small, thematic level-1 list drawn from their class spell list.
 /// - Prepared casters (Cleric/Druid/Paladin/Wizard) receive this list as
-///   the default prepared set; Paladin/Ranger still start with empty
-///   prepared lists since they lack slots at level 1 per SRD.
+///   the default prepared set (via `init_class_features`). Paladin (2024
+///   SRD) starts with 2 prepared level-1 spells at character creation;
+///   Ranger is out of scope for issue #86 and still starts empty.
 /// - Non-caster classes return an empty vector.
 ///
 /// The exact lists here represent a reasonable "common starter" set. A
@@ -275,8 +276,14 @@ pub fn default_starting_spells(class: Class) -> Vec<String> {
             "Eldritch Blast", "Mage Hand",
             "Charm Person",
         ]),
-        // Half-casters: level 1 has no slots; they lack known spells until level 2.
-        Class::Paladin | Class::Ranger => Vec::new(),
+        // Paladin (2024 SRD): gains Spellcasting at level 1 with 2 prepared
+        // level-1 spells. The SRD recommends Heroism and Searing Smite;
+        // Searing Smite is not in the catalog yet, so we pair Heroism with
+        // Bless (both on the Paladin spell list).
+        Class::Paladin => v(&["Heroism", "Bless"]),
+        // Ranger still unlocks spellcasting at level 2 in this engine
+        // (out of scope for issue #86).
+        Class::Ranger => Vec::new(),
         Class::Barbarian | Class::Fighter | Class::Monk | Class::Rogue => Vec::new(),
     }
 }
@@ -535,10 +542,18 @@ mod tests {
     }
 
     #[test]
-    fn test_paladin_ranger_no_slots_at_level_one() {
+    fn test_paladin_level_one_has_two_spell_slots() {
+        // 2024 SRD: Paladin gains Spellcasting at level 1 with 2 first-level
+        // spell slots. See docs/reference/paladin.md.
         let c = create_character("Pally".to_string(), Race::Human, Class::Paladin, test_scores(), vec![]);
-        assert!(c.spell_slots_max.is_empty());
-        assert!(c.spell_slots_remaining.is_empty());
+        assert_eq!(c.spell_slots_max, vec![2]);
+        assert_eq!(c.spell_slots_remaining, vec![2]);
+    }
+
+    #[test]
+    fn test_ranger_level_one_has_no_slots() {
+        // Ranger spellcasting is not in scope for issue #86 — retains the
+        // half-caster table behavior (no slots at level 1).
         let c = create_character("Aran".to_string(), Race::Human, Class::Ranger, test_scores(), vec![]);
         assert!(c.spell_slots_max.is_empty());
         assert!(c.spell_slots_remaining.is_empty());
@@ -756,18 +771,36 @@ mod tests {
         }
     }
 
+    // Root-cause hypothesis (2026-04-16, issue #86):
+    // Under 2024 SRD, Paladin gains Spellcasting at level 1 with 2 prepared
+    // spells and 2 level-1 slots (see docs/reference/paladin.md). The engine
+    // previously encoded 2014 SRD behavior (no slots until level 2). These
+    // tests assert the 2024 behavior.
     #[test]
-    fn test_paladin_level_one_has_empty_known_spells() {
-        // Paladin/Ranger unlock spellcasting at level 2 per SRD; level 1
-        // starts with an empty list.
+    fn test_paladin_level_one_has_starting_known_spells() {
+        // 2024 SRD Paladin knows 2 level-1 spells at character creation.
+        // The catalog offers Heroism and Bless (Searing Smite — SRD's
+        // recommended pair — is not in the catalog).
         let c = create_character("Pally".to_string(), Race::Human, Class::Paladin, test_scores(), vec![]);
-        assert!(c.known_spells.is_empty());
-        // prepared_spells also empty for Paladin at level 1.
-        assert!(c.class_features.prepared_spells.is_empty());
+        assert_eq!(c.known_spells.len(), 2, "Paladin L1 should know 2 spells");
+        assert!(c.known_spells.contains(&"Heroism".to_string()),
+            "Paladin L1 known_spells should include Heroism: {:?}", c.known_spells);
+        assert!(c.known_spells.contains(&"Bless".to_string()),
+            "Paladin L1 known_spells should include Bless: {:?}", c.known_spells);
+    }
+
+    #[test]
+    fn test_paladin_level_one_prepared_spells_mirror_known() {
+        // Paladin is a prepared caster; prepared_spells should mirror
+        // known_spells at character creation (same as Cleric/Druid/Wizard).
+        let c = create_character("Pally".to_string(), Race::Human, Class::Paladin, test_scores(), vec![]);
+        assert_eq!(c.class_features.prepared_spells, c.known_spells);
     }
 
     #[test]
     fn test_ranger_level_one_has_empty_known_spells() {
+        // Ranger spellcasting is out of scope for issue #86 — it retains
+        // the existing behavior (empty known_spells at level 1).
         let c = create_character("Aran".to_string(), Race::Human, Class::Ranger, test_scores(), vec![]);
         assert!(c.known_spells.is_empty());
     }

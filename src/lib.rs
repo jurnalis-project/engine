@@ -8354,15 +8354,20 @@ mod tests {
     }
 
     #[test]
-    fn test_paladin_level_one_has_no_spells() {
+    fn test_paladin_level_one_shows_starting_spells() {
+        // 2024 SRD: Paladin gains Spellcasting at level 1 with 2 prepared
+        // spells (engine uses Heroism + Bless since Searing Smite is not in
+        // the catalog). See docs/reference/paladin.md.
         let state = wizard_state_with_class(character::class::Class::Paladin);
         let state_json = serde_json::to_string(&state).unwrap();
         let output = process_input(&state_json, "spells");
         let text = output.text.join("\n");
-        // Paladin unlocks spellcasting at level 2; level 1 has an empty
-        // known_spells list so the no-spells branch fires.
-        assert!(text.contains("You don't know any spells"),
-            "Paladin L1 should have no spells. Got:\n{}", text);
+        assert!(!text.contains("You don't know any spells"),
+            "Paladin L1 should now know starter spells. Got:\n{}", text);
+        assert!(text.contains("Heroism"),
+            "Paladin L1 should list Heroism. Got:\n{}", text);
+        assert!(text.contains("Bless"),
+            "Paladin L1 should list Bless. Got:\n{}", text);
     }
 
     // ---- Magic item orchestration (feat/magic-items, 2026-04-15) ----

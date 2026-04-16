@@ -512,11 +512,59 @@ pub const FULL_CASTER_SLOT_TABLE: [[u32; 9]; 20] = [
     [4, 3, 3, 3, 3, 2, 2, 1, 1],
 ];
 
-/// Half-caster spell-slot progression per SRD 5.1. Used by Paladin and
-/// Ranger. Slots unlock at class level 2. Index is `class_level - 1`.
+/// Half-caster spell-slot progression per SRD 5.1 (2014-style).
+/// Retained for Ranger, which still unlocks spellcasting at class level 2
+/// in this engine (Ranger 2024-SRD alignment is tracked separately and out
+/// of scope for issue #86). Index is `class_level - 1`.
 pub const HALF_CASTER_SLOT_TABLE: [[u32; 9]; 20] = [
     // L1 (no slots)
     [0, 0, 0, 0, 0, 0, 0, 0, 0],
+    // L2
+    [2, 0, 0, 0, 0, 0, 0, 0, 0],
+    // L3
+    [3, 0, 0, 0, 0, 0, 0, 0, 0],
+    // L4
+    [3, 0, 0, 0, 0, 0, 0, 0, 0],
+    // L5
+    [4, 2, 0, 0, 0, 0, 0, 0, 0],
+    // L6
+    [4, 2, 0, 0, 0, 0, 0, 0, 0],
+    // L7
+    [4, 3, 0, 0, 0, 0, 0, 0, 0],
+    // L8
+    [4, 3, 0, 0, 0, 0, 0, 0, 0],
+    // L9
+    [4, 3, 2, 0, 0, 0, 0, 0, 0],
+    // L10
+    [4, 3, 2, 0, 0, 0, 0, 0, 0],
+    // L11
+    [4, 3, 3, 0, 0, 0, 0, 0, 0],
+    // L12
+    [4, 3, 3, 0, 0, 0, 0, 0, 0],
+    // L13
+    [4, 3, 3, 1, 0, 0, 0, 0, 0],
+    // L14
+    [4, 3, 3, 1, 0, 0, 0, 0, 0],
+    // L15
+    [4, 3, 3, 2, 0, 0, 0, 0, 0],
+    // L16
+    [4, 3, 3, 2, 0, 0, 0, 0, 0],
+    // L17
+    [4, 3, 3, 3, 1, 0, 0, 0, 0],
+    // L18
+    [4, 3, 3, 3, 1, 0, 0, 0, 0],
+    // L19
+    [4, 3, 3, 3, 2, 0, 0, 0, 0],
+    // L20
+    [4, 3, 3, 3, 2, 0, 0, 0, 0],
+];
+
+/// Paladin spell-slot progression per SRD 2024. Paladin gains Spellcasting
+/// at level 1 with 2 first-level slots (see docs/reference/paladin.md).
+/// L2+ matches the existing half-caster table. Index is `class_level - 1`.
+pub const PALADIN_SLOT_TABLE: [[u32; 9]; 20] = [
+    // L1: 2 x L1 (2024 SRD change vs HALF_CASTER_SLOT_TABLE)
+    [2, 0, 0, 0, 0, 0, 0, 0, 0],
     // L2
     [2, 0, 0, 0, 0, 0, 0, 0, 0],
     // L3
@@ -609,14 +657,16 @@ pub const WARLOCK_SLOT_TABLE: [[u32; 9]; 20] = [
 ///
 /// The matching rules:
 /// - Bard/Cleric/Druid/Sorcerer/Wizard -> full-caster table
-/// - Paladin/Ranger -> half-caster table
+/// - Paladin -> Paladin 2024 table (Spellcasting at L1)
+/// - Ranger -> half-caster table (Spellcasting at L2; out of scope for #86)
 /// - Warlock -> Pact Magic table
 /// - Others -> empty vector
 pub fn slots_for(class_name: &str, level: u32) -> Vec<i32> {
     let idx = level.clamp(1, 20) as usize - 1;
     let row: &[u32; 9] = match class_name.to_lowercase().as_str() {
         "bard" | "cleric" | "druid" | "sorcerer" | "wizard" => &FULL_CASTER_SLOT_TABLE[idx],
-        "paladin" | "ranger" => &HALF_CASTER_SLOT_TABLE[idx],
+        "paladin" => &PALADIN_SLOT_TABLE[idx],
+        "ranger" => &HALF_CASTER_SLOT_TABLE[idx],
         "warlock" => &WARLOCK_SLOT_TABLE[idx],
         _ => return Vec::new(),
     };
@@ -1345,12 +1395,21 @@ mod tests {
     }
 
     #[test]
-    fn test_half_caster_slots() {
-        // Paladin L1: no slots
-        assert_eq!(slots_for("Paladin", 1), Vec::<i32>::new());
-        // Paladin L2: 2 x L1
+    fn test_paladin_slots_2024_srd() {
+        // 2024 SRD: Paladin gains Spellcasting at level 1 with 2 L1 slots.
+        // See docs/reference/paladin.md.
+        assert_eq!(slots_for("Paladin", 1), vec![2]);
+        // L2+ continues to match the half-caster progression.
         assert_eq!(slots_for("Paladin", 2), vec![2]);
-        // Ranger L5: 4 x L1, 2 x L2
+        assert_eq!(slots_for("Paladin", 5), vec![4, 2]);
+    }
+
+    #[test]
+    fn test_ranger_slots_half_caster() {
+        // Ranger retains the 2014-style half-caster table (out of scope for
+        // issue #86): no slots at level 1, 2 L1 slots at level 2.
+        assert_eq!(slots_for("Ranger", 1), Vec::<i32>::new());
+        assert_eq!(slots_for("Ranger", 2), vec![2]);
         assert_eq!(slots_for("Ranger", 5), vec![4, 2]);
     }
 

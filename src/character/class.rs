@@ -239,16 +239,18 @@ impl Class {
     }
 
     /// Level-1 spell-slot vector for this class. Returns an empty vector for
-    /// non-casters and for classes that unlock spellcasting after level 1
-    /// (Paladin, Ranger).
+    /// non-casters and for Ranger (which still unlocks spellcasting at
+    /// level 2 in this engine; out of scope for issue #86).
     pub fn starting_spell_slots(&self) -> Vec<i32> {
         match self {
             Class::Bard | Class::Cleric | Class::Druid
             | Class::Sorcerer | Class::Wizard => vec![2],
             // Warlock Pact Magic: 1 slot at level 1.
             Class::Warlock => vec![1],
-            // Half-casters start at level 2; no slots at level 1.
-            Class::Paladin | Class::Ranger => Vec::new(),
+            // Paladin (2024 SRD): Spellcasting at level 1 with 2 L1 slots.
+            Class::Paladin => vec![2],
+            // Ranger still starts at level 2 (no slots at level 1).
+            Class::Ranger => Vec::new(),
             // Pure martials
             Class::Barbarian | Class::Fighter | Class::Monk | Class::Rogue => Vec::new(),
         }
@@ -641,15 +643,22 @@ mod tests {
     }
 
     #[test]
-    fn test_starting_spell_slots_empty_for_non_casters_and_late_casters() {
+    fn test_starting_spell_slots_empty_for_non_casters_and_ranger() {
         // Non-casters
         assert!(Class::Barbarian.starting_spell_slots().is_empty());
         assert!(Class::Fighter.starting_spell_slots().is_empty());
         assert!(Class::Monk.starting_spell_slots().is_empty());
         assert!(Class::Rogue.starting_spell_slots().is_empty());
-        // Classes whose spellcasting unlocks at level 2
-        assert!(Class::Paladin.starting_spell_slots().is_empty());
+        // Ranger spellcasting still unlocks at level 2 in this engine
+        // (out of scope for issue #86).
         assert!(Class::Ranger.starting_spell_slots().is_empty());
+    }
+
+    #[test]
+    fn test_paladin_starting_spell_slots_2024_srd() {
+        // 2024 SRD: Paladin gains Spellcasting at level 1 with 2 L1 slots.
+        // See docs/reference/paladin.md.
+        assert_eq!(Class::Paladin.starting_spell_slots(), vec![2]);
     }
 
     // ---- ClassFeatureState additions ----
