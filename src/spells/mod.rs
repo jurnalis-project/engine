@@ -778,6 +778,46 @@ pub enum CastOutcome {
     ShieldCast {
         ac_bonus: i32,
     },
+    /// Sacred Flame: target makes a DEX save; on fail, takes 1d8 radiant.
+    SacredFlame {
+        save_result: SpellSaveResult,
+        damage: i32,
+    },
+    /// Cure Wounds: 1d8 + spellcasting mod healing.
+    CureWoundsResult {
+        healing: i32,
+        rolled: i32,
+        modifier: i32,
+    },
+    /// Healing Word: 1d4 + spellcasting mod healing.
+    HealingWordResult {
+        healing: i32,
+        rolled: i32,
+        modifier: i32,
+    },
+    /// Guiding Bolt: spell attack, 4d6 radiant on hit (crit doubles damage).
+    GuidingBolt {
+        attack: SpellAttackResult,
+        damage: i32,
+    },
+    /// Vicious Mockery: WIS save, 1d4 psychic on fail.
+    ViciousMockery {
+        save_result: SpellSaveResult,
+        damage: i32,
+    },
+    /// Charm Person: WIS save; narrative effect only.
+    CharmPerson {
+        save_result: SpellSaveResult,
+    },
+    /// Faerie Fire: DEX save; narrative effect only.
+    FaerieFire {
+        save_result: SpellSaveResult,
+    },
+    /// Eldritch Blast: spell attack, 1d10 force on hit (crit doubles damage).
+    EldritchBlast {
+        attack: SpellAttackResult,
+        damage: i32,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -896,6 +936,132 @@ pub fn resolve_sleep(
 /// Resolve Shield spell (+5 AC self-buff).
 pub fn resolve_shield() -> CastOutcome {
     CastOutcome::ShieldCast { ac_bonus: 5 }
+}
+
+/// Resolve Sacred Flame (cantrip). Target makes a DEX save; on fail takes 1d8 radiant.
+/// Save proficiency is queried against the target's `save_proficiencies`.
+pub fn resolve_sacred_flame(
+    rng: &mut impl Rng,
+    caster_ability_score: i32,
+    caster_proficiency_bonus: i32,
+    target: &SpellTarget,
+) -> CastOutcome {
+    let dc = spell_save_dc(caster_ability_score, caster_proficiency_bonus);
+    let dex = target.ability_scores.get(&Ability::Dexterity).copied().unwrap_or(10);
+    let is_prof = target.save_proficiencies.contains(&Ability::Dexterity);
+    let save = roll_spell_save(rng, dex, target.proficiency_bonus, is_prof, dc);
+    let damage = if save.saved {
+        0
+    } else {
+        let rolls = roll_dice(rng, 1, 8);
+        rolls.iter().sum()
+    };
+    CastOutcome::SacredFlame { save_result: save, damage }
+}
+
+/// Resolve Cure Wounds. Heals 1d8 + caster's spellcasting mod.
+/// The dispatch is responsible for capping at `max_hp` and updating state.
+pub fn resolve_cure_wounds(rng: &mut impl Rng, caster_ability_score: i32) -> CastOutcome {
+    let rolls = roll_dice(rng, 1, 8);
+    let rolled: i32 = rolls.iter().sum();
+    let modifier = Ability::modifier(caster_ability_score);
+    let healing = (rolled + modifier).max(1);
+    CastOutcome::CureWoundsResult { healing, rolled, modifier }
+}
+
+/// Resolve Healing Word. Heals 1d4 + caster's spellcasting mod.
+pub fn resolve_healing_word(rng: &mut impl Rng, caster_ability_score: i32) -> CastOutcome {
+    let rolls = roll_dice(rng, 1, 4);
+    let rolled: i32 = rolls.iter().sum();
+    let modifier = Ability::modifier(caster_ability_score);
+    let healing = (rolled + modifier).max(1);
+    CastOutcome::HealingWordResult { healing, rolled, modifier }
+}
+
+/// Resolve Guiding Bolt (level 1). Ranged spell attack; 4d6 radiant on hit,
+/// doubled on crit.
+pub fn resolve_guiding_bolt(
+    rng: &mut impl Rng,
+    caster_ability_score: i32,
+    caster_proficiency_bonus: i32,
+    target_ac: i32,
+) -> CastOutcome {
+    let attack = roll_spell_attack(rng, caster_ability_score, caster_proficiency_bonus, target_ac);
+    let damage = if attack.hit {
+        let rolls = roll_dice(rng, 4, 6);
+        let base: i32 = rolls.iter().sum();
+        if attack.natural_20 { base * 2 } else { base }
+    } else {
+        0
+    };
+    CastOutcome::GuidingBolt { attack, damage }
+}
+
+/// Resolve Vicious Mockery (cantrip). Target makes a WIS save; on fail takes 1d4 psychic.
+pub fn resolve_vicious_mockery(
+    rng: &mut impl Rng,
+    caster_ability_score: i32,
+    caster_proficiency_bonus: i32,
+    target: &SpellTarget,
+) -> CastOutcome {
+    let dc = spell_save_dc(caster_ability_score, caster_proficiency_bonus);
+    let wis = target.ability_scores.get(&Ability::Wisdom).copied().unwrap_or(10);
+    let is_prof = target.save_proficiencies.contains(&Ability::Wisdom);
+    let save = roll_spell_save(rng, wis, target.proficiency_bonus, is_prof, dc);
+    let damage = if save.saved {
+        0
+    } else {
+        let rolls = roll_dice(rng, 1, 4);
+        rolls.iter().sum()
+    };
+    CastOutcome::ViciousMockery { save_result: save, damage }
+}
+
+/// Resolve Charm Person (level 1). Target makes a WIS save. Narrative effect only.
+pub fn resolve_charm_person(
+    rng: &mut impl Rng,
+    caster_ability_score: i32,
+    caster_proficiency_bonus: i32,
+    target: &SpellTarget,
+) -> CastOutcome {
+    let dc = spell_save_dc(caster_ability_score, caster_proficiency_bonus);
+    let wis = target.ability_scores.get(&Ability::Wisdom).copied().unwrap_or(10);
+    let is_prof = target.save_proficiencies.contains(&Ability::Wisdom);
+    let save = roll_spell_save(rng, wis, target.proficiency_bonus, is_prof, dc);
+    CastOutcome::CharmPerson { save_result: save }
+}
+
+/// Resolve Faerie Fire (level 1). Target makes a DEX save. Narrative effect only.
+pub fn resolve_faerie_fire(
+    rng: &mut impl Rng,
+    caster_ability_score: i32,
+    caster_proficiency_bonus: i32,
+    target: &SpellTarget,
+) -> CastOutcome {
+    let dc = spell_save_dc(caster_ability_score, caster_proficiency_bonus);
+    let dex = target.ability_scores.get(&Ability::Dexterity).copied().unwrap_or(10);
+    let is_prof = target.save_proficiencies.contains(&Ability::Dexterity);
+    let save = roll_spell_save(rng, dex, target.proficiency_bonus, is_prof, dc);
+    CastOutcome::FaerieFire { save_result: save }
+}
+
+/// Resolve Eldritch Blast (cantrip). Ranged spell attack; 1d10 force on hit,
+/// doubled on crit. (SRD adds more beams at higher levels; level 1 = one beam.)
+pub fn resolve_eldritch_blast(
+    rng: &mut impl Rng,
+    caster_ability_score: i32,
+    caster_proficiency_bonus: i32,
+    target_ac: i32,
+) -> CastOutcome {
+    let attack = roll_spell_attack(rng, caster_ability_score, caster_proficiency_bonus, target_ac);
+    let damage = if attack.hit {
+        let rolls = roll_dice(rng, 1, 10);
+        let base: i32 = rolls.iter().sum();
+        if attack.natural_20 { base * 2 } else { base }
+    } else {
+        0
+    };
+    CastOutcome::EldritchBlast { attack, damage }
 }
 
 /// Format the player's known spells and remaining spell slots for display.
@@ -1498,6 +1664,192 @@ mod tests {
         let mut current = Some("Bless".to_string());
         let result = begin_concentration(&mut current, "bless"); // case-insensitive
         assert_eq!(result, ConcentrationStart::Started);
+    }
+
+    // ---- Non-Wizard spell resolvers ----
+
+    fn test_target_with_saves(
+        name: &str,
+        ac: i32,
+        hp: i32,
+        ability: Ability,
+        score: i32,
+    ) -> SpellTarget {
+        let mut scores = HashMap::new();
+        scores.insert(ability, score);
+        SpellTarget {
+            id: 0,
+            name: name.to_string(),
+            ac,
+            current_hp: hp,
+            ability_scores: scores,
+            proficiency_bonus: 2,
+            save_proficiencies: Vec::new(),
+            distance: 30,
+        }
+    }
+
+    #[test]
+    fn test_resolve_sacred_flame_no_damage_on_save() {
+        // Target has +20 DEX -> auto-save.
+        let mut rng = StdRng::seed_from_u64(7);
+        let target = test_target_with_saves("Goblin", 13, 7, Ability::Dexterity, 30);
+        let outcome = resolve_sacred_flame(&mut rng, 16, 2, &target);
+        match outcome {
+            CastOutcome::SacredFlame { save_result, damage } => {
+                assert!(save_result.saved, "huge DEX score should save");
+                assert_eq!(damage, 0);
+            }
+            _ => panic!("Expected SacredFlame outcome"),
+        }
+    }
+
+    #[test]
+    fn test_resolve_sacred_flame_damage_on_fail() {
+        // Target has dismal DEX -> likely fails.
+        let mut rng = StdRng::seed_from_u64(7);
+        let target = test_target_with_saves("Goblin", 13, 7, Ability::Dexterity, 1);
+        let outcome = resolve_sacred_flame(&mut rng, 20, 2, &target);
+        match outcome {
+            CastOutcome::SacredFlame { save_result, damage } => {
+                if save_result.saved {
+                    assert_eq!(damage, 0);
+                } else {
+                    assert!(damage >= 1 && damage <= 8, "1d8 radiant, got {}", damage);
+                }
+            }
+            _ => panic!("Expected SacredFlame outcome"),
+        }
+    }
+
+    #[test]
+    fn test_resolve_cure_wounds_heals_1d8_plus_mod() {
+        let mut rng = StdRng::seed_from_u64(42);
+        // WIS 16 -> +3
+        let outcome = resolve_cure_wounds(&mut rng, 16);
+        match outcome {
+            CastOutcome::CureWoundsResult { healing, rolled, modifier } => {
+                assert_eq!(modifier, 3);
+                assert!(rolled >= 1 && rolled <= 8);
+                assert_eq!(healing, rolled + modifier);
+            }
+            _ => panic!("Expected CureWoundsResult"),
+        }
+    }
+
+    #[test]
+    fn test_resolve_cure_wounds_minimum_one_hp() {
+        // Ability 1 -> -5; a 1d8 roll of at least 1 combined gives 1..=3.
+        // minimum clamp keeps healing >= 1.
+        let mut rng = StdRng::seed_from_u64(42);
+        let outcome = resolve_cure_wounds(&mut rng, 1);
+        match outcome {
+            CastOutcome::CureWoundsResult { healing, .. } => {
+                assert!(healing >= 1);
+            }
+            _ => panic!("Expected CureWoundsResult"),
+        }
+    }
+
+    #[test]
+    fn test_resolve_healing_word_heals_1d4_plus_mod() {
+        let mut rng = StdRng::seed_from_u64(42);
+        // WIS 14 -> +2
+        let outcome = resolve_healing_word(&mut rng, 14);
+        match outcome {
+            CastOutcome::HealingWordResult { healing, rolled, modifier } => {
+                assert_eq!(modifier, 2);
+                assert!(rolled >= 1 && rolled <= 4);
+                assert_eq!(healing, rolled + modifier);
+            }
+            _ => panic!("Expected HealingWordResult"),
+        }
+    }
+
+    #[test]
+    fn test_resolve_guiding_bolt_rolls_attack_and_4d6() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let outcome = resolve_guiding_bolt(&mut rng, 16, 2, 12);
+        match outcome {
+            CastOutcome::GuidingBolt { attack, damage } => {
+                assert_eq!(attack.modifier, 5);
+                if attack.hit {
+                    if attack.natural_20 {
+                        assert!(damage >= 8 && damage <= 48, "4d6 crit x2, got {}", damage);
+                    } else {
+                        assert!(damage >= 4 && damage <= 24, "4d6, got {}", damage);
+                    }
+                } else {
+                    assert_eq!(damage, 0);
+                }
+            }
+            _ => panic!("Expected GuidingBolt"),
+        }
+    }
+
+    #[test]
+    fn test_resolve_vicious_mockery_damage_on_fail() {
+        let mut rng = StdRng::seed_from_u64(7);
+        let target = test_target_with_saves("Goblin", 13, 7, Ability::Wisdom, 1);
+        let outcome = resolve_vicious_mockery(&mut rng, 20, 2, &target);
+        match outcome {
+            CastOutcome::ViciousMockery { save_result, damage } => {
+                if save_result.saved {
+                    assert_eq!(damage, 0);
+                } else {
+                    assert!(damage >= 1 && damage <= 4);
+                }
+            }
+            _ => panic!("Expected ViciousMockery"),
+        }
+    }
+
+    #[test]
+    fn test_resolve_charm_person_save_only() {
+        let mut rng = StdRng::seed_from_u64(7);
+        let target = test_target_with_saves("Guard", 14, 11, Ability::Wisdom, 10);
+        let outcome = resolve_charm_person(&mut rng, 16, 2, &target);
+        match outcome {
+            CastOutcome::CharmPerson { save_result } => {
+                // DC 13 (8 + 3 + 2); WIS 10 -> +0. Just sanity-check numbers.
+                assert_eq!(save_result.dc, 13);
+            }
+            _ => panic!("Expected CharmPerson"),
+        }
+    }
+
+    #[test]
+    fn test_resolve_faerie_fire_save_only() {
+        let mut rng = StdRng::seed_from_u64(7);
+        let target = test_target_with_saves("Goblin", 13, 7, Ability::Dexterity, 14);
+        let outcome = resolve_faerie_fire(&mut rng, 16, 2, &target);
+        match outcome {
+            CastOutcome::FaerieFire { save_result } => {
+                assert_eq!(save_result.dc, 13);
+            }
+            _ => panic!("Expected FaerieFire"),
+        }
+    }
+
+    #[test]
+    fn test_resolve_eldritch_blast_rolls_attack_and_1d10() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let outcome = resolve_eldritch_blast(&mut rng, 16, 2, 12);
+        match outcome {
+            CastOutcome::EldritchBlast { attack, damage } => {
+                assert_eq!(attack.modifier, 5);
+                if attack.hit {
+                    if attack.natural_20 {
+                        assert!(damage >= 2 && damage <= 20, "1d10 crit x2, got {}", damage);
+                    } else {
+                        assert!(damage >= 1 && damage <= 10, "1d10, got {}", damage);
+                    }
+                } else {
+                    assert_eq!(damage, 0);
+                }
+            }
+            _ => panic!("Expected EldritchBlast"),
+        }
     }
 
     #[test]
