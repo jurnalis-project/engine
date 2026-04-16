@@ -26,7 +26,12 @@ impl Race {
     }
 
     pub fn speed(&self) -> i32 {
-        match self { Race::Human | Race::Elf => 30, Race::Dwarf => 25 }
+        // Per 2024 SRD, all three currently-supported species walk at 30 ft.
+        // Kept as an explicit match so future species (e.g. Goliath 35 ft,
+        // Wood Elf 35 ft) slot in cleanly.
+        match self {
+            Race::Human | Race::Elf | Race::Dwarf => 30,
+        }
     }
 }
 
@@ -60,9 +65,13 @@ mod tests {
         assert_eq!(bonuses.get(&Ability::Constitution), Some(&2));
     }
 
+    // Hypothesis: the 2024 SRD sets Dwarf walking speed to 30 ft (same as Human/Elf).
+    // The previous implementation hard-coded 25 ft from the 2014 SRD. This test
+    // asserts the 2024-correct value and covers all three races.
     #[test]
-    fn test_dwarf_speed_slower() {
-        assert_eq!(Race::Dwarf.speed(), 25);
+    fn test_all_races_have_srd_2024_speed() {
         assert_eq!(Race::Human.speed(), 30);
+        assert_eq!(Race::Elf.speed(), 30);
+        assert_eq!(Race::Dwarf.speed(), 30);
     }
 }
