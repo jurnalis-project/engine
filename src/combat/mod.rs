@@ -316,7 +316,13 @@ impl CombatState {
     }
 
     /// Advance to next living combatant. Returns the new combatant.
-    pub fn advance_turn(&mut self, state: &GameState) -> Combatant {
+    ///
+    /// Takes `&mut GameState` so player-turn-start cleanup can clear
+    /// turn-scoped `ClassFeatureState` flags (Rogue Sneak Attack and Cunning
+    /// Action). Combat and mastery state live on `self`; class-feature
+    /// resources live on `state.character` and must be reset here to keep
+    /// the "start of turn" semantics unified.
+    pub fn advance_turn(&mut self, state: &mut GameState) -> Combatant {
         loop {
             self.current_turn = (self.current_turn + 1) % self.initiative_order.len();
             if self.current_turn == 0 {
@@ -352,6 +358,13 @@ impl CombatState {
                     self.slow_targets.clear();
                     self.cleave_used_this_turn = false;
                     self.nick_used_this_turn = false;
+                    // Rogue turn-scoped class features (once-per-turn caps):
+                    //   - Sneak Attack: at most one application per turn.
+                    //   - Cunning Action: a Rogue's bonus-action marker.
+                    // Resetting here keeps the "start of turn" semantics
+                    // consistent with the combat-local flags above.
+                    state.character.class_features.sneak_attack_used_this_turn = false;
+                    state.character.class_features.cunning_action_used = false;
                     return combatant;
                 }
                 Combatant::Npc(id) => {
@@ -624,6 +637,11 @@ pub struct AttackResult {
     pub damage_type: DamageType,
     pub weapon_name: String,
     pub disadvantage: bool,
+    /// True when the attack was rolled with advantage (after advantage/
+    /// disadvantage cancellation). Surfaced so the orchestrator can gate
+    /// Rogue Sneak Attack eligibility (which requires advantage, or an
+    /// ally adjacent to the target).
+    pub attacker_had_advantage: bool,
 }
 
 /// Determine if the player's weapon attack is ranged based on target distance and weapon.
@@ -836,6 +854,7 @@ pub fn resolve_player_attack(
         damage_type,
         weapon_name,
         disadvantage,
+        attacker_had_advantage: attacker_has_advantage,
     }
 }
 
@@ -934,6 +953,7 @@ pub fn resolve_npc_attack(
         damage_type: attack.damage_type,
         weapon_name: attack.name.clone(),
         disadvantage: use_disadvantage,
+        attacker_had_advantage: use_advantage,
     }
 }
 
@@ -1749,6 +1769,45 @@ pub fn apply_nick_mastery(
     true
 }
 
+// ---- Rogue: Sneak Attack --------------------------------------------------
+
+/// Number of Sneak Attack dice (d6) a Rogue rolls at the given character
+/// level per SRD 5.1: `ceil(level / 2)`, equivalent to `floor((level + 1) / 2)`.
+///
+/// Examples: level 1 -> 1d6, level 2 -> 1d6, level 3 -> 2d6, level 11 -> 6d6,
+/// level 20 -> 10d6.
+pub fn sneak_attack_dice_for_level(level: u32) -> u32 {
+    (level + 1) / 2
+}
+
+/// True when a weapon's properties qualify for Sneak Attack per SRD 5.1:
+/// a Finesse melee weapon OR a ranged weapon. `is_ranged_attack` is the
+/// orchestrator's resolution of whether this specific attack is being used
+/// at range (thrown weapons only qualify when actually thrown from range).
+pub fn sneak_attack_weapon_qualifies(
+    properties: u16,
+    is_ranged_attack: bool,
+) -> bool {
+    let is_finesse = properties & FINESSE != 0;
+    is_finesse || is_ranged_attack
+}
+
+/// Roll the Sneak Attack bonus-damage dice for the given Rogue level. On a
+/// critical hit the die count is doubled per SRD. Returns the summed damage.
+/// A zero-dice result (non-Rogue levels mis-used) returns 0.
+pub fn roll_sneak_attack(
+    rng: &mut impl Rng,
+    level: u32,
+    critical: bool,
+) -> i32 {
+    let dice = sneak_attack_dice_for_level(level);
+    if dice == 0 {
+        return 0;
+    }
+    let count = if critical { dice * 2 } else { dice };
+    roll_dice(rng, count, 6).iter().sum()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2523,7 +2582,7 @@ mod tests {
         // Advance through turns, dead NPC should be skipped
         let mut found_dead_npc_turn = false;
         for _ in 0..10 {
-            let c = combat.advance_turn(&state);
+            let c = combat.advance_turn(&mut state);
             if c == Combatant::Npc(1) {
                 found_dead_npc_turn = true;
             }
@@ -3008,7 +3067,7 @@ mod tests {
     fn test_action_bonus_free_reset_at_start_of_player_turn() {
         // action/bonus/free reset at start of the new player turn (existing convention).
         let mut rng = StdRng::seed_from_u64(42);
-        let state = test_state_with_goblin();
+        let mut state = test_state_with_goblin();
         let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
 
         combat.action_used = true;
@@ -3022,7 +3081,7 @@ mod tests {
             .position(|(c, _)| matches!(c, Combatant::Npc(_)))
             .unwrap_or(0);
 
-        combat.advance_turn(&state);
+        combat.advance_turn(&mut state);
 
         assert!(combat.is_player_turn(), "Should advance back to player turn");
         assert!(!combat.action_used, "Action should reset at start of player turn");
@@ -3461,6 +3520,7 @@ mod tests {
             damage_type,
             weapon_name: "Longsword".to_string(),
             disadvantage: false,
+            attacker_had_advantage: false,
         }
     }
 
@@ -3744,6 +3804,90 @@ mod tests {
         );
         assert!(!apply_nick_mastery(false, &mut combat));
         assert!(!combat.nick_used_this_turn);
+    }
+
+    // ---- Rogue Sneak Attack helpers ----
+
+    #[test]
+    fn test_sneak_attack_dice_for_level_matches_srd() {
+        // SRD 5.1: ceil(level / 2) d6 -- floor((level+1)/2) d6.
+        assert_eq!(sneak_attack_dice_for_level(1), 1);
+        assert_eq!(sneak_attack_dice_for_level(2), 1);
+        assert_eq!(sneak_attack_dice_for_level(3), 2);
+        assert_eq!(sneak_attack_dice_for_level(4), 2);
+        assert_eq!(sneak_attack_dice_for_level(5), 3);
+        assert_eq!(sneak_attack_dice_for_level(11), 6);
+        assert_eq!(sneak_attack_dice_for_level(20), 10);
+    }
+
+    #[test]
+    fn test_sneak_attack_weapon_qualifies_finesse() {
+        // Finesse weapon (e.g. shortsword) qualifies in melee.
+        assert!(sneak_attack_weapon_qualifies(FINESSE | 0u16, false));
+        // Finesse weapon still qualifies in a ranged attack (thrown).
+        assert!(sneak_attack_weapon_qualifies(FINESSE | THROWN, true));
+    }
+
+    #[test]
+    fn test_sneak_attack_weapon_qualifies_ranged() {
+        // Non-finesse ranged weapon (e.g. shortbow) qualifies when fired.
+        assert!(sneak_attack_weapon_qualifies(AMMUNITION, true));
+    }
+
+    #[test]
+    fn test_sneak_attack_weapon_does_not_qualify_when_neither() {
+        // A non-finesse melee weapon (e.g. longsword, greatsword): no SA.
+        assert!(!sneak_attack_weapon_qualifies(VERSATILE, false));
+        assert!(!sneak_attack_weapon_qualifies(0u16, false));
+    }
+
+    #[test]
+    fn test_roll_sneak_attack_is_in_expected_range() {
+        // Level 1 -> 1d6 -> [1, 6].
+        for seed in 0..20u64 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let damage = roll_sneak_attack(&mut rng, 1, false);
+            assert!((1..=6).contains(&damage),
+                "L1 SA damage out of range: {}", damage);
+        }
+        // Level 5 -> 3d6 -> [3, 18].
+        for seed in 0..20u64 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let damage = roll_sneak_attack(&mut rng, 5, false);
+            assert!((3..=18).contains(&damage),
+                "L5 SA damage out of range: {}", damage);
+        }
+        // Level 1 crit -> 2d6 -> [2, 12].
+        for seed in 0..20u64 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let damage = roll_sneak_attack(&mut rng, 1, true);
+            assert!((2..=12).contains(&damage),
+                "L1 crit SA damage out of range: {}", damage);
+        }
+    }
+
+    #[test]
+    fn test_advance_turn_resets_sneak_attack_flag() {
+        // The turn-start reset lives in advance_turn because SA is a
+        // once-per-turn cap. Simulate an NPC turn -> advance -> player
+        // turn, and verify sneak_attack_used_this_turn cleared.
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut state = test_state_with_goblin();
+        state.character.class_features.sneak_attack_used_this_turn = true;
+        state.character.class_features.cunning_action_used = true;
+        let mut combat = start_combat(
+            &mut rng, &state.character, &[0], &state.world.npcs,
+        );
+        // Force current_turn to the NPC slot before advancing.
+        combat.current_turn = combat.initiative_order.iter()
+            .position(|(c, _)| matches!(c, Combatant::Npc(_)))
+            .unwrap_or(0);
+        combat.advance_turn(&mut state);
+        assert!(combat.is_player_turn(), "should land on player turn");
+        assert!(!state.character.class_features.sneak_attack_used_this_turn,
+            "SA flag should reset at start of player turn");
+        assert!(!state.character.class_features.cunning_action_used,
+            "Cunning Action flag should reset at start of player turn");
     }
 
     /// Minimal GameState helper used only by the mastery tests above.

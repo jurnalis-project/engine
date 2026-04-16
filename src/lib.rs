@@ -1981,6 +1981,13 @@ fn resolve_reaction_decision(
                 // Apply magic weapon bonuses (if wielding a MagicWeapon).
                 let (atk_b, dmg_b) = magic_weapon_bonuses(state, weapon_id);
                 apply_magic_weapon_bonuses(&mut result, atk_b, dmg_b);
+                // Rogue Sneak Attack can fire on an opportunity attack
+                // (the SRD "once per turn" cap applies across the round,
+                // not just the player's turn).
+                apply_sneak_attack(
+                    rng, state, &mut result, &mut lines,
+                    weapon_id, old_distance,
+                );
                 if result.hit {
                     if let Some(npc) = state.world.npcs.get_mut(&fleeing_npc_id) {
                         let _dealt = combat::apply_damage_to_npc(
@@ -2624,6 +2631,14 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                     let (atk_b, dmg_b) = magic_weapon_bonuses(state, weapon_id);
                     apply_magic_weapon_bonuses(&mut result, atk_b, dmg_b);
 
+                    // Rogue Sneak Attack: add bonus dice to a qualifying hit
+                    // before damage is applied so narration reflects the
+                    // full total. See `apply_sneak_attack` for eligibility.
+                    apply_sneak_attack(
+                        &mut rng, state, &mut result, &mut lines,
+                        weapon_id, distance,
+                    );
+
                     let npc_name = state.world.npcs.get(&npc_id)
                         .map(|n| n.name.clone())
                         .unwrap_or_else(|| "the enemy".to_string());
@@ -2965,6 +2980,21 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                     let mut adjusted_damage = result.damage;
                     if result.hit && ability_mod_used > 0 {
                         adjusted_damage = (adjusted_damage - ability_mod_used).max(1);
+                    }
+
+                    // Rogue Sneak Attack on the off-hand swing. SA dice are
+                    // added on top of weapon damage and are not subject to
+                    // the off-hand ability-mod strip. We route the boosted
+                    // damage through `adjusted_damage` so the narration and
+                    // damage application both reflect the SA bonus.
+                    {
+                        let mut sa_result = result.clone();
+                        sa_result.damage = adjusted_damage;
+                        apply_sneak_attack(
+                            &mut rng, state, &mut sa_result, &mut lines,
+                            Some(off_hand_id), distance,
+                        );
+                        adjusted_damage = sa_result.damage;
                     }
 
                     let npc_name = state.world.npcs.get(&npc_id)
@@ -4488,6 +4518,86 @@ fn npc_size(state: &GameState, npc_id: crate::types::NpcId) -> crate::combat::mo
         .and_then(|n| n.combat_stats.as_ref())
         .map(|s| s.size)
         .unwrap_or(crate::combat::monsters::Size::Medium)
+}
+
+/// Returns true when the given weapon qualifies for a Rogue's Sneak Attack
+/// (Finesse melee weapon OR a ranged weapon actually being used at range).
+/// An unarmed strike (no weapon) never qualifies per SRD.
+fn sneak_attack_weapon_eligible(
+    state: &GameState,
+    weapon_id: Option<crate::types::ItemId>,
+    distance: u32,
+) -> bool {
+    let Some(id) = weapon_id else { return false };
+    let Some(item) = state.world.items.get(&id) else { return false };
+    let (properties, range_normal) = match &item.item_type {
+        state::ItemType::Weapon { properties, range_normal, .. } => (*properties, *range_normal),
+        state::ItemType::MagicWeapon { properties, range_normal, .. } => (*properties, *range_normal),
+        _ => return false,
+    };
+    let is_ammo = properties & equipment::AMMUNITION != 0;
+    let is_thrown = properties & equipment::THROWN != 0;
+    // Ranged attack: ammunition weapons are always ranged; thrown-at-range
+    // uses the ranged mode; otherwise a pure-ranged weapon (range > 0, no
+    // thrown/ammo) at >5 ft is ranged.
+    let is_ranged_attack = if is_ammo {
+        true
+    } else if is_thrown && distance > 5 {
+        true
+    } else {
+        range_normal > 0 && distance > 5 && !is_thrown
+    };
+    combat::sneak_attack_weapon_qualifies(properties, is_ranged_attack)
+}
+
+/// Apply a Rogue's Sneak Attack bonus damage if the player is a Rogue,
+/// the attack hit, the weapon qualifies (Finesse or ranged), and the
+/// attacker had advantage on the roll. Consumes the once-per-turn flag.
+///
+/// Per the handoff, the engine has no ally-adjacency concept, so the
+/// "ally adjacent to target" alternative trigger is skipped for now —
+/// eligibility reduces to the advantage path, which is the SRD-aligned
+/// conservative MVP (no false positives).
+///
+/// Mutates `result.damage` in place so downstream damage application uses
+/// the boosted total. Appends a narration line like
+/// `Sneak Attack: +5 damage (1d6 -> 5).`
+fn apply_sneak_attack(
+    rng: &mut StdRng,
+    state: &mut GameState,
+    result: &mut combat::AttackResult,
+    lines: &mut Vec<String>,
+    weapon_id: Option<crate::types::ItemId>,
+    distance: u32,
+) {
+    if state.character.class != character::class::Class::Rogue {
+        return;
+    }
+    if !result.hit || result.damage <= 0 {
+        return;
+    }
+    if state.character.class_features.sneak_attack_used_this_turn {
+        return;
+    }
+    if !result.attacker_had_advantage {
+        // MVP: require advantage. The SRD's "ally adjacent to target"
+        // alternative is not yet modelled (no ally concept in the 1D
+        // combat engine). See docs/specs/srd-classes.md.
+        return;
+    }
+    if !sneak_attack_weapon_eligible(state, weapon_id, distance) {
+        return;
+    }
+    let level = state.character.level;
+    let dice = combat::sneak_attack_dice_for_level(level);
+    let bonus = combat::roll_sneak_attack(rng, level, result.natural_20);
+    result.damage += bonus;
+    state.character.class_features.sneak_attack_used_this_turn = true;
+    let dice_label = if result.natural_20 { dice * 2 } else { dice };
+    lines.push(format!(
+        "Sneak Attack: +{} damage ({}d6).",
+        bonus, dice_label,
+    ));
 }
 
 /// Dispatch mastery effects for a main-hand attack. Called after damage
@@ -8703,6 +8813,7 @@ mod tests {
             damage: 0, damage_type: DamageType::Slashing,
             weapon_name: "+2 Longsword".to_string(),
             disadvantage: false,
+            attacker_had_advantage: false,
         };
         apply_magic_weapon_bonuses(&mut r, 2, 2);
         assert!(r.hit);
@@ -8719,6 +8830,7 @@ mod tests {
             damage: 8, damage_type: DamageType::Slashing,
             weapon_name: "+1 Longsword".to_string(),
             disadvantage: false,
+            attacker_had_advantage: false,
         };
         apply_magic_weapon_bonuses(&mut r, 1, 1);
         assert_eq!(r.damage, 9);
@@ -8734,6 +8846,7 @@ mod tests {
             damage: 0, damage_type: DamageType::Slashing,
             weapon_name: "+3 Longsword".to_string(),
             disadvantage: false,
+            attacker_had_advantage: false,
         };
         apply_magic_weapon_bonuses(&mut r, 3, 3);
         // Nat 1 still misses, regardless of bonus.
@@ -8752,6 +8865,7 @@ mod tests {
             damage: 15, damage_type: DamageType::Slashing,
             weapon_name: "+2 Longsword".to_string(),
             disadvantage: false,
+            attacker_had_advantage: false,
         };
         apply_magic_weapon_bonuses(&mut r, 2, 2);
         assert!(r.hit);
@@ -9318,5 +9432,166 @@ mod tests {
         let combat = new_state.active_combat.as_ref()
             .expect("combat should still be active after a single hit against a high-HP target");
         assert_eq!(combat.player_vex_target, None, "Vex mark should be consumed");
+    }
+
+    // ---- Rogue: Sneak Attack (gh issue #85) ----
+    //
+    // These tests exercise the orchestrator's Sneak Attack dispatch after a
+    // successful player attack. Eligibility requires: Rogue class + Finesse
+    // (or ranged) weapon + attacker had advantage + not already used this
+    // turn. See `apply_sneak_attack` in lib.rs and `docs/specs/srd-classes.md`.
+
+    /// Build a `create_test_combat_state` base then reshape it into a Rogue
+    /// wielding a Shortsword (Finesse + Light). The goblin is given a Prone
+    /// condition to grant the player advantage on melee attacks (per SRD,
+    /// attacks against a Prone target within 5 ft have advantage).
+    fn rogue_sneak_attack_setup() -> GameState {
+        let mut state = create_test_combat_state();
+        state.character.class = Class::Rogue;
+        state.character.level = 1;
+        // Replace main-hand Longsword with a Shortsword (Finesse + Light).
+        let shortsword_id = 210;
+        state.world.items.insert(shortsword_id, state::Item {
+            id: shortsword_id,
+            name: "Shortsword".to_string(),
+            description: "A nimble blade.".to_string(),
+            item_type: state::ItemType::Weapon {
+                damage_dice: 1, damage_die: 6,
+                damage_type: state::DamageType::Piercing,
+                properties: crate::equipment::FINESSE | crate::equipment::LIGHT,
+                category: state::WeaponCategory::Martial,
+                versatile_die: 0, range_normal: 0, range_long: 0,
+            },
+            location: None, carried_by_player: true,
+            charges_remaining: None,
+        });
+        state.character.inventory.push(shortsword_id);
+        state.character.equipped.main_hand = Some(shortsword_id);
+        // Boost goblin HP so a single SA hit doesn't end combat.
+        if let Some(npc) = state.world.npcs.get_mut(&100) {
+            if let Some(ref mut stats) = npc.combat_stats {
+                stats.max_hp = 200;
+                stats.current_hp = 200;
+            }
+            // Prone grants advantage on melee attacks <= 5 ft. This is the
+            // SRD-legitimate way to give the player advantage without
+            // hacking `attacker_had_advantage` directly.
+            npc.conditions.push(crate::conditions::ActiveCondition::new(
+                crate::conditions::ConditionType::Prone,
+                crate::conditions::ConditionDuration::Permanent,
+            ));
+        }
+        force_player_turn(&mut state);
+        if let Some(ref mut combat) = state.active_combat {
+            combat.distances.insert(100, 5);
+        }
+        state.character.class_features.sneak_attack_used_this_turn = false;
+        state
+    }
+
+    #[test]
+    fn test_rogue_sneak_attack_fires_on_finesse_hit_with_advantage() {
+        // Rogue with Shortsword (Finesse) + advantage (Prone target) should
+        // apply Sneak Attack on a hit. Check narration AND the SA flag.
+        let base = rogue_sneak_attack_setup();
+        for seed in 0..40u64 {
+            let mut s = base.clone();
+            s.rng_seed = seed;
+            s.rng_counter = 0;
+            let state_json = serde_json::to_string(&s).unwrap();
+            let output = process_input(&state_json, "attack test goblin");
+            if !output.text.iter().any(|t| t.contains("hit for")) {
+                continue;
+            }
+            // Hit landed -- Sneak Attack must have fired.
+            assert!(output.text.iter().any(|t| t.contains("Sneak Attack")),
+                "Expected Sneak Attack narration on a Rogue Finesse hit with advantage, got: {:?}",
+                output.text);
+            let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+            assert!(new_state.character.class_features.sneak_attack_used_this_turn,
+                "sneak_attack_used_this_turn should be set after SA fires");
+            return;
+        }
+        panic!("Did not land a Rogue hit in 40 seeds; fixture may need adjustment.");
+    }
+
+    #[test]
+    fn test_rogue_sneak_attack_does_not_fire_without_advantage() {
+        // Same Rogue + Shortsword but remove Prone so no advantage source.
+        let mut base = rogue_sneak_attack_setup();
+        if let Some(npc) = base.world.npcs.get_mut(&100) {
+            npc.conditions.clear();
+        }
+        for seed in 0..40u64 {
+            let mut s = base.clone();
+            s.rng_seed = seed;
+            s.rng_counter = 0;
+            let state_json = serde_json::to_string(&s).unwrap();
+            let output = process_input(&state_json, "attack test goblin");
+            // Whether the attack hits or misses, Sneak Attack must not fire.
+            assert!(!output.text.iter().any(|t| t.contains("Sneak Attack")),
+                "SA should not fire without advantage (seed {}). Got: {:?}",
+                seed, output.text);
+            let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+            assert!(!new_state.character.class_features.sneak_attack_used_this_turn,
+                "SA flag should remain unset when advantage is absent");
+        }
+    }
+
+    #[test]
+    fn test_rogue_sneak_attack_does_not_fire_on_non_finesse_weapon() {
+        // Rogue wielding a Longsword (non-finesse, non-ranged melee). Even
+        // with advantage, SA should not fire.
+        let mut base = rogue_sneak_attack_setup();
+        // Swap back to Longsword (the default main_hand in create_test_combat_state).
+        base.character.equipped.main_hand = Some(200);
+        for seed in 0..40u64 {
+            let mut s = base.clone();
+            s.rng_seed = seed;
+            s.rng_counter = 0;
+            let state_json = serde_json::to_string(&s).unwrap();
+            let output = process_input(&state_json, "attack test goblin");
+            assert!(!output.text.iter().any(|t| t.contains("Sneak Attack")),
+                "SA should not fire with a non-finesse weapon (seed {}). Got: {:?}",
+                seed, output.text);
+        }
+    }
+
+    #[test]
+    fn test_rogue_sneak_attack_fires_only_once_per_turn() {
+        // Pre-set the flag as if SA already fired this turn. The next hit
+        // (still Finesse + advantage) must NOT add more SA dice.
+        let mut base = rogue_sneak_attack_setup();
+        base.character.class_features.sneak_attack_used_this_turn = true;
+        for seed in 0..40u64 {
+            let mut s = base.clone();
+            s.rng_seed = seed;
+            s.rng_counter = 0;
+            let state_json = serde_json::to_string(&s).unwrap();
+            let output = process_input(&state_json, "attack test goblin");
+            assert!(!output.text.iter().any(|t| t.contains("Sneak Attack")),
+                "SA should fire at most once per turn (seed {}). Got: {:?}",
+                seed, output.text);
+        }
+    }
+
+    #[test]
+    fn test_non_rogue_never_applies_sneak_attack() {
+        // Fighter wielding a Shortsword with advantage still gets no SA.
+        let mut base = rogue_sneak_attack_setup();
+        base.character.class = Class::Fighter;
+        for seed in 0..40u64 {
+            let mut s = base.clone();
+            s.rng_seed = seed;
+            s.rng_counter = 0;
+            let state_json = serde_json::to_string(&s).unwrap();
+            let output = process_input(&state_json, "attack test goblin");
+            assert!(!output.text.iter().any(|t| t.contains("Sneak Attack")),
+                "Non-Rogue must not apply SA (seed {}). Got: {:?}",
+                seed, output.text);
+            let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+            assert!(!new_state.character.class_features.sneak_attack_used_this_turn,
+                "Non-Rogue should leave the SA flag unset");
+        }
     }
 }
