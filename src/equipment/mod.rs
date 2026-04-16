@@ -89,7 +89,7 @@ pub const SRD_WEAPONS: &[WeaponDef] = &[
     WeaponDef { name: "Shortsword", category: WeaponCategory::Martial, cost_cp: 1000, damage_dice: 1, damage_die: 6, damage_type: DamageType::Piercing, weight_qp: 8, properties: FINESSE | LIGHT, versatile_die: 0, range_normal: 0, range_long: 0 },
     WeaponDef { name: "Trident", category: WeaponCategory::Martial, cost_cp: 500, damage_dice: 1, damage_die: 6, damage_type: DamageType::Piercing, weight_qp: 16, properties: THROWN | VERSATILE, versatile_die: 8, range_normal: 20, range_long: 60 },
     WeaponDef { name: "War Pick", category: WeaponCategory::Martial, cost_cp: 500, damage_dice: 1, damage_die: 8, damage_type: DamageType::Piercing, weight_qp: 8, properties: 0, versatile_die: 0, range_normal: 0, range_long: 0 },
-    WeaponDef { name: "Warhammer", category: WeaponCategory::Martial, cost_cp: 1500, damage_dice: 1, damage_die: 8, damage_type: DamageType::Bludgeoning, weight_qp: 8, properties: VERSATILE, versatile_die: 10, range_normal: 0, range_long: 0 },
+    WeaponDef { name: "Warhammer", category: WeaponCategory::Martial, cost_cp: 1500, damage_dice: 1, damage_die: 8, damage_type: DamageType::Bludgeoning, weight_qp: 20, properties: VERSATILE, versatile_die: 10, range_normal: 0, range_long: 0 },
     WeaponDef { name: "Whip", category: WeaponCategory::Martial, cost_cp: 200, damage_dice: 1, damage_die: 4, damage_type: DamageType::Slashing, weight_qp: 12, properties: FINESSE | REACH, versatile_die: 0, range_normal: 0, range_long: 0 },
     // === Martial Ranged ===
     WeaponDef { name: "Blowgun", category: WeaponCategory::Martial, cost_cp: 1000, damage_dice: 1, damage_die: 1, damage_type: DamageType::Piercing, weight_qp: 4, properties: AMMUNITION | LOADING, versatile_die: 0, range_normal: 25, range_long: 100 },
@@ -376,6 +376,29 @@ mod tests {
         assert!(pistol.properties & AMMUNITION != 0);
         assert!(pistol.properties & LOADING != 0);
         assert!(pistol.properties & TWO_HANDED == 0);
+    }
+
+    // Hypothesis: The Warhammer entry in SRD_WEAPONS has weight_qp: 8
+    // (= 2 lb), but the 2024 SRD specifies Warhammer weighs 5 lb. Weight is
+    // stored in quarter-pounds (1 lb = 4 qp, see docs/specs/equipment-system.md),
+    // so the correct value is 5 lb × 4 qp/lb = 20 qp. Updating the Warhammer
+    // WeaponDef at jurnalis-engine/src/equipment/mod.rs:92 from weight_qp: 8
+    // to weight_qp: 20 should make this assertion pass (see issue #53).
+    #[test]
+    fn test_warhammer_weight_matches_srd() {
+        let warhammer = SRD_WEAPONS.iter().find(|w| w.name == "Warhammer")
+            .expect("Warhammer must be present in SRD_WEAPONS");
+        // SRD: Warhammer weighs 5 lb. Encoded as quarter-pounds: 5 * 4 = 20.
+        assert_eq!(warhammer.weight_qp, 20, "Warhammer weight must be 5 lb (20 qp) per 2024 SRD");
+        // Sanity-check other canonical stats so a regression on this entry
+        // is caught holistically.
+        assert_eq!(warhammer.category, WeaponCategory::Martial);
+        assert_eq!(warhammer.damage_dice, 1);
+        assert_eq!(warhammer.damage_die, 8);
+        assert_eq!(warhammer.damage_type, DamageType::Bludgeoning);
+        assert!(warhammer.properties & VERSATILE != 0);
+        assert_eq!(warhammer.versatile_die, 10);
+        assert_eq!(warhammer.cost_cp, 1500);
     }
 
     #[test]
