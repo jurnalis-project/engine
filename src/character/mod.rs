@@ -92,6 +92,14 @@ pub struct Character {
     /// creation completes. See `docs/specs/character-system.md`.
     #[serde(default)]
     pub alignment: Alignment,
+    /// Canonical SRD weapon names (e.g. "Longsword") for which the
+    /// character has unlocked the 2024 SRD Weapon Mastery property. Filled
+    /// at character creation from the starting loadout for mastery
+    /// classes (Fighter/Barbarian/Paladin/Ranger). Empty for non-mastery
+    /// classes and for legacy saves predating this field. See
+    /// `docs/specs/weapon-mastery.md`.
+    #[serde(default)]
+    pub weapon_masteries: Vec<String>,
 }
 
 impl Character {
@@ -173,6 +181,32 @@ pub fn create_character(
     let cha_mod = Ability::modifier(*final_scores.get(&Ability::Charisma).unwrap_or(&10));
     init_class_features(&mut class_features, class, /* level */ 1, cha_mod, &known_spells);
 
+    // Weapon mastery (2024 SRD): fill the class's starting mastery slots
+    // from the starting loadout on a best-effort basis. See
+    // docs/specs/weapon-mastery.md. Duplicates are skipped so the Barbarian
+    // doesn't fill both slots with "Handaxe" when its loadout contains four.
+    let mut weapon_masteries: Vec<String> = Vec::new();
+    let slot_count = class.starting_weapon_masteries() as usize;
+    if slot_count > 0 {
+        let loadout = class.starting_loadout();
+        // Collect candidate weapon names in loadout order: main-hand,
+        // off-hand (if a weapon), then extras. `off_hand` is skipped when
+        // it's a shield rather than a weapon — `weapon_mastery` returns
+        // None for shields so the filter handles this naturally.
+        let mut candidates: Vec<&str> = Vec::new();
+        if let Some(mh) = loadout.main_hand { candidates.push(mh); }
+        if let Some(oh) = loadout.off_hand { candidates.push(oh); }
+        for extra in loadout.extra_inventory.iter() { candidates.push(extra); }
+        for candidate in candidates {
+            if weapon_masteries.len() >= slot_count { break; }
+            if crate::equipment::weapon_mastery(candidate).is_none() { continue; }
+            let name = candidate.to_string();
+            if !weapon_masteries.contains(&name) {
+                weapon_masteries.push(name);
+            }
+        }
+    }
+
     Character {
         name, race, class, level: 1,
         ability_scores: final_scores, skill_proficiencies,
@@ -195,6 +229,7 @@ pub fn create_character(
         origin_feat: None,
         general_feats: Vec::new(),
         alignment: Alignment::default(),
+        weapon_masteries,
     }
 }
 
@@ -743,5 +778,84 @@ mod tests {
             let c = create_character("T".to_string(), Race::Human, class, test_scores(), vec![]);
             assert!(c.known_spells.is_empty(), "{:?} should have no known spells", class);
         }
+    }
+
+    // ---- Weapon Mastery (feat/weapon-mastery) ----
+
+    #[test]
+    fn test_create_character_fighter_fills_one_mastery_slot_from_loadout() {
+        // Fighter starting loadout has only a Longsword as a weapon (Shield
+        // is armor and Chain Mail is armor). Fighter has 3 mastery slots
+        // per SRD but only 1 weapon in the loadout, so we expect exactly 1
+        // entry filled.
+        let c = create_character(
+            "Drizzt".to_string(), Race::Human, Class::Fighter, test_scores(), vec![],
+        );
+        assert_eq!(c.weapon_masteries, vec!["Longsword".to_string()]);
+    }
+
+    #[test]
+    fn test_create_character_barbarian_fills_two_slots_from_loadout() {
+        // Barbarian loadout: Greataxe + 4x Handaxe. Two slots, dedup so
+        // Handaxe only fills once after Greataxe.
+        let c = create_character(
+            "Gorga".to_string(), Race::Human, Class::Barbarian, test_scores(), vec![],
+        );
+        assert_eq!(c.weapon_masteries.len(), 2);
+        assert_eq!(c.weapon_masteries[0], "Greataxe");
+        assert_eq!(c.weapon_masteries[1], "Handaxe");
+    }
+
+    #[test]
+    fn test_create_character_paladin_fills_two_slots_from_loadout() {
+        // Paladin loadout: Longsword + Shield + Chain Mail + 6x Javelin.
+        // Shield is armor (no mastery), Longsword fills slot 1, Javelin
+        // fills slot 2. Two slots per SRD.
+        let c = create_character(
+            "Alicia".to_string(), Race::Human, Class::Paladin, test_scores(), vec![],
+        );
+        assert_eq!(c.weapon_masteries.len(), 2);
+        assert_eq!(c.weapon_masteries[0], "Longsword");
+        assert_eq!(c.weapon_masteries[1], "Javelin");
+    }
+
+    #[test]
+    fn test_create_character_ranger_fills_two_slots_from_loadout() {
+        // Ranger loadout: Scimitar + Studded Leather + Shortsword + Longbow.
+        // Slot 1: Scimitar (main hand). Slot 2: Shortsword (first extra).
+        let c = create_character(
+            "Ara".to_string(), Race::Human, Class::Ranger, test_scores(), vec![],
+        );
+        assert_eq!(c.weapon_masteries.len(), 2);
+        assert_eq!(c.weapon_masteries[0], "Scimitar");
+        assert_eq!(c.weapon_masteries[1], "Shortsword");
+    }
+
+    #[test]
+    fn test_create_character_non_mastery_class_has_empty_masteries() {
+        // Wizard: no mastery slots. Weapons in loadout are ignored.
+        let c = create_character(
+            "Merlin".to_string(), Race::Human, Class::Wizard, test_scores(), vec![],
+        );
+        assert!(c.weapon_masteries.is_empty());
+        // Bard: no mastery slots either.
+        let c = create_character(
+            "Lute".to_string(), Race::Human, Class::Bard, test_scores(), vec![],
+        );
+        assert!(c.weapon_masteries.is_empty());
+    }
+
+    #[test]
+    fn test_character_weapon_masteries_legacy_save_defaults_to_empty() {
+        // A save written before weapon_masteries existed should deserialize
+        // with an empty vec via #[serde(default)].
+        let c = create_character(
+            "Drizzt".to_string(), Race::Human, Class::Fighter, test_scores(), vec![],
+        );
+        let mut json: serde_json::Value = serde_json::to_value(&c).unwrap();
+        // Remove the field as if the save predates it.
+        json.as_object_mut().unwrap().remove("weapon_masteries");
+        let loaded: Character = serde_json::from_value(json).unwrap();
+        assert!(loaded.weapon_masteries.is_empty());
     }
 }

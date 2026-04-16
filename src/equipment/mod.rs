@@ -3,7 +3,7 @@ pub mod magic;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use crate::types::ItemId;
+use crate::types::{ItemId, Mastery};
 use crate::state::{DamageType, WeaponCategory, ArmorCategory, Item, ItemType};
 use crate::character::Character;
 use crate::types::Ability;
@@ -33,6 +33,11 @@ pub struct WeaponDef {
     pub versatile_die: u32,
     pub range_normal: u32,
     pub range_long: u32,
+    /// Weapon Mastery property per 2024 SRD (docs/reference/equipment.md).
+    /// Every weapon has exactly one mastery. Characters only benefit from
+    /// it if they have unlocked mastery for that weapon (see
+    /// `docs/specs/weapon-mastery.md`).
+    pub mastery: Mastery,
 }
 
 // -- SRD Armor Definition --
@@ -57,48 +62,51 @@ pub struct Equipment {
 
 pub const SRD_WEAPONS: &[WeaponDef] = &[
     // === Simple Melee ===
-    WeaponDef { name: "Club", category: WeaponCategory::Simple, cost_cp: 10, damage_dice: 1, damage_die: 4, damage_type: DamageType::Bludgeoning, weight_qp: 8, properties: LIGHT, versatile_die: 0, range_normal: 0, range_long: 0 },
-    WeaponDef { name: "Dagger", category: WeaponCategory::Simple, cost_cp: 200, damage_dice: 1, damage_die: 4, damage_type: DamageType::Piercing, weight_qp: 4, properties: FINESSE | LIGHT | THROWN, versatile_die: 0, range_normal: 20, range_long: 60 },
-    WeaponDef { name: "Greatclub", category: WeaponCategory::Simple, cost_cp: 20, damage_dice: 1, damage_die: 8, damage_type: DamageType::Bludgeoning, weight_qp: 40, properties: TWO_HANDED, versatile_die: 0, range_normal: 0, range_long: 0 },
-    WeaponDef { name: "Handaxe", category: WeaponCategory::Simple, cost_cp: 500, damage_dice: 1, damage_die: 6, damage_type: DamageType::Slashing, weight_qp: 8, properties: LIGHT | THROWN, versatile_die: 0, range_normal: 20, range_long: 60 },
-    WeaponDef { name: "Javelin", category: WeaponCategory::Simple, cost_cp: 50, damage_dice: 1, damage_die: 6, damage_type: DamageType::Piercing, weight_qp: 8, properties: THROWN, versatile_die: 0, range_normal: 30, range_long: 120 },
-    WeaponDef { name: "Light Hammer", category: WeaponCategory::Simple, cost_cp: 200, damage_dice: 1, damage_die: 4, damage_type: DamageType::Bludgeoning, weight_qp: 8, properties: LIGHT | THROWN, versatile_die: 0, range_normal: 20, range_long: 60 },
-    WeaponDef { name: "Mace", category: WeaponCategory::Simple, cost_cp: 500, damage_dice: 1, damage_die: 6, damage_type: DamageType::Bludgeoning, weight_qp: 16, properties: 0, versatile_die: 0, range_normal: 0, range_long: 0 },
-    WeaponDef { name: "Quarterstaff", category: WeaponCategory::Simple, cost_cp: 20, damage_dice: 1, damage_die: 6, damage_type: DamageType::Bludgeoning, weight_qp: 16, properties: VERSATILE, versatile_die: 8, range_normal: 0, range_long: 0 },
-    WeaponDef { name: "Sickle", category: WeaponCategory::Simple, cost_cp: 100, damage_dice: 1, damage_die: 4, damage_type: DamageType::Slashing, weight_qp: 8, properties: LIGHT, versatile_die: 0, range_normal: 0, range_long: 0 },
-    WeaponDef { name: "Spear", category: WeaponCategory::Simple, cost_cp: 100, damage_dice: 1, damage_die: 6, damage_type: DamageType::Piercing, weight_qp: 12, properties: THROWN | VERSATILE, versatile_die: 8, range_normal: 20, range_long: 60 },
+    WeaponDef { name: "Club", category: WeaponCategory::Simple, cost_cp: 10, damage_dice: 1, damage_die: 4, damage_type: DamageType::Bludgeoning, weight_qp: 8, properties: LIGHT, versatile_die: 0, range_normal: 0, range_long: 0, mastery: Mastery::Slow },
+    WeaponDef { name: "Dagger", category: WeaponCategory::Simple, cost_cp: 200, damage_dice: 1, damage_die: 4, damage_type: DamageType::Piercing, weight_qp: 4, properties: FINESSE | LIGHT | THROWN, versatile_die: 0, range_normal: 20, range_long: 60, mastery: Mastery::Nick },
+    WeaponDef { name: "Greatclub", category: WeaponCategory::Simple, cost_cp: 20, damage_dice: 1, damage_die: 8, damage_type: DamageType::Bludgeoning, weight_qp: 40, properties: TWO_HANDED, versatile_die: 0, range_normal: 0, range_long: 0, mastery: Mastery::Push },
+    WeaponDef { name: "Handaxe", category: WeaponCategory::Simple, cost_cp: 500, damage_dice: 1, damage_die: 6, damage_type: DamageType::Slashing, weight_qp: 8, properties: LIGHT | THROWN, versatile_die: 0, range_normal: 20, range_long: 60, mastery: Mastery::Vex },
+    WeaponDef { name: "Javelin", category: WeaponCategory::Simple, cost_cp: 50, damage_dice: 1, damage_die: 6, damage_type: DamageType::Piercing, weight_qp: 8, properties: THROWN, versatile_die: 0, range_normal: 30, range_long: 120, mastery: Mastery::Slow },
+    WeaponDef { name: "Light Hammer", category: WeaponCategory::Simple, cost_cp: 200, damage_dice: 1, damage_die: 4, damage_type: DamageType::Bludgeoning, weight_qp: 8, properties: LIGHT | THROWN, versatile_die: 0, range_normal: 20, range_long: 60, mastery: Mastery::Nick },
+    WeaponDef { name: "Mace", category: WeaponCategory::Simple, cost_cp: 500, damage_dice: 1, damage_die: 6, damage_type: DamageType::Bludgeoning, weight_qp: 16, properties: 0, versatile_die: 0, range_normal: 0, range_long: 0, mastery: Mastery::Sap },
+    WeaponDef { name: "Quarterstaff", category: WeaponCategory::Simple, cost_cp: 20, damage_dice: 1, damage_die: 6, damage_type: DamageType::Bludgeoning, weight_qp: 16, properties: VERSATILE, versatile_die: 8, range_normal: 0, range_long: 0, mastery: Mastery::Topple },
+    WeaponDef { name: "Sickle", category: WeaponCategory::Simple, cost_cp: 100, damage_dice: 1, damage_die: 4, damage_type: DamageType::Slashing, weight_qp: 8, properties: LIGHT, versatile_die: 0, range_normal: 0, range_long: 0, mastery: Mastery::Nick },
+    WeaponDef { name: "Spear", category: WeaponCategory::Simple, cost_cp: 100, damage_dice: 1, damage_die: 6, damage_type: DamageType::Piercing, weight_qp: 12, properties: THROWN | VERSATILE, versatile_die: 8, range_normal: 20, range_long: 60, mastery: Mastery::Sap },
     // === Simple Ranged ===
-    WeaponDef { name: "Light Crossbow", category: WeaponCategory::Simple, cost_cp: 2500, damage_dice: 1, damage_die: 8, damage_type: DamageType::Piercing, weight_qp: 20, properties: AMMUNITION | LOADING | TWO_HANDED, versatile_die: 0, range_normal: 80, range_long: 320 },
-    WeaponDef { name: "Dart", category: WeaponCategory::Simple, cost_cp: 5, damage_dice: 1, damage_die: 4, damage_type: DamageType::Piercing, weight_qp: 1, properties: FINESSE | THROWN, versatile_die: 0, range_normal: 20, range_long: 60 },
-    WeaponDef { name: "Shortbow", category: WeaponCategory::Simple, cost_cp: 2500, damage_dice: 1, damage_die: 6, damage_type: DamageType::Piercing, weight_qp: 8, properties: AMMUNITION | TWO_HANDED, versatile_die: 0, range_normal: 80, range_long: 320 },
-    WeaponDef { name: "Sling", category: WeaponCategory::Simple, cost_cp: 10, damage_dice: 1, damage_die: 4, damage_type: DamageType::Bludgeoning, weight_qp: 0, properties: AMMUNITION, versatile_die: 0, range_normal: 30, range_long: 120 },
+    WeaponDef { name: "Light Crossbow", category: WeaponCategory::Simple, cost_cp: 2500, damage_dice: 1, damage_die: 8, damage_type: DamageType::Piercing, weight_qp: 20, properties: AMMUNITION | LOADING | TWO_HANDED, versatile_die: 0, range_normal: 80, range_long: 320, mastery: Mastery::Slow },
+    WeaponDef { name: "Dart", category: WeaponCategory::Simple, cost_cp: 5, damage_dice: 1, damage_die: 4, damage_type: DamageType::Piercing, weight_qp: 1, properties: FINESSE | THROWN, versatile_die: 0, range_normal: 20, range_long: 60, mastery: Mastery::Vex },
+    WeaponDef { name: "Shortbow", category: WeaponCategory::Simple, cost_cp: 2500, damage_dice: 1, damage_die: 6, damage_type: DamageType::Piercing, weight_qp: 8, properties: AMMUNITION | TWO_HANDED, versatile_die: 0, range_normal: 80, range_long: 320, mastery: Mastery::Vex },
+    WeaponDef { name: "Sling", category: WeaponCategory::Simple, cost_cp: 10, damage_dice: 1, damage_die: 4, damage_type: DamageType::Bludgeoning, weight_qp: 0, properties: AMMUNITION, versatile_die: 0, range_normal: 30, range_long: 120, mastery: Mastery::Slow },
     // === Martial Melee ===
-    WeaponDef { name: "Battleaxe", category: WeaponCategory::Martial, cost_cp: 1000, damage_dice: 1, damage_die: 8, damage_type: DamageType::Slashing, weight_qp: 16, properties: VERSATILE, versatile_die: 10, range_normal: 0, range_long: 0 },
-    WeaponDef { name: "Flail", category: WeaponCategory::Martial, cost_cp: 1000, damage_dice: 1, damage_die: 8, damage_type: DamageType::Bludgeoning, weight_qp: 8, properties: 0, versatile_die: 0, range_normal: 0, range_long: 0 },
-    WeaponDef { name: "Glaive", category: WeaponCategory::Martial, cost_cp: 2000, damage_dice: 1, damage_die: 10, damage_type: DamageType::Slashing, weight_qp: 24, properties: HEAVY | REACH | TWO_HANDED, versatile_die: 0, range_normal: 0, range_long: 0 },
-    WeaponDef { name: "Greataxe", category: WeaponCategory::Martial, cost_cp: 3000, damage_dice: 1, damage_die: 12, damage_type: DamageType::Slashing, weight_qp: 28, properties: HEAVY | TWO_HANDED, versatile_die: 0, range_normal: 0, range_long: 0 },
-    WeaponDef { name: "Greatsword", category: WeaponCategory::Martial, cost_cp: 5000, damage_dice: 2, damage_die: 6, damage_type: DamageType::Slashing, weight_qp: 24, properties: HEAVY | TWO_HANDED, versatile_die: 0, range_normal: 0, range_long: 0 },
-    WeaponDef { name: "Halberd", category: WeaponCategory::Martial, cost_cp: 2000, damage_dice: 1, damage_die: 10, damage_type: DamageType::Slashing, weight_qp: 24, properties: HEAVY | REACH | TWO_HANDED, versatile_die: 0, range_normal: 0, range_long: 0 },
-    WeaponDef { name: "Lance", category: WeaponCategory::Martial, cost_cp: 1000, damage_dice: 1, damage_die: 12, damage_type: DamageType::Piercing, weight_qp: 24, properties: REACH | SPECIAL, versatile_die: 0, range_normal: 0, range_long: 0 },
-    WeaponDef { name: "Longsword", category: WeaponCategory::Martial, cost_cp: 1500, damage_dice: 1, damage_die: 8, damage_type: DamageType::Slashing, weight_qp: 12, properties: VERSATILE, versatile_die: 10, range_normal: 0, range_long: 0 },
-    WeaponDef { name: "Maul", category: WeaponCategory::Martial, cost_cp: 1000, damage_dice: 2, damage_die: 6, damage_type: DamageType::Bludgeoning, weight_qp: 40, properties: HEAVY | TWO_HANDED, versatile_die: 0, range_normal: 0, range_long: 0 },
-    WeaponDef { name: "Morningstar", category: WeaponCategory::Martial, cost_cp: 1500, damage_dice: 1, damage_die: 8, damage_type: DamageType::Piercing, weight_qp: 16, properties: 0, versatile_die: 0, range_normal: 0, range_long: 0 },
-    WeaponDef { name: "Pike", category: WeaponCategory::Martial, cost_cp: 500, damage_dice: 1, damage_die: 10, damage_type: DamageType::Piercing, weight_qp: 72, properties: HEAVY | REACH | TWO_HANDED, versatile_die: 0, range_normal: 0, range_long: 0 },
-    WeaponDef { name: "Rapier", category: WeaponCategory::Martial, cost_cp: 2500, damage_dice: 1, damage_die: 8, damage_type: DamageType::Piercing, weight_qp: 8, properties: FINESSE, versatile_die: 0, range_normal: 0, range_long: 0 },
-    WeaponDef { name: "Scimitar", category: WeaponCategory::Martial, cost_cp: 2500, damage_dice: 1, damage_die: 6, damage_type: DamageType::Slashing, weight_qp: 12, properties: FINESSE | LIGHT, versatile_die: 0, range_normal: 0, range_long: 0 },
-    WeaponDef { name: "Shortsword", category: WeaponCategory::Martial, cost_cp: 1000, damage_dice: 1, damage_die: 6, damage_type: DamageType::Piercing, weight_qp: 8, properties: FINESSE | LIGHT, versatile_die: 0, range_normal: 0, range_long: 0 },
-    WeaponDef { name: "Trident", category: WeaponCategory::Martial, cost_cp: 500, damage_dice: 1, damage_die: 6, damage_type: DamageType::Piercing, weight_qp: 16, properties: THROWN | VERSATILE, versatile_die: 8, range_normal: 20, range_long: 60 },
-    WeaponDef { name: "War Pick", category: WeaponCategory::Martial, cost_cp: 500, damage_dice: 1, damage_die: 8, damage_type: DamageType::Piercing, weight_qp: 8, properties: 0, versatile_die: 0, range_normal: 0, range_long: 0 },
-    WeaponDef { name: "Warhammer", category: WeaponCategory::Martial, cost_cp: 1500, damage_dice: 1, damage_die: 8, damage_type: DamageType::Bludgeoning, weight_qp: 20, properties: VERSATILE, versatile_die: 10, range_normal: 0, range_long: 0 },
-    WeaponDef { name: "Whip", category: WeaponCategory::Martial, cost_cp: 200, damage_dice: 1, damage_die: 4, damage_type: DamageType::Slashing, weight_qp: 12, properties: FINESSE | REACH, versatile_die: 0, range_normal: 0, range_long: 0 },
+    WeaponDef { name: "Battleaxe", category: WeaponCategory::Martial, cost_cp: 1000, damage_dice: 1, damage_die: 8, damage_type: DamageType::Slashing, weight_qp: 16, properties: VERSATILE, versatile_die: 10, range_normal: 0, range_long: 0, mastery: Mastery::Topple },
+    WeaponDef { name: "Flail", category: WeaponCategory::Martial, cost_cp: 1000, damage_dice: 1, damage_die: 8, damage_type: DamageType::Bludgeoning, weight_qp: 8, properties: 0, versatile_die: 0, range_normal: 0, range_long: 0, mastery: Mastery::Sap },
+    WeaponDef { name: "Glaive", category: WeaponCategory::Martial, cost_cp: 2000, damage_dice: 1, damage_die: 10, damage_type: DamageType::Slashing, weight_qp: 24, properties: HEAVY | REACH | TWO_HANDED, versatile_die: 0, range_normal: 0, range_long: 0, mastery: Mastery::Graze },
+    WeaponDef { name: "Greataxe", category: WeaponCategory::Martial, cost_cp: 3000, damage_dice: 1, damage_die: 12, damage_type: DamageType::Slashing, weight_qp: 28, properties: HEAVY | TWO_HANDED, versatile_die: 0, range_normal: 0, range_long: 0, mastery: Mastery::Cleave },
+    WeaponDef { name: "Greatsword", category: WeaponCategory::Martial, cost_cp: 5000, damage_dice: 2, damage_die: 6, damage_type: DamageType::Slashing, weight_qp: 24, properties: HEAVY | TWO_HANDED, versatile_die: 0, range_normal: 0, range_long: 0, mastery: Mastery::Graze },
+    WeaponDef { name: "Halberd", category: WeaponCategory::Martial, cost_cp: 2000, damage_dice: 1, damage_die: 10, damage_type: DamageType::Slashing, weight_qp: 24, properties: HEAVY | REACH | TWO_HANDED, versatile_die: 0, range_normal: 0, range_long: 0, mastery: Mastery::Cleave },
+    WeaponDef { name: "Lance", category: WeaponCategory::Martial, cost_cp: 1000, damage_dice: 1, damage_die: 12, damage_type: DamageType::Piercing, weight_qp: 24, properties: REACH | SPECIAL, versatile_die: 0, range_normal: 0, range_long: 0, mastery: Mastery::Topple },
+    WeaponDef { name: "Longsword", category: WeaponCategory::Martial, cost_cp: 1500, damage_dice: 1, damage_die: 8, damage_type: DamageType::Slashing, weight_qp: 12, properties: VERSATILE, versatile_die: 10, range_normal: 0, range_long: 0, mastery: Mastery::Sap },
+    WeaponDef { name: "Maul", category: WeaponCategory::Martial, cost_cp: 1000, damage_dice: 2, damage_die: 6, damage_type: DamageType::Bludgeoning, weight_qp: 40, properties: HEAVY | TWO_HANDED, versatile_die: 0, range_normal: 0, range_long: 0, mastery: Mastery::Topple },
+    WeaponDef { name: "Morningstar", category: WeaponCategory::Martial, cost_cp: 1500, damage_dice: 1, damage_die: 8, damage_type: DamageType::Piercing, weight_qp: 16, properties: 0, versatile_die: 0, range_normal: 0, range_long: 0, mastery: Mastery::Sap },
+    WeaponDef { name: "Pike", category: WeaponCategory::Martial, cost_cp: 500, damage_dice: 1, damage_die: 10, damage_type: DamageType::Piercing, weight_qp: 72, properties: HEAVY | REACH | TWO_HANDED, versatile_die: 0, range_normal: 0, range_long: 0, mastery: Mastery::Push },
+    WeaponDef { name: "Rapier", category: WeaponCategory::Martial, cost_cp: 2500, damage_dice: 1, damage_die: 8, damage_type: DamageType::Piercing, weight_qp: 8, properties: FINESSE, versatile_die: 0, range_normal: 0, range_long: 0, mastery: Mastery::Vex },
+    WeaponDef { name: "Scimitar", category: WeaponCategory::Martial, cost_cp: 2500, damage_dice: 1, damage_die: 6, damage_type: DamageType::Slashing, weight_qp: 12, properties: FINESSE | LIGHT, versatile_die: 0, range_normal: 0, range_long: 0, mastery: Mastery::Nick },
+    WeaponDef { name: "Shortsword", category: WeaponCategory::Martial, cost_cp: 1000, damage_dice: 1, damage_die: 6, damage_type: DamageType::Piercing, weight_qp: 8, properties: FINESSE | LIGHT, versatile_die: 0, range_normal: 0, range_long: 0, mastery: Mastery::Vex },
+    WeaponDef { name: "Trident", category: WeaponCategory::Martial, cost_cp: 500, damage_dice: 1, damage_die: 6, damage_type: DamageType::Piercing, weight_qp: 16, properties: THROWN | VERSATILE, versatile_die: 8, range_normal: 20, range_long: 60, mastery: Mastery::Topple },
+    WeaponDef { name: "War Pick", category: WeaponCategory::Martial, cost_cp: 500, damage_dice: 1, damage_die: 8, damage_type: DamageType::Piercing, weight_qp: 8, properties: 0, versatile_die: 0, range_normal: 0, range_long: 0, mastery: Mastery::Sap },
+    WeaponDef { name: "Warhammer", category: WeaponCategory::Martial, cost_cp: 1500, damage_dice: 1, damage_die: 8, damage_type: DamageType::Bludgeoning, weight_qp: 20, properties: VERSATILE, versatile_die: 10, range_normal: 0, range_long: 0, mastery: Mastery::Push },
+    WeaponDef { name: "Whip", category: WeaponCategory::Martial, cost_cp: 200, damage_dice: 1, damage_die: 4, damage_type: DamageType::Slashing, weight_qp: 12, properties: FINESSE | REACH, versatile_die: 0, range_normal: 0, range_long: 0, mastery: Mastery::Slow },
     // === Martial Ranged ===
-    WeaponDef { name: "Blowgun", category: WeaponCategory::Martial, cost_cp: 1000, damage_dice: 1, damage_die: 1, damage_type: DamageType::Piercing, weight_qp: 4, properties: AMMUNITION | LOADING, versatile_die: 0, range_normal: 25, range_long: 100 },
-    WeaponDef { name: "Hand Crossbow", category: WeaponCategory::Martial, cost_cp: 7500, damage_dice: 1, damage_die: 6, damage_type: DamageType::Piercing, weight_qp: 12, properties: AMMUNITION | LIGHT | LOADING, versatile_die: 0, range_normal: 30, range_long: 120 },
-    WeaponDef { name: "Heavy Crossbow", category: WeaponCategory::Martial, cost_cp: 5000, damage_dice: 1, damage_die: 10, damage_type: DamageType::Piercing, weight_qp: 72, properties: AMMUNITION | HEAVY | LOADING | TWO_HANDED, versatile_die: 0, range_normal: 100, range_long: 400 },
-    WeaponDef { name: "Longbow", category: WeaponCategory::Martial, cost_cp: 5000, damage_dice: 1, damage_die: 8, damage_type: DamageType::Piercing, weight_qp: 8, properties: AMMUNITION | HEAVY | TWO_HANDED, versatile_die: 0, range_normal: 150, range_long: 600 },
-    WeaponDef { name: "Musket", category: WeaponCategory::Martial, cost_cp: 50000, damage_dice: 1, damage_die: 12, damage_type: DamageType::Piercing, weight_qp: 40, properties: AMMUNITION | LOADING | TWO_HANDED, versatile_die: 0, range_normal: 40, range_long: 120 },
-    WeaponDef { name: "Pistol", category: WeaponCategory::Martial, cost_cp: 25000, damage_dice: 1, damage_die: 10, damage_type: DamageType::Piercing, weight_qp: 12, properties: AMMUNITION | LOADING, versatile_die: 0, range_normal: 30, range_long: 90 },
-    WeaponDef { name: "Net", category: WeaponCategory::Martial, cost_cp: 100, damage_dice: 0, damage_die: 0, damage_type: DamageType::Bludgeoning, weight_qp: 12, properties: SPECIAL | THROWN, versatile_die: 0, range_normal: 5, range_long: 15 },
+    WeaponDef { name: "Blowgun", category: WeaponCategory::Martial, cost_cp: 1000, damage_dice: 1, damage_die: 1, damage_type: DamageType::Piercing, weight_qp: 4, properties: AMMUNITION | LOADING, versatile_die: 0, range_normal: 25, range_long: 100, mastery: Mastery::Vex },
+    WeaponDef { name: "Hand Crossbow", category: WeaponCategory::Martial, cost_cp: 7500, damage_dice: 1, damage_die: 6, damage_type: DamageType::Piercing, weight_qp: 12, properties: AMMUNITION | LIGHT | LOADING, versatile_die: 0, range_normal: 30, range_long: 120, mastery: Mastery::Vex },
+    WeaponDef { name: "Heavy Crossbow", category: WeaponCategory::Martial, cost_cp: 5000, damage_dice: 1, damage_die: 10, damage_type: DamageType::Piercing, weight_qp: 72, properties: AMMUNITION | HEAVY | LOADING | TWO_HANDED, versatile_die: 0, range_normal: 100, range_long: 400, mastery: Mastery::Push },
+    WeaponDef { name: "Longbow", category: WeaponCategory::Martial, cost_cp: 5000, damage_dice: 1, damage_die: 8, damage_type: DamageType::Piercing, weight_qp: 8, properties: AMMUNITION | HEAVY | TWO_HANDED, versatile_die: 0, range_normal: 150, range_long: 600, mastery: Mastery::Slow },
+    WeaponDef { name: "Musket", category: WeaponCategory::Martial, cost_cp: 50000, damage_dice: 1, damage_die: 12, damage_type: DamageType::Piercing, weight_qp: 40, properties: AMMUNITION | LOADING | TWO_HANDED, versatile_die: 0, range_normal: 40, range_long: 120, mastery: Mastery::Slow },
+    WeaponDef { name: "Pistol", category: WeaponCategory::Martial, cost_cp: 25000, damage_dice: 1, damage_die: 10, damage_type: DamageType::Piercing, weight_qp: 12, properties: AMMUNITION | LOADING, versatile_die: 0, range_normal: 30, range_long: 90, mastery: Mastery::Vex },
+    // Net is a SPECIAL weapon with no SRD-listed mastery (it never deals
+    // damage, so mastery hooks never fire). Filler Slow keeps the schema
+    // uniform; see the mastery tests for rationale.
+    WeaponDef { name: "Net", category: WeaponCategory::Martial, cost_cp: 100, damage_dice: 0, damage_die: 0, damage_type: DamageType::Bludgeoning, weight_qp: 12, properties: SPECIAL | THROWN, versatile_die: 0, range_normal: 5, range_long: 15, mastery: Mastery::Slow },
 ];
 
 pub const SRD_ARMOR: &[ArmorDef] = &[
@@ -120,6 +128,21 @@ pub const SRD_ARMOR: &[ArmorDef] = &[
     // === Shield ===
     ArmorDef { name: "Shield", category: ArmorCategory::Shield, base_ac: 2, max_dex_bonus: None, str_requirement: 0, stealth_disadvantage: false, cost_cp: 1000, weight_qp: 24 },
 ];
+
+/// Look up the Mastery property for a weapon by its canonical SRD name.
+/// Returns `None` when the name is not present in `SRD_WEAPONS`. Name match
+/// is case-sensitive, consistent with the rest of the SRD lookup API
+/// (`SRD_WEAPONS.iter().find(|w| w.name == name)`).
+pub fn weapon_mastery(name: &str) -> Option<Mastery> {
+    SRD_WEAPONS.iter().find(|w| w.name == name).map(|w| w.mastery)
+}
+
+/// True when the character has unlocked Weapon Mastery for the named weapon.
+/// Match is case-sensitive against `Character.weapon_masteries` entries,
+/// which store the canonical SRD weapon name.
+pub fn character_has_mastery(character: &Character, weapon_name: &str) -> bool {
+    character.weapon_masteries.iter().any(|n| n == weapon_name)
+}
 
 pub fn calculate_ac(character: &Character, items: &HashMap<ItemId, Item>) -> i32 {
     let dex_mod = character.ability_modifier(Ability::Dexterity);
@@ -494,6 +517,93 @@ mod tests {
         // AND the item is in the character inventory.
         c.inventory.push(5);
         assert_eq!(calculate_ac(&c, &items), 13);
+    }
+
+    // ---- Weapon Mastery (2024 SRD, feat/weapon-mastery) ----
+
+    #[test]
+    fn test_srd_weapons_have_mastery_populated() {
+        // Every SRD weapon must have a mastery. This spot-checks a handful
+        // per the 2024 SRD reference table (docs/reference/equipment.md).
+        use crate::types::Mastery;
+        let find = |name: &str| SRD_WEAPONS.iter().find(|w| w.name == name)
+            .unwrap_or_else(|| panic!("{} missing from SRD_WEAPONS", name));
+
+        // Simple Melee
+        assert_eq!(find("Club").mastery, Mastery::Slow);
+        assert_eq!(find("Dagger").mastery, Mastery::Nick);
+        assert_eq!(find("Greatclub").mastery, Mastery::Push);
+        assert_eq!(find("Handaxe").mastery, Mastery::Vex);
+        assert_eq!(find("Javelin").mastery, Mastery::Slow);
+        assert_eq!(find("Light Hammer").mastery, Mastery::Nick);
+        assert_eq!(find("Mace").mastery, Mastery::Sap);
+        assert_eq!(find("Quarterstaff").mastery, Mastery::Topple);
+        assert_eq!(find("Sickle").mastery, Mastery::Nick);
+        assert_eq!(find("Spear").mastery, Mastery::Sap);
+        // Simple Ranged
+        assert_eq!(find("Dart").mastery, Mastery::Vex);
+        assert_eq!(find("Light Crossbow").mastery, Mastery::Slow);
+        assert_eq!(find("Shortbow").mastery, Mastery::Vex);
+        assert_eq!(find("Sling").mastery, Mastery::Slow);
+        // Martial Melee
+        assert_eq!(find("Battleaxe").mastery, Mastery::Topple);
+        assert_eq!(find("Flail").mastery, Mastery::Sap);
+        assert_eq!(find("Glaive").mastery, Mastery::Graze);
+        assert_eq!(find("Greataxe").mastery, Mastery::Cleave);
+        assert_eq!(find("Greatsword").mastery, Mastery::Graze);
+        assert_eq!(find("Halberd").mastery, Mastery::Cleave);
+        assert_eq!(find("Lance").mastery, Mastery::Topple);
+        assert_eq!(find("Longsword").mastery, Mastery::Sap);
+        assert_eq!(find("Maul").mastery, Mastery::Topple);
+        assert_eq!(find("Morningstar").mastery, Mastery::Sap);
+        assert_eq!(find("Pike").mastery, Mastery::Push);
+        assert_eq!(find("Rapier").mastery, Mastery::Vex);
+        assert_eq!(find("Scimitar").mastery, Mastery::Nick);
+        assert_eq!(find("Shortsword").mastery, Mastery::Vex);
+        assert_eq!(find("Trident").mastery, Mastery::Topple);
+        assert_eq!(find("War Pick").mastery, Mastery::Sap);
+        assert_eq!(find("Warhammer").mastery, Mastery::Push);
+        assert_eq!(find("Whip").mastery, Mastery::Slow);
+        // Martial Ranged
+        assert_eq!(find("Blowgun").mastery, Mastery::Vex);
+        assert_eq!(find("Hand Crossbow").mastery, Mastery::Vex);
+        assert_eq!(find("Heavy Crossbow").mastery, Mastery::Push);
+        assert_eq!(find("Longbow").mastery, Mastery::Slow);
+        assert_eq!(find("Musket").mastery, Mastery::Slow);
+        assert_eq!(find("Pistol").mastery, Mastery::Vex);
+        // Net is a SPECIAL weapon. The SRD mastery table does not enumerate
+        // it because Net has no dice damage, but the engine still requires
+        // every WeaponDef to carry a mastery. We assign Slow as a harmless
+        // filler — the combat hooks check mastery unlock + damage dealt,
+        // and Net never deals damage, so Slow never fires.
+        assert_eq!(find("Net").mastery, Mastery::Slow);
+    }
+
+    #[test]
+    fn test_weapon_mastery_lookup_by_name() {
+        use crate::types::Mastery;
+        assert_eq!(weapon_mastery("Longsword"), Some(Mastery::Sap));
+        assert_eq!(weapon_mastery("Greataxe"), Some(Mastery::Cleave));
+        assert_eq!(weapon_mastery("Shortsword"), Some(Mastery::Vex));
+        assert_eq!(weapon_mastery("Dagger"), Some(Mastery::Nick));
+        // Case-sensitive canonical match, per SRD lookup conventions.
+        assert_eq!(weapon_mastery("longsword"), None);
+        assert_eq!(weapon_mastery("Spork"), None);
+    }
+
+    #[test]
+    fn test_character_has_mastery_checks_vec() {
+        let mut c = test_character(14);
+        // Reset the auto-filled mastery list so this test exercises the
+        // predicate in isolation from create_character's starting-loadout
+        // initialization.
+        c.weapon_masteries.clear();
+        assert!(!character_has_mastery(&c, "Longsword"));
+        c.weapon_masteries.push("Longsword".to_string());
+        assert!(character_has_mastery(&c, "Longsword"));
+        // Only exact matches count.
+        assert!(!character_has_mastery(&c, "longsword"));
+        assert!(!character_has_mastery(&c, "Shortsword"));
     }
 
     #[test]

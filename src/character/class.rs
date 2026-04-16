@@ -224,6 +224,20 @@ impl Class {
         match level { 1..=4 => 2, 5..=8 => 3, 9..=12 => 4, 13..=16 => 5, 17..=20 => 6, _ => 2 }
     }
 
+    /// Number of Weapon Mastery slots unlocked at level 1 per 2024 SRD.
+    /// Mastery-unlocking classes (Fighter 3, Barbarian/Paladin/Ranger 2)
+    /// can pre-populate their `Character.weapon_masteries` from their
+    /// starting loadout. Non-mastery classes return 0 — the Weapon Master
+    /// feat (#28) is the only future path for them to unlock mastery.
+    /// See `docs/specs/weapon-mastery.md`.
+    pub fn starting_weapon_masteries(&self) -> u32 {
+        match self {
+            Class::Fighter => 3,
+            Class::Barbarian | Class::Paladin | Class::Ranger => 2,
+            _ => 0,
+        }
+    }
+
     /// Level-1 spell-slot vector for this class. Returns an empty vector for
     /// non-casters and for classes that unlock spellcasting after level 1
     /// (Paladin, Ranger).
@@ -654,6 +668,32 @@ mod tests {
         assert!(f.prepared_spells.is_empty());
         // New in feat/expanded-spell-catalog: concentration tracking.
         assert!(f.concentration_spell.is_none());
+    }
+
+    // ---- Weapon Mastery (feat/weapon-mastery) ----
+
+    #[test]
+    fn test_starting_weapon_masteries_for_mastery_classes() {
+        // 2024 SRD: Fighter gets 3, Barbarian/Paladin/Ranger get 2.
+        assert_eq!(Class::Fighter.starting_weapon_masteries(), 3);
+        assert_eq!(Class::Barbarian.starting_weapon_masteries(), 2);
+        assert_eq!(Class::Paladin.starting_weapon_masteries(), 2);
+        assert_eq!(Class::Ranger.starting_weapon_masteries(), 2);
+    }
+
+    #[test]
+    fn test_starting_weapon_masteries_zero_for_non_mastery_classes() {
+        // 2024 SRD: only Fighter/Barbarian/Paladin/Ranger unlock mastery
+        // at level 1. Everyone else relies on the Weapon Master feat,
+        // which is tracked separately by issue #28.
+        assert_eq!(Class::Bard.starting_weapon_masteries(), 0);
+        assert_eq!(Class::Cleric.starting_weapon_masteries(), 0);
+        assert_eq!(Class::Druid.starting_weapon_masteries(), 0);
+        assert_eq!(Class::Monk.starting_weapon_masteries(), 0);
+        assert_eq!(Class::Rogue.starting_weapon_masteries(), 0);
+        assert_eq!(Class::Sorcerer.starting_weapon_masteries(), 0);
+        assert_eq!(Class::Warlock.starting_weapon_masteries(), 0);
+        assert_eq!(Class::Wizard.starting_weapon_masteries(), 0);
     }
 
     #[test]
