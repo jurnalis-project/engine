@@ -5,53 +5,16 @@ on:
     branches: [main]
     paths:
       - "Cargo.toml"
+    tags:
+      - "engine-v*"
   workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  check-version:
-    name: Check engine version
-    runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.read.outputs.version }}
-      should_release: ${{ steps.gate.outputs.should_release }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Read engine version
-        id: read
-        run: |
-          set -euo pipefail
-          version=$(grep -m1 '^version' Cargo.toml | sed -E 's/version *= *"([^"]+)"/\1/')
-          if [ -z "$version" ]; then
-            echo "Failed to read version from Cargo.toml" >&2
-            exit 1
-          fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "Engine version: $version"
-
-      - name: Check if tag already exists
-        id: gate
-        run: |
-          set -euo pipefail
-          tag="engine-v${{ steps.read.outputs.version }}"
-          if git ls-remote --tags --exit-code origin "refs/tags/$tag" >/dev/null 2>&1; then
-            echo "Tag $tag already exists. Skipping release."
-            echo "should_release=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "Tag $tag does not exist. Proceeding."
-            echo "should_release=true" >> "$GITHUB_OUTPUT"
-          fi
-
   build:
     name: Build ${{ matrix.label }}
-    needs: check-version
-    if: needs.check-version.outputs.should_release == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -85,6 +48,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Read engine version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(grep -m1 '^version' Cargo.toml | sed -E 's/version *= *"([^"]+)"/\1/')
+          if [ -z "$version" ]; then
+            echo "Failed to read version from Cargo.toml" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Engine version: $version"
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -107,7 +83,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          staging="jurnalis-cli-${{ needs.check-version.outputs.version }}-${{ matrix.asset_suffix }}"
+          staging="jurnalis-cli-${{ steps.version.outputs.version }}-${{ matrix.asset_suffix }}"
           mkdir -p "$staging"
           cp "target/${{ matrix.target }}/release/${{ matrix.bin }}" "$staging/"
           tar -czf "$staging.tar.gz" "$staging"
@@ -117,7 +93,7 @@ jobs:
         if: matrix.archive == 'zip'
         shell: pwsh
         run: |
-          $staging = "jurnalis-cli-${{ needs.check-version.outputs.version }}-${{ matrix.asset_suffix }}"
+          $staging = "jurnalis-cli-${{ steps.version.outputs.version }}-${{ matrix.asset_suffix }}"
           New-Item -ItemType Directory -Force -Path $staging | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/${{ matrix.bin }}" "$staging/"
           Compress-Archive -Path $staging -DestinationPath "$staging.zip"
@@ -132,14 +108,26 @@ jobs:
 
   release:
     name: Create GitHub release
-    needs: [check-version, build]
-    if: needs.check-version.outputs.should_release == 'true'
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/engine-v')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Read engine version
+        id: version
+        run: |
+          set -euo pipefail
+          version=$(grep -m1 '^version' Cargo.toml | sed -E 's/version *= *"([^"]+)"/\1/')
+          if [ -z "$version" ]; then
+            echo "Failed to read version from Cargo.toml" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Engine version: $version"
 
       - name: Download artifacts
         uses: actions/download-artifact@v4
@@ -151,23 +139,25 @@ jobs:
         id: changelog
         run: |
           set -euo pipefail
-          version="${{ needs.check-version.outputs.version }}"
-          tag="engine-v$version"
+          tag="${GITHUB_REF_NAME}"
 
-          prev_tag=$(git tag --list 'engine-v*' --sort=-creatordate | head -n1 || true)
+          # Nearest previous engine-v* tag by creator date, excluding the current tag.
+          prev_tag=$(git tag --list 'engine-v*' --sort=-creatordate \
+            | grep -v -x -F "$tag" \
+            | head -n1 || true)
 
           {
             echo "## Changes"
             echo
             if [ -n "$prev_tag" ]; then
-              git log --pretty=format:'- %h %s' "$prev_tag"..HEAD
+              git log --pretty=format:'- %h %s' "$prev_tag"..HEAD -- jurnalis-engine
               echo
               echo
               echo "Full diff: $prev_tag...$tag"
             else
               echo "Initial engine release."
               echo
-              git log --pretty=format:'- %h %s' HEAD
+              git log --pretty=format:'- %h %s' HEAD -- jurnalis-engine
             fi
           } > CHANGELOG_BODY.md
 
@@ -179,7 +169,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.changelog.outputs.tag }}
-          name: jurnalis-engine v${{ needs.check-version.outputs.version }}
+          name: jurnalis-engine v${{ steps.version.outputs.version }}
           body_path: CHANGELOG_BODY.md
           files: dist/*
           fail_on_unmatched_files: true
