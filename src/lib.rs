@@ -1912,6 +1912,7 @@ fn resolve_reaction_decision(
                     hostile_within_5ft,
                     &target_conditions,
                     grappled_disadv,
+                    false,
                 );
                 // Apply magic weapon bonuses (if wielding a MagicWeapon).
                 let (atk_b, dmg_b) = magic_weapon_bonuses(state, weapon_id);
@@ -2469,12 +2470,23 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                         &npc_name,
                     );
 
+                    // Vex mastery: if the player's previous attack applied
+                    // the Vex mark to this NPC (and it hasn't been consumed
+                    // yet) grant advantage on this attack. We consume the
+                    // mark on the attack roll regardless of hit/miss per SRD.
+                    let vex_advantage =
+                        combat::consume_vex_advantage(&mut combat, npc_id);
+
                     let mut result = combat::resolve_player_attack(
                         &mut rng, &state.character, target_ac, target_dodging,
                         weapon_id, &state.world.items, distance, off_hand_free, hostile_within_5ft,
                         target_conditions,
                         grappled_disadv,
+                        vex_advantage,
                     );
+                    if vex_advantage {
+                        lines.push("(Advantage from Vex mastery.)".to_string());
+                    }
                     // Apply magic weapon bonuses (if wielding a MagicWeapon).
                     let (atk_b, dmg_b) = magic_weapon_bonuses(state, weapon_id);
                     apply_magic_weapon_bonuses(&mut result, atk_b, dmg_b);
@@ -2739,6 +2751,11 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                         &npc_name,
                     );
 
+                    // Vex: consume on any off-hand attack against a Vex-marked
+                    // target, same as the main-hand path.
+                    let vex_advantage =
+                        combat::consume_vex_advantage(&mut combat, npc_id);
+
                     // Resolve the attack using the OFF-HAND weapon.
                     let mut result = combat::resolve_player_attack(
                         &mut rng, &state.character, target_ac, target_dodging,
@@ -2747,7 +2764,11 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                         hostile_within_5ft,
                         target_conditions,
                         grappled_disadv,
+                        vex_advantage,
                     );
+                    if vex_advantage {
+                        lines.push("(Advantage from Vex mastery.)".to_string());
+                    }
                     // Apply magic weapon bonuses to the off-hand result too.
                     let (atk_b, dmg_b) = magic_weapon_bonuses(state, Some(off_hand_id));
                     apply_magic_weapon_bonuses(&mut result, atk_b, dmg_b);

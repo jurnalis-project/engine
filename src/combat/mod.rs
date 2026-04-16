@@ -423,6 +423,12 @@ fn is_ranged_attack(weapon: &ItemType, distance: u32) -> bool {
 }
 
 /// Resolve the player attacking a target NPC.
+///
+/// `extra_advantage` is the orchestrator-supplied advantage flag (used by
+/// the Vex weapon mastery to grant advantage on the next attack against a
+/// marked target). It is combined with all other advantage sources and
+/// cancels normally against any disadvantage source.
+#[allow(clippy::too_many_arguments)]
 pub fn resolve_player_attack(
     rng: &mut impl Rng,
     player: &Character,
@@ -435,6 +441,7 @@ pub fn resolve_player_attack(
     hostile_within_5ft: bool,
     target_conditions: &[ActiveCondition],
     extra_disadvantage: bool,
+    extra_advantage: bool,
 ) -> AttackResult {
     // Base weapon fields come from either a mundane `Weapon` or a
     // `MagicWeapon` (which embeds the same mechanical fields). Magic
@@ -516,6 +523,10 @@ pub fn resolve_player_attack(
     // Attacker-side conditions: Invisible grants advantage; Poisoned/Blinded/Prone/
     // Frightened/Restrained impose disadvantage.
     let mut advantage = false;
+    if extra_advantage {
+        // Orchestrator-supplied advantage (e.g., Vex mastery mark on target).
+        advantage = true;
+    }
     match conditions::get_attack_advantage(&player.conditions) {
         Some(true) => advantage = true,
         Some(false) => disadvantage = true,
@@ -1430,6 +1441,7 @@ pub fn apply_cleave_mastery(
         hostile_within_5ft,
         &secondary_conditions,
         false,
+        false,
     );
     // Per SRD: the second attack does not include ability-mod damage
     // unless the modifier is negative. We subtract the positive modifier
@@ -1877,7 +1889,7 @@ mod tests {
         let mut saw_miss = false;
         for seed in 0..200 {
             let mut rng = StdRng::seed_from_u64(seed);
-            let result = resolve_player_attack(&mut rng, &player, 100, false, None, &items, 5, true, false, &[], false);
+            let result = resolve_player_attack(&mut rng, &player, 100, false, None, &items, 5, true, false, &[], false, false);
             assert_eq!(result.weapon_name, "Unarmed");
             assert!(result.attack_roll >= 1 && result.attack_roll <= 20,
                 "Attack roll must be a real d20 (seed={}, roll={})", seed, result.attack_roll);
@@ -1906,7 +1918,7 @@ mod tests {
         let mut crit_damage_seen = false;
         for seed in 0..200 {
             let mut rng = StdRng::seed_from_u64(seed);
-            let result = resolve_player_attack(&mut rng, &player, 1, false, None, &items, 5, true, false, &[], false);
+            let result = resolve_player_attack(&mut rng, &player, 1, false, None, &items, 5, true, false, &[], false, false);
             assert_eq!(result.weapon_name, "Unarmed");
             assert_eq!(result.damage_type, DamageType::Bludgeoning);
             if result.hit {
@@ -1945,8 +1957,8 @@ mod tests {
         for seed in 0..1000 {
             let mut rng1 = StdRng::seed_from_u64(seed);
             let mut rng2 = StdRng::seed_from_u64(seed);
-            let normal = resolve_player_attack(&mut rng1, &player, 15, false, None, &items, 5, true, false, &[], false);
-            let poisoned = resolve_player_attack(&mut rng2, &poisoned_player, 15, false, None, &items, 5, true, false, &[], false);
+            let normal = resolve_player_attack(&mut rng1, &player, 15, false, None, &items, 5, true, false, &[], false, false);
+            let poisoned = resolve_player_attack(&mut rng2, &poisoned_player, 15, false, None, &items, 5, true, false, &[], false, false);
             if normal.hit { normal_hits += 1; }
             if poisoned.hit { poisoned_hits += 1; }
         }
@@ -2555,12 +2567,12 @@ mod tests {
                 &mut rng1, &state_adv.character, target_ac, false, Some(9999),
                 &state_adv.world.items, distance, true, false,
                 &[], // defender has no conditions
-                false,
+                false, false,
             );
             let res_neu = resolve_player_attack(
                 &mut rng2, &state_neu.character, target_ac, false, Some(9999),
                 &state_neu.world.items, distance, true, false, &[],
-                false,
+                false, false,
             );
 
             if res_adv.hit { wins_with_adv += 1; }
@@ -2611,11 +2623,11 @@ mod tests {
 
             let res_disadv = resolve_player_attack(
                 &mut rng1, &state.character, 15, false, Some(9999),
-                &state.world.items, 5, true, false, &[], true,
+                &state.world.items, 5, true, false, &[], true, false,
             );
             let res_neu = resolve_player_attack(
                 &mut rng2, &state.character, 15, false, Some(9999),
-                &state.world.items, 5, true, false, &[], false,
+                &state.world.items, 5, true, false, &[], false, false,
             );
             if res_disadv.hit { wins_disadv += 1; }
             if res_neu.hit { wins_neutral += 1; }
