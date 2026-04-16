@@ -489,6 +489,11 @@ mod tests {
             npc_disengaging: HashMap::new(),
             player_shield_ac_bonus: 0,
             pending_reaction: None,
+            player_vex_target: None,
+            sap_targets: std::collections::HashSet::new(),
+            slow_targets: HashMap::new(),
+            cleave_used_this_turn: false,
+            nick_used_this_turn: false,
         });
         assert_eq!(check_rest_allowed(&state), Err(RestDenial::InCombat));
     }
@@ -748,6 +753,11 @@ mod tests {
             npc_disengaging: HashMap::new(),
             player_shield_ac_bonus: 0,
             pending_reaction: None,
+            player_vex_target: None,
+            sap_targets: std::collections::HashSet::new(),
+            slow_targets: HashMap::new(),
+            cleave_used_this_turn: false,
+            nick_used_this_turn: false,
         });
         state.character.current_hp = 1;
         let before_time = state.in_world_minutes;

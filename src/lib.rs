@@ -7571,6 +7571,11 @@ mod tests {
             npc_disengaging: HashMap::new(),
             player_shield_ac_bonus: 0,
             pending_reaction: None,
+            player_vex_target: None,
+            sap_targets: std::collections::HashSet::new(),
+            slow_targets: HashMap::new(),
+            cleave_used_this_turn: false,
+            nick_used_this_turn: false,
         });
         npc_id
     }
@@ -7622,6 +7627,11 @@ mod tests {
             reaction_used: false, free_interaction_used: false,
             npc_dodging: HashMap::new(), npc_disengaging: HashMap::new(),
             player_shield_ac_bonus: 0, pending_reaction: None,
+            player_vex_target: None,
+            sap_targets: std::collections::HashSet::new(),
+            slow_targets: HashMap::new(),
+            cleave_used_this_turn: false,
+            nick_used_this_turn: false,
         });
         let _ = end_combat(&mut state, true);
         // Two goblins: 50 + 50 = 100 XP.
@@ -7671,6 +7681,11 @@ mod tests {
             reaction_used: false, free_interaction_used: false,
             npc_dodging: HashMap::new(), npc_disengaging: HashMap::new(),
             player_shield_ac_bonus: 0, pending_reaction: None,
+            player_vex_target: None,
+            sap_targets: std::collections::HashSet::new(),
+            slow_targets: HashMap::new(),
+            cleave_used_this_turn: false,
+            nick_used_this_turn: false,
         });
         let _ = end_combat(&mut state, true);
         // No XP should be awarded — the hostile is still alive.

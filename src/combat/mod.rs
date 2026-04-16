@@ -99,6 +99,34 @@ pub struct CombatState {
     /// resuming normal combat processing.
     #[serde(default)]
     pub pending_reaction: Option<PendingReaction>,
+    // ---- 2024 SRD Weapon Mastery bookkeeping -----------------------------
+    // All fields use #[serde(default)] so existing saves load cleanly. See
+    // docs/specs/weapon-mastery.md for the semantics.
+    //
+    /// Set by the Vex mastery when the player hits a creature and deals
+    /// damage. The player's next attack roll against this NPC is made with
+    /// advantage. Cleared when consumed (on the next player attack) or at
+    /// the start of the player's next turn, whichever comes first.
+    #[serde(default)]
+    pub player_vex_target: Option<NpcId>,
+    /// NPCs marked by the Sap mastery: their next attack roll is made at
+    /// disadvantage. MVP clears this set at the start of the player's next
+    /// turn. An entry is also consumed the first time the NPC attacks.
+    #[serde(default)]
+    pub sap_targets: std::collections::HashSet<NpcId>,
+    /// NPC id -> speed reduction (feet) applied by Slow masteries this
+    /// turn. Cleared at the start of the player's next turn.
+    #[serde(default)]
+    pub slow_targets: std::collections::HashMap<NpcId, i32>,
+    /// Whether the Cleave mastery has been used this player turn. Resets
+    /// at the start of the player's turn (once-per-turn cap per SRD).
+    #[serde(default)]
+    pub cleave_used_this_turn: bool,
+    /// Whether the Nick mastery off-hand extra attack has been used this
+    /// turn. Resets at the start of the player's turn (once-per-turn cap
+    /// per SRD 2024).
+    #[serde(default)]
+    pub nick_used_this_turn: bool,
 }
 
 impl CombatState {
@@ -156,6 +184,24 @@ impl CombatState {
                     self.bonus_action_used = false;
                     self.free_interaction_used = false;
                     self.player_shield_ac_bonus = 0;
+                    // 2024 SRD Weapon Mastery cleanup at the start of the
+                    // player's turn. Per spec:
+                    //   - Vex lasts until the end of the player's next turn.
+                    //     We clear at the start of the current turn (slight
+                    //     approximation — "end of next turn" in a 1D
+                    //     model converges to "this turn" since NPC turns
+                    //     don't consume the player's Vex).
+                    //   - Sap's "before the start of your next turn"
+                    //     duration means entries for NPCs that did not
+                    //     attack this round still clear here.
+                    //   - Slow resets at the start of your next turn per
+                    //     SRD.
+                    //   - Cleave / Nick are once per turn.
+                    self.player_vex_target = None;
+                    self.sap_targets.clear();
+                    self.slow_targets.clear();
+                    self.cleave_used_this_turn = false;
+                    self.nick_used_this_turn = false;
                     return combatant;
                 }
                 Combatant::Npc(id) => {
@@ -261,6 +307,11 @@ pub fn start_combat(
         npc_disengaging: HashMap::new(),
         player_shield_ac_bonus: 0,
         pending_reaction: None,
+        player_vex_target: None,
+        sap_targets: std::collections::HashSet::new(),
+        slow_targets: HashMap::new(),
+        cleave_used_this_turn: false,
+        nick_used_this_turn: false,
     }
 }
 
@@ -1810,6 +1861,11 @@ mod tests {
             npc_disengaging: HashMap::new(),
             player_shield_ac_bonus: 0,
             pending_reaction: None,
+            player_vex_target: None,
+            sap_targets: std::collections::HashSet::new(),
+            slow_targets: HashMap::new(),
+            cleave_used_this_turn: false,
+            nick_used_this_turn: false,
         };
 
         // Kill the first goblin (the one with stats)

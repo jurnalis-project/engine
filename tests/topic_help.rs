@@ -41,6 +41,11 @@ fn create_combat_state_json() -> String {
         npc_disengaging: HashMap::new(),
         player_shield_ac_bonus: 0,
         pending_reaction: None,
+        player_vex_target: None,
+        sap_targets: std::collections::HashSet::new(),
+        slow_targets: HashMap::new(),
+        cleave_used_this_turn: false,
+        nick_used_this_turn: false,
     });
 
     serde_json::to_string(&state).unwrap()
