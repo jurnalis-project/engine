@@ -88,6 +88,35 @@ pub const CAST_SLEEP_NONE: &str = "  No creatures are affected.";
 pub const CAST_SHIELD: &str = "A shimmering barrier of force appears. (+5 AC until your next turn)";
 pub const CAST_SLOT_USED: &str = "[Spell slot used: {remaining}/{max} level {level} slots remaining]";
 
+// -- Non-Wizard combat cantrips and spells --
+pub const CAST_SACRED_FLAME_HIT: &str = "Radiant flames rain down on {target} -- {save_result} -- takes {damage} radiant damage!";
+pub const CAST_SACRED_FLAME_SAVE: &str = "Radiant flames rain down on {target} -- {save_result} -- they sidestep the light.";
+pub const CAST_VICIOUS_MOCKERY_HIT: &str = "You hurl a venomous insult at {target} -- {save_result} -- it stings for {damage} psychic damage!";
+pub const CAST_VICIOUS_MOCKERY_SAVE: &str = "You hurl a venomous insult at {target} -- {save_result} -- {target} shrugs it off.";
+pub const CAST_ELDRITCH_BLAST_HIT: &str = "A crackling beam of eldritch energy lances toward {target} ({roll}+{mod}={total} vs AC {ac}) -- hit for {damage} force damage!";
+pub const CAST_ELDRITCH_BLAST_CRIT: &str = "A crackling beam of eldritch energy lances toward {target} -- CRITICAL HIT! {damage} force damage!";
+pub const CAST_ELDRITCH_BLAST_MISS: &str = "A crackling beam of eldritch energy lances toward {target} ({roll}+{mod}={total} vs AC {ac}) -- the beam goes wide.";
+pub const CAST_ELDRITCH_BLAST_MISS_NAT1: &str = "A crackling beam of eldritch energy lances toward {target} -- natural 1! The beam dissipates.";
+pub const CAST_GUIDING_BOLT_HIT: &str = "A flash of radiant light streaks at {target} ({roll}+{mod}={total} vs AC {ac}) -- hit for {damage} radiant damage!";
+pub const CAST_GUIDING_BOLT_CRIT: &str = "A flash of radiant light streaks at {target} -- CRITICAL HIT! {damage} radiant damage!";
+pub const CAST_GUIDING_BOLT_MISS: &str = "A flash of radiant light streaks at {target} ({roll}+{mod}={total} vs AC {ac}) -- the light fades before hitting.";
+pub const CAST_GUIDING_BOLT_MISS_NAT1: &str = "A flash of radiant light streaks at {target} -- natural 1! The bolt sputters out.";
+pub const CAST_CURE_WOUNDS_SELF: &str = "Your hands glow with a warm light. You recover {roll}+{mod}={healing} HP. (HP: {current}/{max})";
+pub const CAST_HEALING_WORD_SELF: &str = "You speak a word of healing. You recover {roll}+{mod}={healing} HP. (HP: {current}/{max})";
+pub const CAST_HEAL_FULL_HP: &str = "You cast {spell}, but you are already at full health. (HP: {current}/{max})";
+pub const CAST_BLESS: &str = "You call upon divine favor. Your allies are blessed with radiant resolve.";
+pub const CAST_CHARM_PERSON_HIT: &str = "You whisper words of charm to {target} -- {save_result} -- they now regard you as a friendly acquaintance.";
+pub const CAST_CHARM_PERSON_SAVE: &str = "You whisper words of charm to {target} -- {save_result} -- they shrug off the enchantment.";
+pub const CAST_FAERIE_FIRE_HIT: &str = "Motes of faerie fire outline {target} -- {save_result} -- they glow with harmless light!";
+pub const CAST_FAERIE_FIRE_SAVE: &str = "Motes of faerie fire outline {target} -- {save_result} -- they evade the glow.";
+
+// -- Flavor cantrips (exploration/combat utility) --
+pub const CAST_DRUIDCRAFT: &str = "You weave a tiny nature-magic flourish -- a bud blooms in your palm.";
+pub const CAST_MAGE_HAND: &str = "A spectral, glowing hand appears beside you, ready to manipulate small objects nearby.";
+pub const CAST_LIGHT: &str = "You touch the nearest object and it sheds bright light in a 20-foot radius.";
+pub const CAST_GUIDANCE: &str = "You place a hand on your own shoulder. A subtle glow settles around you, ready to aid a check.";
+pub const CAST_MINOR_ILLUSION: &str = "You conjure a small illusion -- a flicker, a whisper, a shadow that isn't there.";
+
 // -- Ritual-cast templates --
 pub const CAST_NOT_A_RITUAL: &str = "{spell} doesn't have the Ritual tag — cast it normally.";
 pub const CAST_RITUAL_INTRO: &str = "You begin a ritual casting of {spell}. (No spell slot consumed. Takes longer than normal in-world.)";
@@ -325,12 +354,14 @@ fn topic_help(topic: &str, phase: HelpPhase) -> Vec<String> {
             "Help: spells".to_string(),
             "  spells            - View your known spells and remaining spell slots.".to_string(),
             "                      (also: spell list, known spells, my spells)".to_string(),
-            "  cast <spell> [at <target>] - Cast a spell.".to_string(),
-            "  Cantrips (free): Fire Bolt (ranged attack, 1d10 fire), Prestidigitation (flavor).".to_string(),
-            "  Level 1 spells (use spell slots): Magic Missile, Burning Hands, Sleep, Shield.".to_string(),
-            "  Spell attack: d20 + INT mod + proficiency vs AC.".to_string(),
-            "  Spell save DC: 8 + INT mod + proficiency.".to_string(),
-            "  Only Wizards can cast spells.".to_string(),
+            "  cast <spell> [at <target>]  - Cast a spell.".to_string(),
+            "  cast <spell> ritual         - Cast a ritual-tagged spell without a slot.".to_string(),
+            "  Cantrips (free): attacks, saves, or utility effects -- never consume slots.".to_string(),
+            "  Leveled spells (1-3): consume a matching spell slot; use 'spells' to see slot counts.".to_string(),
+            "  Spell attack: d20 + your spellcasting ability mod + proficiency vs AC.".to_string(),
+            "  Spell save DC: 8 + your spellcasting ability mod + proficiency.".to_string(),
+            "  Your spellcasting ability depends on class (e.g. Cleric/Druid use WIS,".to_string(),
+            "  Bard/Sorcerer/Warlock use CHA, Wizard uses INT).".to_string(),
         ],
         _ => unreachable!("Topic '{topic}' should be resolved before rendering"),
     }
@@ -380,6 +411,31 @@ mod tests {
 
         assert!(exploration_lines.iter().any(|line| line.contains("go <direction>")));
         assert!(combat_lines.iter().any(|line| line.contains("approach <target>")));
+    }
+
+    #[test]
+    fn help_spells_topic_is_class_agnostic() {
+        let lines = render_help(Some("spells"), HelpPhase::Exploration);
+        let joined = lines.join("\n");
+
+        // Should not mention Wizard-only language.
+        assert!(
+            !joined.to_lowercase().contains("only wizards"),
+            "Help text must not say 'Only Wizards'. Got:\n{}",
+            joined,
+        );
+        // Should not hardcode INT mod as the sole spellcasting ability.
+        assert!(
+            !joined.contains("INT mod + proficiency vs AC"),
+            "Help text must not hardcode 'INT mod + proficiency vs AC'. Got:\n{}",
+            joined,
+        );
+        // Should mention that the ability varies by class.
+        assert!(
+            joined.to_lowercase().contains("spellcasting ability"),
+            "Help text should mention a generic 'spellcasting ability'. Got:\n{}",
+            joined,
+        );
     }
 
     #[test]
