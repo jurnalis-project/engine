@@ -3379,6 +3379,16 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                 return lines;
             }
 
+            // Reaction-only spells (e.g. Shield) cannot be cast as an action
+            // on the player's turn. They trigger automatically during NPC
+            // turns when the appropriate condition fires (incoming attack hit
+            // or Magic Missile targeting).
+            if spell_def.casting == spells::CastingMode::Reaction {
+                state.active_combat = Some(combat);
+                return vec![narration::templates::CAST_REACTION_ONLY
+                    .replace("{spell}", spell_def.name)];
+            }
+
             // Check spell slots
             if !spells::consume_spell_slot(spell_def.level, &mut state.character.spell_slots_remaining) {
                 state.active_combat = Some(combat);
@@ -3663,25 +3673,11 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                     }
                     combat.action_used = true;
                 }
-                "Shield" => {
-                    let outcome = spells::resolve_shield();
-                    if let spells::CastOutcome::ShieldCast { ac_bonus: _ } = outcome {
-                        lines.push(narration::templates::CAST_SHIELD.to_string());
-
-                        // Slot usage message
-                        let remaining = state.character.spell_slots_remaining[0];
-                        let max = state.character.spell_slots_max[0];
-                        lines.push(narration::templates::CAST_SLOT_USED
-                            .replace("{remaining}", &remaining.to_string())
-                            .replace("{max}", &max.to_string())
-                            .replace("{level}", "1"));
-
-                        // Track shield AC bonus in combat state
-                        // For MVP, we store shield bonus in a simple field
-                        combat.player_shield_ac_bonus = 5;
-                    }
-                    combat.action_used = true;
-                }
+                // NOTE: "Shield" is handled by the CastingMode::Reaction
+                // guard above (rejected before slot consumption). The reaction
+                // path lives in resolve_reaction_decision(). No action-cast arm
+                // is needed here.
+                //
                 // ---- Cleric starters ----
                 "Sacred Flame" => {
                     // Cantrip: target makes a DEX save; on fail 1d8 radiant.
@@ -7748,6 +7744,30 @@ mod tests {
             "Expected decline narration, got: {:?}", output.text);
         assert!(combat.is_player_turn(),
             "After the NPC's attack resolves, control should return to the player");
+    }
+
+    /// Hypothesis: Shield is reaction-only per SRD 5.1. Typing `cast shield`
+    /// on the player's turn should be rejected, not consume an action or slot.
+    #[test]
+    fn test_cast_shield_on_player_turn_is_rejected_as_reaction_only() {
+        let mut state = wizard_combat_state();
+        force_player_turn(&mut state);
+        let slots_before = state.character.spell_slots_remaining[0];
+        let state_json = serde_json::to_string(&state).unwrap();
+
+        let output = process_input(&state_json, "cast shield");
+
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        // Slot must NOT be consumed -- Shield cannot be cast as an action.
+        assert_eq!(new_state.character.spell_slots_remaining[0], slots_before,
+            "cast shield on player turn should NOT consume a spell slot");
+        // The action must NOT be used.
+        let combat = new_state.active_combat.as_ref().unwrap();
+        assert!(!combat.action_used,
+            "cast shield on player turn should NOT consume an action");
+        // Output should explain Shield is reaction-only.
+        assert!(output.text.iter().any(|t| t.to_lowercase().contains("reaction")),
+            "Expected reaction-only narration, got: {:?}", output.text);
     }
 
     #[test]

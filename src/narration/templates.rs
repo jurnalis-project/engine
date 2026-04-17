@@ -86,6 +86,7 @@ pub const CAST_SLEEP_INTRO: &str = "A wave of magical drowsiness rolls out (5d8 
 pub const CAST_SLEEP_TARGET: &str = "  {target} ({hp} HP) falls asleep!";
 pub const CAST_SLEEP_NONE: &str = "  No creatures are affected.";
 pub const CAST_SHIELD: &str = "A shimmering barrier of force appears. (+5 AC until your next turn)";
+pub const CAST_REACTION_ONLY: &str = "{spell} can only be cast as a reaction. It triggers automatically when you are hit by an attack or targeted by Magic Missile.";
 pub const CAST_SLOT_USED: &str = "[Spell slot used: {remaining}/{max} level {level} slots remaining]";
 
 // -- Non-Wizard combat cantrips and spells --

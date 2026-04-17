@@ -314,18 +314,21 @@ fn wizard_cast_sleep_in_combat() {
 }
 
 #[test]
-fn wizard_cast_shield_in_combat() {
+fn wizard_cast_shield_in_combat_rejected_as_reaction_only() {
     let state_json = create_wizard_combat_state_json();
     let output = process_input(&state_json, "cast shield");
 
     let text = output.text.join(" ");
+    // Shield is reaction-only per SRD 5.1 -- cannot be cast as an action.
     assert!(
-        text.contains("barrier") || text.contains("+5 AC"),
-        "Expected shield narration. Got: {:?}",
+        text.contains("reaction"),
+        "Expected reaction-only rejection. Got: {:?}",
         output.text
     );
     let state: GameState = serde_json::from_str(&output.state_json).unwrap();
-    assert_eq!(state.character.spell_slots_remaining, vec![1], "Should have consumed a slot");
+    // No slot should be consumed.
+    assert_eq!(state.character.spell_slots_remaining, vec![2],
+        "Shield should NOT consume a slot when rejected as reaction-only");
 }
 
 #[test]

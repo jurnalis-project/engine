@@ -70,6 +70,10 @@ pub enum CastingMode {
     Heal,
     /// Flavor only, no mechanical effect (utility, out-of-scope mechanics).
     Flavor,
+    /// Reaction-only spell. Cannot be cast as an action on the player's turn;
+    /// resolved automatically when triggered by an incoming attack or effect
+    /// (e.g. Shield is triggered by an incoming hit or Magic Missile).
+    Reaction,
 }
 
 // ---- Class-list string constants (internal) ----
@@ -137,7 +141,7 @@ pub const SPELLS: &[SpellDef] = &[
         casting: CastingMode::HpPool, concentration: false, ritual: false,
         classes: &[BARD, SORCERER, WIZARD] },
     SpellDef { name: "Shield", level: 1, school: SpellSchool::Abjuration,
-        casting: CastingMode::SelfBuff, concentration: false, ritual: false,
+        casting: CastingMode::Reaction, concentration: false, ritual: false,
         classes: &[SORCERER, WIZARD] },
     SpellDef { name: "Charm Person", level: 1, school: SpellSchool::Enchantment,
         casting: CastingMode::SaveHalf { save_ability: Ability::Wisdom },
