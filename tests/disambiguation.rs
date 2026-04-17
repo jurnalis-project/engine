@@ -513,6 +513,7 @@ fn make_combat_disambiguation_state() -> GameState {
         last_long_rest_minutes: None,
         pending_background_pattern: None,
         pending_disambiguation: None,
+        pending_subrace: None,
     };
     state.character.inventory = vec![1, 2];
     state
