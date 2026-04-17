@@ -88,6 +88,7 @@ pub fn new_game(seed: u64, ironman_mode: bool) -> GameOutput {
         in_world_minutes: 0,
         last_long_rest_minutes: None,
         pending_background_pattern: None,
+        pending_subrace: None,
         pending_disambiguation: None,
     };
 
@@ -101,6 +102,12 @@ pub fn new_game(seed: u64, ironman_mode: bool) -> GameOutput {
         "  1. Human (+1 to all abilities)".to_string(),
         "  2. Elf (+2 DEX, Darkvision, Fey Ancestry)".to_string(),
         "  3. Dwarf (+2 CON, Darkvision, Dwarven Resilience)".to_string(),
+        "  4. Dragonborn (Darkvision, Breath Weapon, Damage Resistance)".to_string(),
+        "  5. Gnome (Darkvision, Gnomish Cunning)".to_string(),
+        "  6. Goliath (35 ft speed, Powerful Build, Giant Ancestry)".to_string(),
+        "  7. Halfling (Brave, Luck, Naturally Stealthy)".to_string(),
+        "  8. Orc (Darkvision 120 ft, Adrenaline Rush, Relentless Endurance)".to_string(),
+        "  9. Tiefling (Darkvision, Fiendish Legacy, Otherworldly Presence)".to_string(),
     ];
 
     GameOutput::new(text, state_json, true)
@@ -274,15 +281,93 @@ fn handle_creation(state: &mut GameState, input: &str, step: CreationStep) -> Ve
     let input = input.trim();
     match step {
         CreationStep::ChooseRace => {
-            let race = match input {
-                "1" | "human" => Race::Human,
-                "2" | "elf" => Race::Elf,
-                "3" | "dwarf" => Race::Dwarf,
-                _ => return vec!["Please choose 1 (Human), 2 (Elf), or 3 (Dwarf).".to_string()],
+            let input_lower = input.to_lowercase();
+            let all_races = Race::all();
+            let selected = input.parse::<usize>().ok()
+                .and_then(|n| if (1..=all_races.len()).contains(&n) { Some(all_races[n - 1]) } else { None })
+                .or_else(|| all_races.iter().copied().find(|r| r.to_string().to_lowercase() == input_lower));
+
+            let race = match selected {
+                Some(r) => r,
+                None => {
+                    let names: Vec<String> = all_races.iter().map(|r| r.to_string()).collect();
+                    return vec![format!(
+                        "Please choose a race 1-{} or type its name (e.g., {}).",
+                        all_races.len(),
+                        names.join(", "),
+                    )];
+                }
             };
             state.character.race = race;
+
+            if race.has_subraces() {
+                // Transition to subrace selection
+                state.game_phase = GamePhase::CharacterCreation(CreationStep::ChooseSubrace);
+                let options = race.subrace_options();
+                let mut lines = vec![format!("Race: {}. Choose your {}:", race, race.subrace_label())];
+                for (i, &opt) in options.iter().enumerate() {
+                    let desc = Race::subrace_description(opt);
+                    lines.push(format!("  {}. {} ({})", i + 1, opt, desc));
+                }
+                lines.push("Enter a number or name.".to_string());
+                lines
+            } else {
+                // Skip subrace, go directly to class selection
+                state.game_phase = GamePhase::CharacterCreation(CreationStep::ChooseClass);
+                let mut lines = vec![format!("Race: {}. Now choose your class:", race)];
+                for (i, &class) in Class::all().iter().enumerate() {
+                    let saves = class.saving_throw_proficiencies();
+                    lines.push(format!(
+                        "  {}. {} (d{} HP, {}/{} saves)",
+                        i + 1, class, class.hit_die(), saves[0], saves[1],
+                    ));
+                }
+                lines.push("Enter a number or class name.".to_string());
+                lines
+            }
+        }
+        CreationStep::ChooseSubrace => {
+            let race = state.character.race;
+            let options = race.subrace_options();
+            let input_lower = input.to_lowercase();
+
+            // Match by number or case-insensitive name
+            let selected = input.parse::<usize>().ok()
+                .and_then(|n| if (1..=options.len()).contains(&n) { Some(options[n - 1]) } else { None })
+                .or_else(|| options.iter().copied().find(|o| o.to_lowercase() == input_lower));
+
+            let subrace = match selected {
+                Some(s) => s,
+                None => {
+                    let names: Vec<&str> = options.to_vec();
+                    return vec![format!(
+                        "Please choose 1-{} or type the name (e.g., {}).",
+                        options.len(),
+                        names.join(", "),
+                    )];
+                }
+            };
+
+            state.pending_subrace = Some(subrace.to_string());
+
+            // Apply speed override if the subrace changes it (e.g. Wood Elf -> 35 ft)
+            if let Some(speed) = Race::subrace_speed_override(subrace) {
+                state.character.speed = speed;
+            }
+
+            // Append subrace-specific traits to the character's trait list
+            for trait_name in Race::subrace_traits(subrace) {
+                let s = trait_name.to_string();
+                if !state.character.traits.contains(&s) {
+                    state.character.traits.push(s);
+                }
+            }
+
             state.game_phase = GamePhase::CharacterCreation(CreationStep::ChooseClass);
-            let mut lines = vec![format!("Race: {}. Now choose your class:", race)];
+            let mut lines = vec![format!(
+                "{}: {}. Now choose your class:",
+                race.subrace_label(), subrace
+            )];
             for (i, &class) in Class::all().iter().enumerate() {
                 let saves = class.saving_throw_proficiencies();
                 lines.push(format!(
@@ -672,6 +757,17 @@ fn handle_creation(state: &mut GameState, input: &str, step: CreationStep) -> Ve
             state.character.name = name.clone();
             state.character.traits = state.character.race.traits().iter().map(|s| s.to_string()).collect();
 
+            // Apply subrace traits and speed override if a subrace was selected.
+            if let Some(ref subrace) = state.pending_subrace {
+                state.character.subrace = Some(subrace.clone());
+                for trait_name in Race::subrace_traits(subrace) {
+                    let s = trait_name.to_string();
+                    if !state.character.traits.contains(&s) {
+                        state.character.traits.push(s);
+                    }
+                }
+            }
+
             // Apply background effects: ability adjustments, skill/tool profs,
             // language, origin feat trait. Must happen before HP is computed so
             // any CON increase is reflected in max_hp.
@@ -682,7 +778,13 @@ fn handle_creation(state: &mut GameState, input: &str, step: CreationStep) -> Ve
             state.character.max_hp = character::calculate_hp(state.character.class, con_mod, 1);
             state.character.current_hp = state.character.max_hp;
             state.character.level = 1;
+            // Base speed from race, then apply subrace speed override.
             state.character.speed = state.character.race.speed();
+            if let Some(ref subrace) = state.pending_subrace {
+                if let Some(speed) = Race::subrace_speed_override(subrace) {
+                    state.character.speed = speed;
+                }
+            }
 
             // Apply origin-feat effects (HP-per-level for Tough, skill profs,
             // ability bonuses, etc.). Must run AFTER HP is computed because
@@ -704,6 +806,7 @@ fn handle_creation(state: &mut GameState, input: &str, step: CreationStep) -> Ve
 
             // Clear transient creation-time state.
             state.pending_background_pattern = None;
+            state.pending_subrace = None;
 
             // Seed objectives from generated world
             seed_objectives(state);
@@ -8325,6 +8428,7 @@ mod tests {
             in_world_minutes: 0,
             last_long_rest_minutes: None,
             pending_background_pattern: None,
+            pending_subrace: None,
             pending_disambiguation: None,
         }
     }
@@ -8490,6 +8594,7 @@ mod tests {
             in_world_minutes: 0,
             last_long_rest_minutes: None,
             pending_background_pattern: None,
+            pending_subrace: None,
             pending_disambiguation: None,
         }
     }
@@ -9204,6 +9309,7 @@ mod tests {
             in_world_minutes: 0,
             last_long_rest_minutes: None,
             pending_background_pattern: None,
+            pending_subrace: None,
             pending_disambiguation: None,
         }
     }

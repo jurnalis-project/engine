@@ -61,6 +61,11 @@ pub struct GameState {
     /// Consumed and cleared at character finalization (ChooseName step).
     #[serde(default)]
     pub pending_background_pattern: Option<u8>,
+    /// Transient state used during character creation: the subrace/lineage
+    /// the player chose for their species. Consumed at character finalization
+    /// and stored on the Character. `None` for species without subraces.
+    #[serde(default)]
+    pub pending_subrace: Option<String>,
     /// Transient state used after the engine emits a disambiguation prompt.
     /// Carries the verb prefix (e.g. "take", "equip off hand") and the exact
     /// candidate names the prompt listed, in display order. When set, the
@@ -403,6 +408,10 @@ pub enum GamePhase {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CreationStep {
     ChooseRace,
+    /// Select a subrace/lineage for species that have one (Elf, Dragonborn,
+    /// Gnome, Goliath, Tiefling). Inserted after ChooseRace when applicable;
+    /// species without subraces skip directly to ChooseClass.
+    ChooseSubrace,
     ChooseClass,
     /// New: select background (between ChooseClass and ChooseAbilityMethod).
     ChooseBackground,
@@ -474,6 +483,7 @@ mod tests {
             in_world_minutes: 0,
             last_long_rest_minutes: None,
             pending_background_pattern: None,
+            pending_subrace: None,
             pending_disambiguation: None,
         }
     }

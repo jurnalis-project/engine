@@ -109,6 +109,11 @@ pub struct Character {
     /// `#[serde(default)]` so legacy saves deserialize to `false`.
     #[serde(default)]
     pub wearing_nonproficient_armor: bool,
+    /// Selected subrace/lineage (e.g. "Wood Elf", "Red", "Infernal").
+    /// `None` for species without subraces (Human, Dwarf, Halfling, Orc)
+    /// and for legacy saves predating this field.
+    #[serde(default)]
+    pub subrace: Option<String>,
 }
 
 impl Character {
@@ -240,6 +245,7 @@ pub fn create_character(
         alignment: Alignment::default(),
         weapon_masteries,
         wearing_nonproficient_armor: false,
+        subrace: None,
     }
 }
 
