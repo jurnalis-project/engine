@@ -675,6 +675,31 @@ mod tests {
     }
 
     #[test]
+    fn test_new_character_has_no_subrace() {
+        let c = create_character("Test".to_string(), Race::Human, Class::Fighter, test_scores(), vec![]);
+        assert_eq!(c.subrace, None);
+    }
+
+    #[test]
+    fn test_character_missing_subrace_deserializes_none() {
+        // Legacy save predating the subrace field: should default to None.
+        let c = create_character("Test".to_string(), Race::Human, Class::Fighter, test_scores(), vec![]);
+        let mut v: serde_json::Value = serde_json::to_value(&c).unwrap();
+        v.as_object_mut().unwrap().remove("subrace");
+        let loaded: Character = serde_json::from_value(v).unwrap();
+        assert_eq!(loaded.subrace, None);
+    }
+
+    #[test]
+    fn test_character_subrace_roundtrips() {
+        let mut c = create_character("Test".to_string(), Race::Elf, Class::Fighter, test_scores(), vec![]);
+        c.subrace = Some("Wood Elf".to_string());
+        let json = serde_json::to_string(&c).unwrap();
+        let loaded: Character = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded.subrace, Some("Wood Elf".to_string()));
+    }
+
+    #[test]
     fn test_initiative_bonus_from_feats_alert() {
         let mut c = create_character("Test".to_string(), Race::Human, Class::Fighter, test_scores(), vec![]);
         assert_eq!(initiative_bonus_from_feats(&c), 0, "no feats, no bonus");
