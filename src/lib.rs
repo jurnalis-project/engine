@@ -5863,6 +5863,156 @@ mod tests {
         assert_eq!(state.pending_subrace, Some("Storm".to_string()));
     }
 
+    /// Helper: drive a character through the full creation wizard.
+    /// `race_input`: the race selection input (e.g. "2" for Elf)
+    /// `subrace_input`: optional subrace input (e.g. Some("3") for Wood Elf)
+    /// Returns the final state_json after naming the character "TestHero".
+    fn drive_full_creation(race_input: &str, subrace_input: Option<&str>) -> String {
+        let output = new_game(42, false);
+        let output = process_input(&output.state_json, race_input);
+        let output = if let Some(sub) = subrace_input {
+            process_input(&output.state_json, sub)
+        } else {
+            output
+        };
+        // ChooseClass: Barbarian (1)
+        let output = process_input(&output.state_json, "1");
+        // ChooseBackground: Acolyte (1)
+        let output = process_input(&output.state_json, "1");
+        // ChooseOriginFeat: default
+        let output = process_input(&output.state_json, "");
+        // ChooseBackgroundAbilityPattern: +2/+1 (1)
+        let output = process_input(&output.state_json, "1");
+        // ChooseAbilityMethod: Standard Array (1)
+        let output = process_input(&output.state_json, "1");
+        // AssignAbilities: STR 15, DEX 14, CON 13, INT 12, WIS 10, CHA 8
+        let output = process_input(&output.state_json, "15 14 13 12 10 8");
+        // ChooseSkills: first 2 (Barbarian has 2 skill choices)
+        let output = process_input(&output.state_json, "1 2");
+        // ChooseAlignment: Lawful Good (1)
+        let output = process_input(&output.state_json, "1");
+        // ChooseName
+        let output = process_input(&output.state_json, "TestHero");
+        output.state_json
+    }
+
+    #[test]
+    fn test_wood_elf_finalized_speed_is_35() {
+        let state_json = drive_full_creation("2", Some("3")); // Elf -> Wood Elf
+        let state: GameState = serde_json::from_str(&state_json).unwrap();
+        assert_eq!(state.character.race, Race::Elf);
+        assert_eq!(state.character.subrace, Some("Wood Elf".to_string()));
+        assert_eq!(state.character.speed, 35, "Wood Elf speed should be 35 ft");
+        assert!(matches!(state.game_phase, GamePhase::Exploration));
+    }
+
+    #[test]
+    fn test_drow_finalized_has_darkvision_120() {
+        let state_json = drive_full_creation("2", Some("1")); // Elf -> Drow
+        let state: GameState = serde_json::from_str(&state_json).unwrap();
+        assert_eq!(state.character.subrace, Some("Drow".to_string()));
+        assert!(state.character.traits.contains(&"Darkvision 120 ft".to_string()));
+        // Base Elf speed is 30 (Drow does not change it)
+        assert_eq!(state.character.speed, 30);
+    }
+
+    #[test]
+    fn test_high_elf_finalized_has_prestidigitation() {
+        let state_json = drive_full_creation("2", Some("2")); // Elf -> High Elf
+        let state: GameState = serde_json::from_str(&state_json).unwrap();
+        assert_eq!(state.character.subrace, Some("High Elf".to_string()));
+        assert!(state.character.traits.contains(&"Prestidigitation cantrip".to_string()));
+    }
+
+    #[test]
+    fn test_dragonborn_red_finalized_has_fire_traits() {
+        let state_json = drive_full_creation("4", Some("8")); // Dragonborn -> Red
+        let state: GameState = serde_json::from_str(&state_json).unwrap();
+        assert_eq!(state.character.race, Race::Dragonborn);
+        assert_eq!(state.character.subrace, Some("Red".to_string()));
+        assert!(state.character.traits.contains(&"Fire Breath Weapon".to_string()));
+        assert!(state.character.traits.contains(&"Fire Resistance".to_string()));
+    }
+
+    #[test]
+    fn test_halfling_finalized_has_correct_traits() {
+        let state_json = drive_full_creation("7", None); // Halfling (no subrace)
+        let state: GameState = serde_json::from_str(&state_json).unwrap();
+        assert_eq!(state.character.race, Race::Halfling);
+        assert_eq!(state.character.subrace, None);
+        assert!(state.character.traits.contains(&"Brave".to_string()));
+        assert!(state.character.traits.contains(&"Luck".to_string()));
+        assert_eq!(state.character.speed, 30);
+    }
+
+    #[test]
+    fn test_orc_finalized_has_correct_traits() {
+        let state_json = drive_full_creation("8", None); // Orc
+        let state: GameState = serde_json::from_str(&state_json).unwrap();
+        assert_eq!(state.character.race, Race::Orc);
+        assert!(state.character.traits.contains(&"Adrenaline Rush".to_string()));
+        assert!(state.character.traits.contains(&"Relentless Endurance".to_string()));
+    }
+
+    #[test]
+    fn test_goliath_finalized_has_35_speed() {
+        let state_json = drive_full_creation("6", Some("1")); // Goliath -> Cloud
+        let state: GameState = serde_json::from_str(&state_json).unwrap();
+        assert_eq!(state.character.race, Race::Goliath);
+        assert_eq!(state.character.speed, 35, "Goliath base speed is 35 ft");
+        assert!(state.character.traits.contains(&"Powerful Build".to_string()));
+        assert!(state.character.traits.contains(&"Cloud's Jaunt".to_string()));
+    }
+
+    #[test]
+    fn test_tiefling_infernal_finalized_has_fire_resistance() {
+        let state_json = drive_full_creation("9", Some("3")); // Tiefling -> Infernal
+        let state: GameState = serde_json::from_str(&state_json).unwrap();
+        assert_eq!(state.character.race, Race::Tiefling);
+        assert_eq!(state.character.subrace, Some("Infernal".to_string()));
+        assert!(state.character.traits.contains(&"Fire Resistance".to_string()));
+        assert!(state.character.traits.contains(&"Fire Bolt cantrip".to_string()));
+    }
+
+    #[test]
+    fn test_gnome_forest_finalized_has_minor_illusion() {
+        let state_json = drive_full_creation("5", Some("1")); // Gnome -> Forest Gnome
+        let state: GameState = serde_json::from_str(&state_json).unwrap();
+        assert_eq!(state.character.race, Race::Gnome);
+        assert_eq!(state.character.subrace, Some("Forest Gnome".to_string()));
+        assert!(state.character.traits.contains(&"Minor Illusion cantrip".to_string()));
+    }
+
+    #[test]
+    fn test_pending_subrace_cleared_after_finalization() {
+        let state_json = drive_full_creation("2", Some("3")); // Elf -> Wood Elf
+        let state: GameState = serde_json::from_str(&state_json).unwrap();
+        assert_eq!(state.pending_subrace, None, "pending_subrace should be cleared after finalization");
+    }
+
+    #[test]
+    fn test_human_finalized_unchanged_from_legacy() {
+        let state_json = drive_full_creation("1", None); // Human
+        let state: GameState = serde_json::from_str(&state_json).unwrap();
+        assert_eq!(state.character.race, Race::Human);
+        assert_eq!(state.character.subrace, None);
+        assert_eq!(state.character.speed, 30);
+    }
+
+    #[test]
+    fn test_new_species_have_empty_ability_bonuses_in_creation() {
+        // Dragonborn should NOT get racial ability bonuses
+        let state_json = drive_full_creation("4", Some("1")); // Dragonborn -> Black
+        let state: GameState = serde_json::from_str(&state_json).unwrap();
+        // The background system handles ability bonuses. But we can check
+        // that the Dragonborn doesn't add its own: with Standard Array
+        // [15,14,13,12,10,8] and background pattern +2/+1, the bonuses
+        // come from Acolyte (INT, WIS, CHA) not from Dragonborn.
+        // Without racial bonuses, STR stays at 15 (the assigned value).
+        assert_eq!(state.character.ability_scores[&Ability::Strength], 15,
+            "Dragonborn should have no racial STR bonus");
+    }
+
     // ---- Orchestrator dispatch: class-feature commands (feat/remaining-srd-classes)
     //
     // These tests build an exploration-phase GameState with a chosen class and
