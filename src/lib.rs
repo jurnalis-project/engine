@@ -5677,6 +5677,192 @@ mod tests {
         }
     }
 
+    // ---- Species and subrace selection (feat/srd-remaining-species) ----
+
+    #[test]
+    fn test_new_game_lists_nine_species() {
+        let output = new_game(42, false);
+        let joined = output.text.join("\n");
+        for race in Race::all() {
+            assert!(
+                joined.contains(&race.to_string()),
+                "Expected ChooseRace menu to mention {}. Got: {}",
+                race, joined,
+            );
+        }
+    }
+
+    #[test]
+    fn test_choose_race_by_number_all_nine() {
+        for (i, &expected_race) in Race::all().iter().enumerate() {
+            let output = new_game(42, false);
+            let output = process_input(&output.state_json, &(i + 1).to_string());
+            let state: GameState = serde_json::from_str(&output.state_json).unwrap();
+            assert_eq!(
+                state.character.race, expected_race,
+                "Selecting input '{}' should pick {} (got {})",
+                i + 1, expected_race, state.character.race,
+            );
+        }
+    }
+
+    #[test]
+    fn test_choose_race_by_name_case_insensitive() {
+        let output = new_game(42, false);
+        let output = process_input(&output.state_json, "dragonborn");
+        let state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(state.character.race, Race::Dragonborn);
+    }
+
+    #[test]
+    fn test_choose_race_invalid_input_reprompts() {
+        let output = new_game(42, false);
+        let output = process_input(&output.state_json, "99");
+        let state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert!(matches!(state.game_phase, GamePhase::CharacterCreation(CreationStep::ChooseRace)));
+    }
+
+    #[test]
+    fn test_species_without_subrace_goes_to_choose_class() {
+        // Human has no subrace -- should skip straight to ChooseClass.
+        let output = new_game(42, false);
+        let output = process_input(&output.state_json, "1"); // Human
+        let state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert!(matches!(state.game_phase, GamePhase::CharacterCreation(CreationStep::ChooseClass)));
+    }
+
+    #[test]
+    fn test_halfling_no_subrace_goes_to_choose_class() {
+        let output = new_game(42, false);
+        let output = process_input(&output.state_json, "7"); // Halfling
+        let state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(state.character.race, Race::Halfling);
+        assert!(matches!(state.game_phase, GamePhase::CharacterCreation(CreationStep::ChooseClass)));
+    }
+
+    #[test]
+    fn test_orc_no_subrace_goes_to_choose_class() {
+        let output = new_game(42, false);
+        let output = process_input(&output.state_json, "8"); // Orc
+        let state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(state.character.race, Race::Orc);
+        assert!(matches!(state.game_phase, GamePhase::CharacterCreation(CreationStep::ChooseClass)));
+    }
+
+    #[test]
+    fn test_elf_goes_to_choose_subrace() {
+        let output = new_game(42, false);
+        let output = process_input(&output.state_json, "2"); // Elf
+        let state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(state.character.race, Race::Elf);
+        assert!(matches!(state.game_phase, GamePhase::CharacterCreation(CreationStep::ChooseSubrace)));
+        // Prompt should mention Elven Lineage
+        assert!(output.text.iter().any(|t| t.contains("Elven Lineage")));
+    }
+
+    #[test]
+    fn test_dragonborn_goes_to_choose_subrace() {
+        let output = new_game(42, false);
+        let output = process_input(&output.state_json, "4"); // Dragonborn
+        let state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(state.character.race, Race::Dragonborn);
+        assert!(matches!(state.game_phase, GamePhase::CharacterCreation(CreationStep::ChooseSubrace)));
+        assert!(output.text.iter().any(|t| t.contains("Draconic Ancestry")));
+    }
+
+    #[test]
+    fn test_gnome_goes_to_choose_subrace() {
+        let output = new_game(42, false);
+        let output = process_input(&output.state_json, "5"); // Gnome
+        let state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(state.character.race, Race::Gnome);
+        assert!(matches!(state.game_phase, GamePhase::CharacterCreation(CreationStep::ChooseSubrace)));
+    }
+
+    #[test]
+    fn test_goliath_goes_to_choose_subrace() {
+        let output = new_game(42, false);
+        let output = process_input(&output.state_json, "6"); // Goliath
+        let state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(state.character.race, Race::Goliath);
+        assert!(matches!(state.game_phase, GamePhase::CharacterCreation(CreationStep::ChooseSubrace)));
+    }
+
+    #[test]
+    fn test_tiefling_goes_to_choose_subrace() {
+        let output = new_game(42, false);
+        let output = process_input(&output.state_json, "9"); // Tiefling
+        let state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(state.character.race, Race::Tiefling);
+        assert!(matches!(state.game_phase, GamePhase::CharacterCreation(CreationStep::ChooseSubrace)));
+    }
+
+    #[test]
+    fn test_subrace_selection_by_number() {
+        let output = new_game(42, false);
+        let output = process_input(&output.state_json, "2"); // Elf
+        let output = process_input(&output.state_json, "3"); // Wood Elf
+        let state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(state.pending_subrace, Some("Wood Elf".to_string()));
+        assert!(matches!(state.game_phase, GamePhase::CharacterCreation(CreationStep::ChooseClass)));
+    }
+
+    #[test]
+    fn test_subrace_selection_by_name() {
+        let output = new_game(42, false);
+        let output = process_input(&output.state_json, "2"); // Elf
+        let output = process_input(&output.state_json, "drow");
+        let state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(state.pending_subrace, Some("Drow".to_string()));
+        assert!(matches!(state.game_phase, GamePhase::CharacterCreation(CreationStep::ChooseClass)));
+    }
+
+    #[test]
+    fn test_subrace_invalid_input_reprompts() {
+        let output = new_game(42, false);
+        let output = process_input(&output.state_json, "2"); // Elf
+        let output = process_input(&output.state_json, "99");
+        let state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert!(matches!(state.game_phase, GamePhase::CharacterCreation(CreationStep::ChooseSubrace)));
+    }
+
+    #[test]
+    fn test_dragonborn_red_subrace_sets_pending() {
+        let output = new_game(42, false);
+        let output = process_input(&output.state_json, "4"); // Dragonborn
+        let output = process_input(&output.state_json, "8"); // Red
+        let state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(state.pending_subrace, Some("Red".to_string()));
+        assert!(matches!(state.game_phase, GamePhase::CharacterCreation(CreationStep::ChooseClass)));
+    }
+
+    #[test]
+    fn test_gnome_forest_subrace_sets_pending() {
+        let output = new_game(42, false);
+        let output = process_input(&output.state_json, "5"); // Gnome
+        let output = process_input(&output.state_json, "1"); // Forest Gnome
+        let state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(state.pending_subrace, Some("Forest Gnome".to_string()));
+    }
+
+    #[test]
+    fn test_tiefling_infernal_subrace_sets_pending() {
+        let output = new_game(42, false);
+        let output = process_input(&output.state_json, "9"); // Tiefling
+        let output = process_input(&output.state_json, "3"); // Infernal
+        let state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(state.pending_subrace, Some("Infernal".to_string()));
+    }
+
+    #[test]
+    fn test_goliath_storm_subrace_sets_pending() {
+        let output = new_game(42, false);
+        let output = process_input(&output.state_json, "6"); // Goliath
+        let output = process_input(&output.state_json, "6"); // Storm
+        let state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(state.pending_subrace, Some("Storm".to_string()));
+    }
+
     // ---- Orchestrator dispatch: class-feature commands (feat/remaining-srd-classes)
     //
     // These tests build an exploration-phase GameState with a chosen class and
