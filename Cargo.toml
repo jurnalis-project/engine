@@ -1,6 +1,6 @@
 [package]
 name = "jurnalis-engine"
-version = "0.26.4"
+version = "0.26.5"
 edition = "2021"
 
 [[bin]]

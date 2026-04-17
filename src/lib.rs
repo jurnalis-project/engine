@@ -4663,7 +4663,7 @@ fn render_map(state: &GameState) -> Vec<String> {
             let marker = if id == state.current_location { "*" } else { " " };
             let mut exits: Vec<String> = loc.exits.keys().map(|d| d.to_string()).collect();
             exits.sort();
-            lines.push(format!("{} {} [{}] -> {}", marker, loc.name, id, exits.join(", ")));
+            lines.push(format!("{} {} -> {}", marker, loc.name, exits.join(", ")));
         }
     }
     lines
@@ -8703,6 +8703,33 @@ mod tests {
 
         assert!(output.text.iter().any(|t| t.contains("=== MAP ===")), "{:?}", output.text);
         assert!(output.text.iter().any(|t| t.contains("*")), "{:?}", output.text);
+    }
+
+    #[test]
+    // Hypothesis: render_map() includes [{}] with LocationId in its format string,
+    // exposing internal numeric IDs to the player. The fix removes that segment.
+    fn test_map_command_does_not_expose_internal_location_ids() {
+        let state = create_test_exploration_state();
+        let state_json = serde_json::to_string(&state).unwrap();
+
+        let output = process_input(&state_json, "map");
+
+        // No map line (after the header) should contain a bracketed number like [0], [1], etc.
+        for line in &output.text {
+            if line.contains("=== MAP ===") {
+                continue;
+            }
+            let has_bracketed_number = line.chars().enumerate().any(|(i, c)| {
+                c == '['
+                    && line[i + 1..].chars().next().map_or(false, |ch| ch.is_ascii_digit())
+                    && line[i + 1..].contains(']')
+            });
+            assert!(
+                !has_bracketed_number,
+                "Map output should not expose internal LocationId: {:?}",
+                line
+            );
+        }
     }
 
     #[test]
