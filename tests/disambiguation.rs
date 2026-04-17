@@ -16,10 +16,12 @@ use std::collections::{HashMap, HashSet};
 
 use jurnalis_engine::{
     character::{class::Class, create_character, race::Race},
+    combat::{Combatant, CombatState},
     new_game, process_input,
     state::{
-        DamageType, GameState, GamePhase, Item, ItemType, Location, LocationType,
-        LightLevel, ProgressState, SAVE_VERSION, WeaponCategory, WorldState,
+        CombatStats, DamageType, Disposition, GameState, GamePhase, Item, ItemType,
+        Location, LocationType, LightLevel, Npc, NpcAttack, NpcRole, ProgressState,
+        SAVE_VERSION, WeaponCategory, WorldState,
     },
     types::{Ability, Skill},
 };
@@ -335,4 +337,252 @@ fn character_creation_numeric_selection_still_works() {
         }
         other => panic!("expected CharacterCreation phase, got {:?}", other),
     }
+}
+
+// ---------- combat disambiguation (#83) -----------------------------------
+//
+// Hypothesis: When `equip sh` in combat triggers a disambiguation prompt,
+// the combat handler unconditionally sets `combat.action_used = true` BEFORE
+// checking whether the equip actually succeeded or just emitted a prompt.
+// On the next input ("1"), the rewritten command `equip Shortsword` is
+// re-dispatched but hits the `if combat.action_used` guard, returning
+// "You've already used your action this turn." The same pattern applies to
+// the Unequip handler.
+
+/// Build a combat-phase state: player in combat with one hostile NPC, and
+/// two similarly-named weapons (Shortsword, Shortbow) in the player's
+/// inventory. The player goes first in initiative.
+fn make_combat_disambiguation_state() -> GameState {
+    let character = create_character(
+        "Fighter".to_string(),
+        Race::Human,
+        Class::Fighter,
+        scores_balanced(),
+        vec![Skill::Perception],
+    );
+
+    let shortsword = Item {
+        id: 1,
+        name: "Shortsword".to_string(),
+        description: "A light, pointed blade.".to_string(),
+        item_type: ItemType::Weapon {
+            damage_dice: 1,
+            damage_die: 6,
+            damage_type: DamageType::Piercing,
+            properties: 0,
+            category: WeaponCategory::Martial,
+            versatile_die: 0,
+            range_normal: 0,
+            range_long: 0,
+        },
+        location: None,
+        carried_by_player: true,
+        charges_remaining: None,
+    };
+    let shortbow = Item {
+        id: 2,
+        name: "Shortbow".to_string(),
+        description: "A compact ranged weapon.".to_string(),
+        item_type: ItemType::Weapon {
+            damage_dice: 1,
+            damage_die: 6,
+            damage_type: DamageType::Piercing,
+            properties: 0,
+            category: WeaponCategory::Simple,
+            versatile_die: 0,
+            range_normal: 80,
+            range_long: 320,
+        },
+        location: None,
+        carried_by_player: true,
+        charges_remaining: None,
+    };
+
+    let goblin_npc = Npc {
+        id: 100,
+        name: "Goblin".to_string(),
+        role: NpcRole::Guard,
+        disposition: Disposition::Hostile,
+        dialogue_tags: Vec::new(),
+        location: 0,
+        combat_stats: Some(CombatStats {
+            max_hp: 7,
+            current_hp: 7,
+            ac: 15,
+            speed: 30,
+            ability_scores: {
+                let mut m = HashMap::new();
+                m.insert(Ability::Strength, 8);
+                m.insert(Ability::Dexterity, 14);
+                m.insert(Ability::Constitution, 10);
+                m.insert(Ability::Intelligence, 10);
+                m.insert(Ability::Wisdom, 8);
+                m.insert(Ability::Charisma, 8);
+                m
+            },
+            attacks: vec![NpcAttack {
+                name: "Scimitar".to_string(),
+                hit_bonus: 4,
+                damage_dice: 1,
+                damage_die: 6,
+                damage_bonus: 2,
+                damage_type: DamageType::Slashing,
+                reach: 5,
+                range_normal: 0,
+                range_long: 0,
+            }],
+            proficiency_bonus: 2,
+            ..CombatStats::default()
+        }),
+        conditions: Vec::new(),
+    };
+
+    let room = Location {
+        id: 0,
+        name: "Battle Arena".to_string(),
+        description: "A flat, open space.".to_string(),
+        location_type: LocationType::Room,
+        exits: HashMap::new(),
+        npcs: vec![100],
+        items: Vec::new(),
+        triggers: Vec::new(),
+        light_level: LightLevel::Bright,
+    };
+
+    let mut items = HashMap::new();
+    items.insert(1, shortsword);
+    items.insert(2, shortbow);
+
+    let mut npcs = HashMap::new();
+    npcs.insert(100, goblin_npc);
+
+    let mut locations = HashMap::new();
+    locations.insert(0, room);
+
+    // Build CombatState with player first in initiative order.
+    let mut distances = HashMap::new();
+    distances.insert(100, 25); // 25 ft away
+    let combat = CombatState {
+        initiative_order: vec![
+            (Combatant::Player, 20),
+            (Combatant::Npc(100), 10),
+        ],
+        current_turn: 0,
+        round: 1,
+        distances,
+        player_movement_remaining: 30,
+        player_dodging: false,
+        player_disengaging: false,
+        action_used: false,
+        bonus_action_used: false,
+        reaction_used: false,
+        free_interaction_used: false,
+        npc_dodging: HashMap::new(),
+        npc_disengaging: HashMap::new(),
+        player_shield_ac_bonus: 0,
+        pending_reaction: None,
+        player_vex_target: None,
+        sap_targets: std::collections::HashSet::new(),
+        slow_targets: HashMap::new(),
+        cleave_used_this_turn: false,
+        nick_used_this_turn: false,
+        death_save_successes: 0,
+        death_save_failures: 0,
+    };
+
+    let mut state = GameState {
+        version: SAVE_VERSION.to_string(),
+        character,
+        current_location: 0,
+        discovered_locations: HashSet::from([0]),
+        world: WorldState {
+            locations,
+            npcs,
+            items,
+            triggers: HashMap::new(),
+            triggered: HashSet::new(),
+        },
+        log: Vec::new(),
+        rng_seed: 42,
+        rng_counter: 0,
+        game_phase: GamePhase::Exploration,
+        active_combat: Some(combat),
+        ironman_mode: false,
+        progress: ProgressState::default(),
+        in_world_minutes: 0,
+        last_long_rest_minutes: None,
+        pending_background_pattern: None,
+        pending_disambiguation: None,
+    };
+    state.character.inventory = vec![1, 2];
+    state
+}
+
+/// Regression (#83): `equip sh` in combat emits a disambiguation prompt and
+/// sets `pending_disambiguation`. The follow-up "1" should resolve the equip
+/// without hitting the "already used your action" guard.
+#[test]
+fn combat_equip_disambiguation_does_not_consume_action() {
+    let state = make_combat_disambiguation_state();
+    let out = process_input(&into_json(&state), "equip sh");
+    let prompt = out.text.join("\n");
+    assert!(
+        prompt.contains("Which do you mean?"),
+        "ambiguous equip in combat should emit disambiguation prompt, got: {}",
+        prompt,
+    );
+
+    // Verify that pending_disambiguation is set in the returned state.
+    let mid_state = from_json(&out.state_json);
+    assert!(
+        mid_state.pending_disambiguation.is_some(),
+        "pending_disambiguation should be set after disambiguation prompt",
+    );
+
+    // Now type "1" to resolve. It should NOT say "already used your action".
+    let out2 = process_input(&out.state_json, "1");
+    let reply = out2.text.join("\n");
+    assert!(
+        !reply.contains("already used your action"),
+        "disambiguation resolution should not be blocked by action_used, got: {}",
+        reply,
+    );
+    assert!(
+        !reply.contains("Which do you mean?"),
+        "numeric selection should not re-prompt disambiguation, got: {}",
+        reply,
+    );
+
+    // The equip should have succeeded.
+    let new_state = from_json(&out2.state_json);
+    assert!(
+        new_state.character.equipped.main_hand.is_some(),
+        "main hand should be filled after resolving combat equip disambiguation",
+    );
+}
+
+/// Regression (#83): same as equip, but for `unequip` during combat.
+/// The unequip handler has the same unconditional `action_used = true`.
+#[test]
+fn combat_unequip_disambiguation_does_not_consume_action() {
+    let mut state = make_combat_disambiguation_state();
+    // Equip both items first so we can unequip.
+    state.character.equipped.main_hand = Some(1); // Shortsword
+    state.character.equipped.off_hand = Some(2);  // Shortbow
+
+    let out = process_input(&into_json(&state), "unequip sh");
+    let prompt = out.text.join("\n");
+    assert!(
+        prompt.contains("Which do you mean?"),
+        "ambiguous unequip in combat should emit disambiguation prompt, got: {}",
+        prompt,
+    );
+
+    let out2 = process_input(&out.state_json, "1");
+    let reply = out2.text.join("\n");
+    assert!(
+        !reply.contains("already used your action"),
+        "unequip disambiguation resolution should not be blocked by action_used, got: {}",
+        reply,
+    );
 }

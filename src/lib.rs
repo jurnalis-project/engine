@@ -3307,10 +3307,14 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                 }
                 lines.push("You've already used your free object interaction. Using the Utilize action to equip...".to_string());
                 lines.extend(handle_equip_command(state, &target_str));
-                combat.action_used = true;
+                if state.pending_disambiguation.is_none() {
+                    combat.action_used = true;
+                }
             } else {
                 lines.extend(handle_equip_command(state, &target_str));
-                combat.free_interaction_used = true;
+                if state.pending_disambiguation.is_none() {
+                    combat.free_interaction_used = true;
+                }
             }
         }
         Command::Unequip(target_str) => {
@@ -3323,10 +3327,14 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                 }
                 lines.push("You've already used your free object interaction. Using the Utilize action to unequip...".to_string());
                 lines.extend(handle_unequip_command(state, &target_str));
-                combat.action_used = true;
+                if state.pending_disambiguation.is_none() {
+                    combat.action_used = true;
+                }
             } else {
                 lines.extend(handle_unequip_command(state, &target_str));
-                combat.free_interaction_used = true;
+                if state.pending_disambiguation.is_none() {
+                    combat.free_interaction_used = true;
+                }
             }
         }
         Command::Use(item_name) => {
