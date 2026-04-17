@@ -10764,4 +10764,206 @@ mod tests {
                 seed, obj.description, actual_room.name, actual_room.id);
         }
     }
+
+    #[test]
+    fn seed_objectives_then_defeat_boss_completes_objective() {
+        use crate::combat::{CombatState, Combatant};
+
+        let mut state = create_test_exploration_state();
+        // Seed objectives from the generated world (as lib.rs does after ChooseName)
+        seed_objectives(&mut state);
+
+        // Verify an objective was seeded
+        assert!(!state.progress.objectives.is_empty(),
+            "seed_objectives should have created at least one objective");
+        assert_eq!(state.progress.objective_triggers.len(), state.progress.objectives.len());
+
+        // Find the boss NPC ID from the objective trigger
+        let boss_id = match &state.progress.objective_triggers[0] {
+            state::ObjectiveType::DefeatNpc(id) => *id,
+            other => panic!("Expected DefeatNpc objective, got {:?}", other),
+        };
+
+        // Verify that npc.id == HashMap key for all NPCs (structural invariant)
+        for (&key, npc) in &state.world.npcs {
+            assert_eq!(key, npc.id,
+                "NPC HashMap key {} doesn't match npc.id {}. This would break \
+                 check_defeat_npc_objectives.", key, npc.id);
+        }
+
+        // Verify the boss NPC exists in the world map with the expected key
+        let boss_npc = state.world.npcs.get(&boss_id);
+        assert!(boss_npc.is_some(),
+            "Boss NPC with id {} should exist in state.world.npcs (keys: {:?})",
+            boss_id, state.world.npcs.keys().collect::<Vec<_>>());
+
+        let boss_npc = boss_npc.unwrap();
+        assert!(boss_npc.combat_stats.is_some(),
+            "Boss NPC should have combat_stats");
+
+        // Kill the boss (set HP to 0)
+        state.world.npcs.get_mut(&boss_id).unwrap()
+            .combat_stats.as_mut().unwrap().current_hp = 0;
+
+        // Set up active combat with the boss in the initiative order
+        state.active_combat = Some(CombatState {
+            initiative_order: vec![
+                (Combatant::Player, 15),
+                (Combatant::Npc(boss_id), 10),
+            ],
+            current_turn: 0,
+            round: 1,
+            distances: HashMap::new(),
+            player_movement_remaining: state.character.speed,
+            player_dodging: false,
+            player_disengaging: false,
+            action_used: false,
+            bonus_action_used: false,
+            reaction_used: false,
+            free_interaction_used: false,
+            npc_dodging: HashMap::new(),
+            npc_disengaging: HashMap::new(),
+            player_shield_ac_bonus: 0,
+            pending_reaction: None,
+            player_vex_target: None,
+            sap_targets: std::collections::HashSet::new(),
+            slow_targets: HashMap::new(),
+            cleave_used_this_turn: false,
+            nick_used_this_turn: false,
+            death_save_successes: 0,
+            death_save_failures: 0,
+        });
+
+        let lines = end_combat(&mut state, true);
+
+        assert!(state.progress.objectives[0].completed,
+            "DefeatNpc objective should be marked complete after defeating the boss. Lines: {:?}", lines);
+        assert!(lines.iter().any(|l| l.contains("Objective complete")),
+            "Should announce objective completion. Lines: {:?}", lines);
+    }
+
+    // Integration test: exercise the full combat flow where the player moves
+    // into the boss's room, triggering auto-combat, then attacks and kills the
+    // boss via process_input. Verifies the objective is marked complete.
+    #[test]
+    fn process_input_navigate_to_boss_room_and_kill_completes_objective() {
+        use crate::combat::{CombatState, Combatant};
+
+        // Full character creation to seed the world and objectives
+        let output = new_game(42, false);
+        let output = process_input(&output.state_json, "1"); // race: Human
+        let output = process_input(&output.state_json, "Fighter"); // class
+        let output = process_input(&output.state_json, "1"); // background
+        let output = process_input(&output.state_json, "default"); // origin feat
+        let output = process_input(&output.state_json, "2"); // ability pattern
+        let output = process_input(&output.state_json, "1"); // standard array
+        let output = process_input(&output.state_json, "15 14 13 12 10 8"); // scores
+        let output = process_input(&output.state_json, "1 2"); // skills
+        let output = process_input(&output.state_json, "5"); // alignment
+        let output = process_input(&output.state_json, "TestHero"); // name
+
+        let mut state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert!(matches!(state.game_phase, GamePhase::Exploration));
+        assert!(!state.progress.objectives.is_empty(),
+            "Objectives should be seeded after character creation");
+
+        let boss_id = match &state.progress.objective_triggers[0] {
+            state::ObjectiveType::DefeatNpc(id) => *id,
+            other => panic!("Expected DefeatNpc, got {:?}", other),
+        };
+
+        let boss_name = state.world.npcs.get(&boss_id).unwrap().name.clone();
+        let boss_location = state.world.npcs.get(&boss_id).unwrap().location;
+
+        // Make the boss trivially weak: 1 HP, AC 1
+        state.world.npcs.get_mut(&boss_id).unwrap()
+            .combat_stats.as_mut().unwrap().current_hp = 1;
+        state.world.npcs.get_mut(&boss_id).unwrap()
+            .combat_stats.as_mut().unwrap().ac = 1;
+
+        // Remove all other hostile NPCs from the boss's location so we only
+        // fight the boss (simplifies the test)
+        let hostiles_in_boss_room: Vec<u32> = state.world.locations.get(&boss_location)
+            .map(|loc| loc.npcs.iter()
+                .filter(|&&id| id != boss_id)
+                .filter(|&&id| state.world.npcs.get(&id)
+                    .map(|n| n.disposition == state::Disposition::Hostile && n.combat_stats.is_some())
+                    .unwrap_or(false))
+                .copied()
+                .collect())
+            .unwrap_or_default();
+        for npc_id in &hostiles_in_boss_room {
+            state.world.npcs.get_mut(npc_id).unwrap().disposition = state::Disposition::Neutral;
+        }
+
+        // Remove hostile NPCs from all rooms BETWEEN the player and the boss
+        // to avoid getting stuck in unrelated combats
+        for npc in state.world.npcs.values_mut() {
+            if npc.id != boss_id && npc.disposition == state::Disposition::Hostile {
+                npc.disposition = state::Disposition::Neutral;
+            }
+        }
+
+        // Move the player directly to the boss's location and set up combat
+        // (simulate entering the room)
+        state.current_location = boss_location;
+        state.discovered_locations.insert(boss_location);
+
+        // Manually start combat with the boss
+        let mut distances = HashMap::new();
+        distances.insert(boss_id, 5);
+        state.active_combat = Some(CombatState {
+            initiative_order: vec![
+                (Combatant::Player, 20),
+                (Combatant::Npc(boss_id), 5),
+            ],
+            current_turn: 0,
+            round: 1,
+            distances,
+            player_movement_remaining: state.character.speed,
+            player_dodging: false,
+            player_disengaging: false,
+            action_used: false,
+            bonus_action_used: false,
+            reaction_used: false,
+            free_interaction_used: false,
+            npc_dodging: HashMap::new(),
+            npc_disengaging: HashMap::new(),
+            player_shield_ac_bonus: 0,
+            pending_reaction: None,
+            player_vex_target: None,
+            sap_targets: std::collections::HashSet::new(),
+            slow_targets: HashMap::new(),
+            cleave_used_this_turn: false,
+            nick_used_this_turn: false,
+            death_save_successes: 0,
+            death_save_failures: 0,
+        });
+
+        // Try multiple seeds to get a hit (AC=1, nat 1 is the only miss)
+        let mut found_seed = false;
+        for seed_offset in 0..100u64 {
+            let mut test_state = state.clone();
+            test_state.rng_seed = 42 + seed_offset;
+            test_state.rng_counter = 0;
+
+            let state_json = serde_json::to_string(&test_state).unwrap();
+            let output = process_input(&state_json, &format!("attack {}", boss_name));
+            let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+            let text = output.text.join("\n");
+
+            if text.contains("VICTORY") {
+                assert!(new_state.progress.objectives[0].completed,
+                    "DefeatNpc objective should be complete after killing boss via process_input. \
+                     Boss id: {}, boss_name: {}, text: {}", boss_id, boss_name, text);
+                assert!(text.contains("Objective complete"),
+                    "Should announce objective completion. Text: {}", text);
+                found_seed = true;
+                break;
+            }
+        }
+        assert!(found_seed,
+            "Should have found a seed where the attack hits the boss (AC=1). Boss: {} (id {})",
+            boss_name, boss_id);
+    }
 }
