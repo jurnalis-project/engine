@@ -995,6 +995,85 @@ pub fn resolve_opportunity_attack(
 
 // ---- NPC AI ----
 
+/// Attempt a melee or ranged attack at the given distance. Returns narration
+/// lines for the multiattack loop, or an empty Vec if no attack is in range.
+/// Shared by the initial attack check and the post-move re-check in
+/// `resolve_npc_turn` so that sap/grapple disadvantage and multiattack logic
+/// are never duplicated.
+fn resolve_npc_attack_action(
+    rng: &mut impl Rng,
+    npc_attacks: &[NpcAttack],
+    npc_multiattack: u32,
+    distance: u32,
+    grappled: bool,
+    sapped_first_attack: bool,
+    npc_name: &str,
+    npc_conditions: &[crate::conditions::ActiveCondition],
+    player_conditions: &[crate::conditions::ActiveCondition],
+    state: &mut GameState,
+    combat: &mut CombatState,
+) -> Vec<String> {
+    // Prefer melee if in reach, then try ranged.
+    let melee = npc_attacks.iter().find(|a| a.reach > 0 && distance <= a.reach as u32).cloned();
+    let ranged = npc_attacks.iter().find(|a| a.range_long > 0 && distance <= a.range_long as u32).cloned();
+
+    let (attack, is_melee) = if let Some(a) = melee {
+        (a, true)
+    } else if let Some(a) = ranged {
+        (a, false)
+    } else {
+        return Vec::new();
+    };
+
+    let mut lines = Vec::new();
+    let verb = if is_melee { "attacks with" } else { "fires" };
+
+    // Multiattack loop: roll `multiattack` separate attacks against the player.
+    // If the player is already dying (HP <= 0), additional hits add death
+    // save failures (per SRD). Multiattack stops only when the player has
+    // accumulated three failures -- otherwise enemies keep swinging.
+    for i in 0..npc_multiattack {
+        if state.character.current_hp <= 0 && combat.death_save_failures >= 3 {
+            break;
+        }
+        // Sap disadvantage applies only to the first attack of the turn.
+        let iter_disadv = grappled || (sapped_first_attack && i == 0);
+        let player_ac = crate::equipment::calculate_ac(&state.character, &state.world.items);
+        let player_dodging = combat.player_dodging;
+        let result = resolve_npc_attack(rng, &attack, player_ac, player_dodging, distance, npc_conditions, player_conditions, iter_disadv);
+        let disadv = if result.disadvantage { " (with disadvantage)" } else { "" };
+
+        if result.hit {
+            let was_dying = state.character.current_hp <= 0;
+            state.character.current_hp -= result.damage;
+            if result.natural_20 {
+                lines.push(format!("{} {} {} -- CRITICAL HIT! {} {} damage!",
+                    npc_name, verb, result.weapon_name, result.damage, result.damage_type));
+            } else {
+                lines.push(format!("{} {} {} ({}+{}={} vs AC {}){} -- hit for {} {} damage.",
+                    npc_name, verb, result.weapon_name, result.attack_roll,
+                    attack.hit_bonus, result.total_attack, player_ac, disadv,
+                    result.damage, result.damage_type));
+            }
+            // Damage-while-dying: if the player was already at 0 HP when
+            // this hit landed, add a death save failure (two on a crit).
+            if was_dying {
+                let outcome = combat.apply_damage_while_dying(
+                    &mut state.character, result.damage, result.natural_20,
+                );
+                lines.extend(narrate_damage_while_dying_outcome(outcome));
+            }
+        } else if result.natural_1 {
+            lines.push(format!("{} {} {} -- natural 1, miss!", npc_name, verb, result.weapon_name));
+        } else {
+            lines.push(format!("{} {} {} ({}+{}={} vs AC {}){} -- miss.",
+                npc_name, verb, result.weapon_name, result.attack_roll,
+                attack.hit_bonus, result.total_attack, player_ac, disadv));
+        }
+    }
+    lines
+}
+
 /// Determine NPC action. Returns narration lines and whether to end combat early.
 pub fn resolve_npc_turn(
     rng: &mut impl Rng,
@@ -1047,102 +1126,24 @@ pub fn resolve_npc_turn(
         lines.push("(Disadvantage from Sap mastery.)".to_string());
     }
 
-    // Check for melee attack
-    let melee_attack = npc_attacks.iter().find(|a| a.reach > 0 && distance <= a.reach as u32).cloned();
-    if let Some(attack) = melee_attack {
-        // Multiattack loop: roll `multiattack` separate attacks against the player.
-        // If the player is already dying (HP <= 0), additional hits add death
-        // save failures (per SRD). Multiattack stops only when the player has
-        // accumulated three failures -- otherwise enemies keep swinging.
-        for i in 0..npc_multiattack {
-            if state.character.current_hp <= 0 && combat.death_save_failures >= 3 {
-                break;
-            }
-            // Sap disadvantage applies only to the first attack of the turn.
-            let iter_disadv = grappled || (sapped_first_attack && i == 0);
-            let player_ac = crate::equipment::calculate_ac(&state.character, &state.world.items);
-            let player_dodging = combat.player_dodging;
-            let result = resolve_npc_attack(rng, &attack, player_ac, player_dodging, distance, &npc_conditions, &player_conditions, iter_disadv);
-            let disadv = if result.disadvantage { " (with disadvantage)" } else { "" };
-
-            if result.hit {
-                let was_dying = state.character.current_hp <= 0;
-                state.character.current_hp -= result.damage;
-                if result.natural_20 {
-                    lines.push(format!("{} attacks with {} -- CRITICAL HIT! {} {} damage!",
-                        npc_name, result.weapon_name, result.damage, result.damage_type));
-                } else {
-                    lines.push(format!("{} attacks with {} ({}+{}={} vs AC {}){} -- hit for {} {} damage.",
-                        npc_name, result.weapon_name, result.attack_roll,
-                        attack.hit_bonus, result.total_attack, player_ac, disadv,
-                        result.damage, result.damage_type));
-                }
-                // Damage-while-dying: if the player was already at 0 HP when
-                // this hit landed, add a death save failure (two on a crit).
-                if was_dying {
-                    let outcome = combat.apply_damage_while_dying(
-                        &mut state.character, result.damage, result.natural_20,
-                    );
-                    lines.extend(narrate_damage_while_dying_outcome(outcome));
-                }
-            } else if result.natural_1 {
-                lines.push(format!("{} attacks with {} -- natural 1, miss!", npc_name, result.weapon_name));
-            } else {
-                lines.push(format!("{} attacks with {} ({}+{}={} vs AC {}){} -- miss.",
-                    npc_name, result.weapon_name, result.attack_roll,
-                    attack.hit_bonus, result.total_attack, player_ac, disadv));
-            }
-        }
+    // Try to attack at the current distance; if not in range, move then
+    // re-check. This mirrors SRD 5.1: movement and action are independent
+    // resources on the same turn.
+    let attack_lines = resolve_npc_attack_action(
+        rng, &npc_attacks, npc_multiattack, distance,
+        grappled, sapped_first_attack,
+        &npc_name, &npc_conditions, &player_conditions,
+        state, combat,
+    );
+    if !attack_lines.is_empty() {
+        lines.extend(attack_lines);
         return lines;
     }
 
-    // Check for ranged attack
-    let ranged_attack = npc_attacks.iter().find(|a| {
-        a.range_long > 0 && distance <= a.range_long as u32
-    }).cloned();
-    if let Some(attack) = ranged_attack {
-        for i in 0..npc_multiattack {
-            if state.character.current_hp <= 0 && combat.death_save_failures >= 3 {
-                break;
-            }
-            let iter_disadv = grappled || (sapped_first_attack && i == 0);
-            let player_ac = crate::equipment::calculate_ac(&state.character, &state.world.items);
-            let player_dodging = combat.player_dodging;
-            let result = resolve_npc_attack(rng, &attack, player_ac, player_dodging, distance, &npc_conditions, &player_conditions, iter_disadv);
-            let disadv = if result.disadvantage { " (with disadvantage)" } else { "" };
-
-            if result.hit {
-                let was_dying = state.character.current_hp <= 0;
-                state.character.current_hp -= result.damage;
-                if result.natural_20 {
-                    lines.push(format!("{} fires {} -- CRITICAL HIT! {} {} damage!",
-                        npc_name, result.weapon_name, result.damage, result.damage_type));
-                } else {
-                    lines.push(format!("{} fires {} ({}+{}={} vs AC {}){} -- hit for {} {} damage.",
-                        npc_name, result.weapon_name, result.attack_roll,
-                        attack.hit_bonus, result.total_attack, player_ac, disadv,
-                        result.damage, result.damage_type));
-                }
-                if was_dying {
-                    let outcome = combat.apply_damage_while_dying(
-                        &mut state.character, result.damage, result.natural_20,
-                    );
-                    lines.extend(narrate_damage_while_dying_outcome(outcome));
-                }
-            } else if result.natural_1 {
-                lines.push(format!("{} fires {} -- natural 1, miss!", npc_name, result.weapon_name));
-            } else {
-                lines.push(format!("{} fires {} ({}+{}={} vs AC {}){} -- miss.",
-                    npc_name, result.weapon_name, result.attack_roll,
-                    attack.hit_bonus, result.total_attack, player_ac, disadv));
-            }
-        }
-        return lines;
-    }
-
-    // Move toward player. Slow mastery (2024 SRD) reduces the NPC's Speed
-    // by up to 10 ft for this move; the reduction is reported once so the
-    // player can see why the NPC moved less.
+    // No attack in range — move toward the player first.
+    // Slow mastery (2024 SRD) reduces the NPC's Speed by up to 10 ft for
+    // this move; the reduction is reported once so the player can see why
+    // the NPC moved less.
     let slow_reduction = slow_speed_reduction(combat, npc_id).max(0) as u32;
     let effective_speed = (npc_speed as u32).saturating_sub(slow_reduction);
     if slow_reduction > 0 {
@@ -1155,6 +1156,15 @@ pub fn resolve_npc_turn(
     let new_distance = if distance > move_amount { distance - move_amount } else { 5 };
     combat.distances.insert(npc_id, new_distance);
     lines.push(format!("{} moves toward you. ({}ft -> {}ft)", npc_name, distance, new_distance));
+
+    // After moving, attempt an attack if now in range (SRD: move then act).
+    let post_move_attack = resolve_npc_attack_action(
+        rng, &npc_attacks, npc_multiattack, new_distance,
+        grappled, sapped_first_attack,
+        &npc_name, &npc_conditions, &player_conditions,
+        state, combat,
+    );
+    lines.extend(post_move_attack);
 
     lines
 }
@@ -2645,6 +2655,90 @@ mod tests {
         let new_dist = *combat.distances.get(&0).unwrap();
         assert!(new_dist < 60, "NPC should have moved closer");
         assert!(lines[0].contains("moves toward"), "Should narrate movement: {}", lines[0]);
+    }
+
+    // Hypothesis: resolve_npc_turn() moves the NPC toward the player but
+    // returns immediately without re-checking for an attack. Per SRD 5.1
+    // (line 507), movement and action are independent — a creature may move
+    // then act on the same turn. After closing distance, the NPC should
+    // attempt a melee (or ranged) attack if now in range.
+    #[test]
+    fn test_npc_attacks_after_moving_into_melee_range() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut state = test_state_with_goblin();
+        // Melee-only NPC: remove ranged attack
+        state.world.npcs.get_mut(&0).unwrap().combat_stats.as_mut().unwrap().attacks = vec![
+            NpcAttack {
+                name: "Scimitar".to_string(), hit_bonus: 4,
+                damage_dice: 1, damage_die: 6, damage_bonus: 2,
+                damage_type: DamageType::Slashing, reach: 5,
+                range_normal: 0, range_long: 0,
+            },
+        ];
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        // Distance 35: with speed 30, NPC moves to 5ft (melee range)
+        combat.distances.insert(0, 35);
+
+        let lines = resolve_npc_turn(&mut rng, 0, &mut state, &mut combat);
+        let new_dist = *combat.distances.get(&0).unwrap();
+        assert_eq!(new_dist, 5, "NPC should have moved to melee range");
+        // Should contain both a movement line and an attack line
+        let has_move = lines.iter().any(|l| l.contains("moves toward"));
+        let has_attack = lines.iter().any(|l| l.contains("Scimitar"));
+        assert!(has_move, "NPC should narrate movement: {:?}", lines);
+        assert!(has_attack, "NPC should attack after moving into melee range: {:?}", lines);
+    }
+
+    #[test]
+    fn test_npc_attacks_after_moving_into_ranged_range() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut state = test_state_with_goblin();
+        // Ranged-only NPC: remove melee attack, keep shortbow (range 80/320)
+        state.world.npcs.get_mut(&0).unwrap().combat_stats.as_mut().unwrap().attacks = vec![
+            NpcAttack {
+                name: "Shortbow".to_string(), hit_bonus: 4,
+                damage_dice: 1, damage_die: 6, damage_bonus: 2,
+                damage_type: DamageType::Piercing, reach: 0,
+                range_normal: 80, range_long: 320,
+            },
+        ];
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        // Distance 350: with speed 30, NPC moves to 320ft (at ranged long range)
+        combat.distances.insert(0, 350);
+
+        let lines = resolve_npc_turn(&mut rng, 0, &mut state, &mut combat);
+        let new_dist = *combat.distances.get(&0).unwrap();
+        assert_eq!(new_dist, 320, "NPC should have moved to ranged range");
+        let has_move = lines.iter().any(|l| l.contains("moves toward"));
+        let has_attack = lines.iter().any(|l| l.contains("Shortbow"));
+        assert!(has_move, "NPC should narrate movement: {:?}", lines);
+        assert!(has_attack, "NPC should attack after moving into ranged range: {:?}", lines);
+    }
+
+    #[test]
+    fn test_npc_move_only_when_still_out_of_range() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut state = test_state_with_goblin();
+        // Melee-only NPC
+        state.world.npcs.get_mut(&0).unwrap().combat_stats.as_mut().unwrap().attacks = vec![
+            NpcAttack {
+                name: "Scimitar".to_string(), hit_bonus: 4,
+                damage_dice: 1, damage_die: 6, damage_bonus: 2,
+                damage_type: DamageType::Slashing, reach: 5,
+                range_normal: 0, range_long: 0,
+            },
+        ];
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        // Distance 60: with speed 30, NPC moves to 30ft — still NOT in melee range
+        combat.distances.insert(0, 60);
+
+        let lines = resolve_npc_turn(&mut rng, 0, &mut state, &mut combat);
+        let new_dist = *combat.distances.get(&0).unwrap();
+        assert_eq!(new_dist, 30, "NPC should have moved closer but still out of range");
+        let has_move = lines.iter().any(|l| l.contains("moves toward"));
+        let has_attack = lines.iter().any(|l| l.contains("Scimitar"));
+        assert!(has_move, "NPC should narrate movement: {:?}", lines);
+        assert!(!has_attack, "NPC should NOT attack when still out of range: {:?}", lines);
     }
 
     // ---- Condition Integration Tests ----
