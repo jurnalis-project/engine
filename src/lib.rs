@@ -3298,20 +3298,44 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
             }
         }
         Command::Equip(target_str) => {
-            if combat.action_used {
-                state.active_combat = Some(combat);
-                return vec!["You've already used your action this turn.".to_string()];
+            // SRD 2024: drawing/sheathing a weapon is a free object interaction
+            // (one per turn). A second interaction costs the Utilize action.
+            if combat.free_interaction_used {
+                if combat.action_used {
+                    state.active_combat = Some(combat);
+                    return vec!["You've already used your free object interaction and your action this turn.".to_string()];
+                }
+                lines.push("You've already used your free object interaction. Using the Utilize action to equip...".to_string());
+                lines.extend(handle_equip_command(state, &target_str));
+                if state.pending_disambiguation.is_none() {
+                    combat.action_used = true;
+                }
+            } else {
+                lines.extend(handle_equip_command(state, &target_str));
+                if state.pending_disambiguation.is_none() {
+                    combat.free_interaction_used = true;
+                }
             }
-            lines.extend(handle_equip_command(state, &target_str));
-            combat.action_used = true;
         }
         Command::Unequip(target_str) => {
-            if combat.action_used {
-                state.active_combat = Some(combat);
-                return vec!["You've already used your action this turn.".to_string()];
+            // SRD 2024: drawing/sheathing a weapon is a free object interaction
+            // (one per turn). A second interaction costs the Utilize action.
+            if combat.free_interaction_used {
+                if combat.action_used {
+                    state.active_combat = Some(combat);
+                    return vec!["You've already used your free object interaction and your action this turn.".to_string()];
+                }
+                lines.push("You've already used your free object interaction. Using the Utilize action to unequip...".to_string());
+                lines.extend(handle_unequip_command(state, &target_str));
+                if state.pending_disambiguation.is_none() {
+                    combat.action_used = true;
+                }
+            } else {
+                lines.extend(handle_unequip_command(state, &target_str));
+                if state.pending_disambiguation.is_none() {
+                    combat.free_interaction_used = true;
+                }
             }
-            lines.extend(handle_unequip_command(state, &target_str));
-            combat.action_used = true;
         }
         Command::Use(item_name) => {
             if combat.action_used {
@@ -4663,7 +4687,7 @@ fn render_map(state: &GameState) -> Vec<String> {
             let marker = if id == state.current_location { "*" } else { " " };
             let mut exits: Vec<String> = loc.exits.keys().map(|d| d.to_string()).collect();
             exits.sort();
-            lines.push(format!("{} {} [{}] -> {}", marker, loc.name, id, exits.join(", ")));
+            lines.push(format!("{} {} -> {}", marker, loc.name, exits.join(", ")));
         }
     }
     lines
@@ -7048,6 +7072,7 @@ mod tests {
                 }
             }
             combat.action_used = false;
+            combat.free_interaction_used = false;
             combat.player_movement_remaining = state.character.speed;
         }
     }
@@ -8703,6 +8728,33 @@ mod tests {
 
         assert!(output.text.iter().any(|t| t.contains("=== MAP ===")), "{:?}", output.text);
         assert!(output.text.iter().any(|t| t.contains("*")), "{:?}", output.text);
+    }
+
+    #[test]
+    // Hypothesis: render_map() includes [{}] with LocationId in its format string,
+    // exposing internal numeric IDs to the player. The fix removes that segment.
+    fn test_map_command_does_not_expose_internal_location_ids() {
+        let state = create_test_exploration_state();
+        let state_json = serde_json::to_string(&state).unwrap();
+
+        let output = process_input(&state_json, "map");
+
+        // No map line (after the header) should contain a bracketed number like [0], [1], etc.
+        for line in &output.text {
+            if line.contains("=== MAP ===") {
+                continue;
+            }
+            let has_bracketed_number = line.chars().enumerate().any(|(i, c)| {
+                c == '['
+                    && line[i + 1..].chars().next().map_or(false, |ch| ch.is_ascii_digit())
+                    && line[i + 1..].contains(']')
+            });
+            assert!(
+                !has_bracketed_number,
+                "Map output should not expose internal LocationId: {:?}",
+                line
+            );
+        }
     }
 
     #[test]
@@ -10965,5 +11017,154 @@ mod tests {
         assert!(found_seed,
             "Should have found a seed where the attack hits the boss (AC=1). Boss: {} (id {})",
             boss_name, boss_id);
+    }
+
+    // ---- Free object interaction tests (SRD 2024) ----
+    // Hypothesis: The combat equip/unequip handler treats drawing/sheathing a
+    // weapon as a full action instead of a free object interaction, violating
+    // SRD 2024 rules (one free interaction per turn; second costs Utilize action).
+
+    #[test]
+    fn test_combat_equip_uses_free_interaction_not_action() {
+        // Equipping a weapon in combat should use the free object interaction,
+        // not the action. After equipping, the action should still be available.
+        let mut state = create_test_combat_state();
+        force_player_turn(&mut state);
+
+        // Add a second weapon to inventory (unequipped)
+        let dagger_id = 300;
+        state.world.items.insert(dagger_id, state::Item {
+            id: dagger_id,
+            name: "Dagger".to_string(),
+            description: "A simple dagger.".to_string(),
+            item_type: state::ItemType::Weapon {
+                damage_dice: 1, damage_die: 4,
+                damage_type: state::DamageType::Piercing,
+                properties: crate::equipment::FINESSE | crate::equipment::LIGHT,
+                category: state::WeaponCategory::Simple,
+                versatile_die: 0, range_normal: 20, range_long: 60,
+            },
+            location: None,
+            carried_by_player: true,
+            charges_remaining: None,
+        });
+        state.character.inventory.push(dagger_id);
+        // Unequip main hand so we can equip the dagger as a free interaction
+        state.character.equipped.main_hand = None;
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "equip dagger");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        let combat = new_state.active_combat.as_ref().unwrap();
+
+        // Free interaction should be used
+        assert!(combat.free_interaction_used,
+            "Equip should consume the free object interaction");
+        // Action should still be available
+        assert!(!combat.action_used,
+            "Equip (free interaction) should NOT consume the action");
+    }
+
+    #[test]
+    fn test_combat_unequip_uses_free_interaction_not_action() {
+        // Unequipping a weapon in combat should use the free object interaction,
+        // not the action.
+        let mut state = create_test_combat_state();
+        force_player_turn(&mut state);
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "unequip longsword");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        let combat = new_state.active_combat.as_ref().unwrap();
+
+        assert!(combat.free_interaction_used,
+            "Unequip should consume the free object interaction");
+        assert!(!combat.action_used,
+            "Unequip (free interaction) should NOT consume the action");
+    }
+
+    #[test]
+    fn test_combat_second_equip_costs_utilize_action() {
+        // A second equip in the same turn should cost the Utilize action
+        // (i.e., consume action_used) since free interaction is already spent.
+        let mut state = create_test_combat_state();
+        force_player_turn(&mut state);
+
+        // Mark free interaction as already used
+        if let Some(ref mut combat) = state.active_combat {
+            combat.free_interaction_used = true;
+        }
+
+        // Add a second weapon to equip
+        let dagger_id = 300;
+        state.world.items.insert(dagger_id, state::Item {
+            id: dagger_id,
+            name: "Dagger".to_string(),
+            description: "A simple dagger.".to_string(),
+            item_type: state::ItemType::Weapon {
+                damage_dice: 1, damage_die: 4,
+                damage_type: state::DamageType::Piercing,
+                properties: crate::equipment::FINESSE | crate::equipment::LIGHT,
+                category: state::WeaponCategory::Simple,
+                versatile_die: 0, range_normal: 20, range_long: 60,
+            },
+            location: None,
+            carried_by_player: true,
+            charges_remaining: None,
+        });
+        state.character.inventory.push(dagger_id);
+        state.character.equipped.main_hand = None;
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "equip dagger");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        let combat = new_state.active_combat.as_ref().unwrap();
+
+        // Should have consumed the action (Utilize) since free interaction was spent
+        assert!(combat.action_used,
+            "Second equip should consume the action (Utilize)");
+        // Should mention Utilize action in the output
+        assert!(output.text.iter().any(|t| t.to_lowercase().contains("utilize") || t.to_lowercase().contains("free object interaction")),
+            "Output should mention Utilize action or free object interaction. Got: {:?}", output.text);
+    }
+
+    #[test]
+    fn test_combat_second_equip_blocked_when_action_used() {
+        // If both free interaction AND action are used, a second equip should
+        // be blocked entirely.
+        let mut state = create_test_combat_state();
+        force_player_turn(&mut state);
+
+        if let Some(ref mut combat) = state.active_combat {
+            combat.free_interaction_used = true;
+            combat.action_used = true;
+        }
+
+        let dagger_id = 300;
+        state.world.items.insert(dagger_id, state::Item {
+            id: dagger_id,
+            name: "Dagger".to_string(),
+            description: "A simple dagger.".to_string(),
+            item_type: state::ItemType::Weapon {
+                damage_dice: 1, damage_die: 4,
+                damage_type: state::DamageType::Piercing,
+                properties: crate::equipment::FINESSE | crate::equipment::LIGHT,
+                category: state::WeaponCategory::Simple,
+                versatile_die: 0, range_normal: 20, range_long: 60,
+            },
+            location: None,
+            carried_by_player: true,
+            charges_remaining: None,
+        });
+        state.character.inventory.push(dagger_id);
+        state.character.equipped.main_hand = None;
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "equip dagger");
+
+        // Should be blocked
+        assert!(output.text.iter().any(|t|
+            t.contains("already used") || t.contains("can't")),
+            "Should be blocked when both free interaction and action are used. Got: {:?}", output.text);
     }
 }
