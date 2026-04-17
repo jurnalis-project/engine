@@ -12,7 +12,8 @@ use std::collections::{HashMap, HashSet};
 pub fn generate_world(rng: &mut impl Rng, location_count: usize) -> WorldState {
     let mut locations = location::generate_locations(rng, location_count);
     let location_refs: HashMap<_, _> = locations.iter().map(|(k, v)| (*k, v)).collect();
-    let location_ids: Vec<_> = locations.keys().copied().collect();
+    let mut location_ids: Vec<_> = locations.keys().copied().collect();
+    location_ids.sort();
 
     let npc_count = location_count / 3 + 1;
     let mut npcs = npc::generate_npcs(rng, &location_refs, npc_count);
@@ -45,7 +46,13 @@ pub fn generate_world(rng: &mut impl Rng, location_count: usize) -> WorldState {
     // by the NPC's location index (depth proxy). See `docs/specs/world-generation.md`
     // for the tier windows. Ensures first-encounter enemies are survivable at
     // level 1 while deeper rooms escalate in difficulty.
-    for npc in npcs.values_mut() {
+    //
+    // Iterate by sorted NPC ID so the RNG draws are deterministic regardless
+    // of HashMap iteration order.
+    let mut npc_ids: Vec<_> = npcs.keys().copied().collect();
+    npc_ids.sort();
+    for npc_id in npc_ids {
+        let npc = npcs.get_mut(&npc_id).unwrap();
         if npc.disposition == Disposition::Hostile {
             let depth = npc.location as usize;
             let def = monsters::select_monster_for_depth(rng, depth);
@@ -59,20 +66,30 @@ pub fn generate_world(rng: &mut impl Rng, location_count: usize) -> WorldState {
     let trigger_count = location_count / 3 + 1;
     let triggers = trigger::generate_triggers(rng, &location_ids, trigger_count);
 
-    // Link NPCs, items, and triggers back to their locations
-    for npc in npcs.values() {
+    // Link NPCs, items, and triggers back to their locations.
+    // Iterate by sorted ID for deterministic loc.npcs / loc.items / loc.triggers order.
+    let mut sorted_npc_ids: Vec<_> = npcs.keys().copied().collect();
+    sorted_npc_ids.sort();
+    for id in sorted_npc_ids {
+        let npc = &npcs[&id];
         if let Some(loc) = locations.get_mut(&npc.location) {
             loc.npcs.push(npc.id);
         }
     }
-    for item in items.values() {
+    let mut sorted_item_ids: Vec<_> = items.keys().copied().collect();
+    sorted_item_ids.sort();
+    for id in sorted_item_ids {
+        let item = &items[&id];
         if let Some(loc_id) = item.location {
             if let Some(loc) = locations.get_mut(&loc_id) {
                 loc.items.push(item.id);
             }
         }
     }
-    for trigger in triggers.values() {
+    let mut sorted_trigger_ids: Vec<_> = triggers.keys().copied().collect();
+    sorted_trigger_ids.sort();
+    for id in sorted_trigger_ids {
+        let trigger = &triggers[&id];
         if let Some(loc) = locations.get_mut(&trigger.location) {
             loc.triggers.push(trigger.id);
         }
@@ -244,6 +261,41 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn test_world_generation_deterministic_npc_locations() {
+        // The same seed must always produce the same NPC locations.
+        // Previously, HashMap iteration order in generate_npcs caused
+        // location_ids to be in arbitrary order, making NPC placement
+        // non-deterministic across process invocations.
+        let mut rng1 = StdRng::seed_from_u64(42);
+        let mut rng2 = StdRng::seed_from_u64(42);
+        let w1 = generate_world(&mut rng1, 15);
+        let w2 = generate_world(&mut rng2, 15);
+
+        for id in w1.npcs.keys() {
+            let npc1 = &w1.npcs[id];
+            let npc2 = &w2.npcs[id];
+            assert_eq!(npc1.location, npc2.location,
+                "NPC {} ('{}') placed at different locations across runs: {} vs {}",
+                id, npc1.name, npc1.location, npc2.location);
+            assert_eq!(npc1.name, npc2.name);
+            assert_eq!(
+                npc1.combat_stats.as_ref().map(|s| s.max_hp),
+                npc2.combat_stats.as_ref().map(|s| s.max_hp),
+                "NPC {} ('{}') has different combat stats", id, npc1.name
+            );
+        }
+
+        // Items should also be deterministic
+        for id in w1.items.keys() {
+            let item1 = &w1.items[id];
+            let item2 = &w2.items[id];
+            assert_eq!(item1.location, item2.location,
+                "Item {} ('{}') placed at different locations: {:?} vs {:?}",
+                id, item1.name, item1.location, item2.location);
         }
     }
 }

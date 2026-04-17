@@ -10711,4 +10711,57 @@ mod tests {
                 "Non-Rogue should leave the SA flag unset");
         }
     }
+
+    #[test]
+    fn test_objective_description_contains_correct_room_name() {
+        // Regression test for #81: seed_objectives() must reference the room
+        // where the boss NPC is actually placed (per loc.npcs). Previously,
+        // HashMap iteration order in generate_npcs caused NPC locations to be
+        // non-deterministic across process invocations, so boss.location
+        // could differ across game launches for the same seed.
+        for seed in 0..64u64 {
+            let output = new_game(seed, false);
+            let output = process_input(&output.state_json, "1"); // race
+            let output = process_input(&output.state_json, "Fighter"); // class
+            let output = process_input(&output.state_json, "1"); // background
+            let output = process_input(&output.state_json, "default"); // origin feat
+            let output = process_input(&output.state_json, "2"); // ability pattern
+            let output = process_input(&output.state_json, "1"); // standard array
+            let output = process_input(&output.state_json, "15 14 13 12 10 8");
+            let output = process_input(&output.state_json, "1 2"); // skills
+            let output = process_input(&output.state_json, "5"); // alignment
+            let output = process_input(&output.state_json, "TestHero"); // name
+
+            let state: GameState = serde_json::from_str(&output.state_json).unwrap();
+            if state.progress.objectives.is_empty() {
+                continue;
+            }
+
+            // Identify the boss NPC from the objective trigger
+            let boss_id = match &state.progress.objective_triggers[0] {
+                state::ObjectiveType::DefeatNpc(id) => *id,
+                _ => continue,
+            };
+            let boss = &state.world.npcs[&boss_id];
+
+            // Find the ACTUAL room the boss appears in (by searching loc.npcs)
+            let actual_room = state.world.locations.values()
+                .find(|loc| loc.npcs.contains(&boss_id));
+            assert!(actual_room.is_some(),
+                "seed {}: boss '{}' (id={}) not found in any room's npcs list",
+                seed, boss.name, boss_id);
+            let actual_room = actual_room.unwrap();
+
+            // boss.location must match the room that lists the boss
+            assert_eq!(boss.location, actual_room.id,
+                "seed {}: boss '{}' (id={}) has location={} but is in room '{}' (id={})",
+                seed, boss.name, boss_id, boss.location, actual_room.name, actual_room.id);
+
+            // The objective description must name the boss's actual room
+            let obj = &state.progress.objectives[0];
+            assert!(obj.description.contains(&actual_room.name),
+                "seed {}: objective description does not contain boss's actual room name.\nDescription: {}\nActual room: {} (id={})",
+                seed, obj.description, actual_room.name, actual_room.id);
+        }
+    }
 }

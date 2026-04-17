@@ -29,7 +29,8 @@ pub fn generate_npcs(
     npc_count: usize,
 ) -> HashMap<NpcId, Npc> {
     let mut npcs = HashMap::new();
-    let location_ids: Vec<LocationId> = locations.keys().copied().collect();
+    let mut location_ids: Vec<LocationId> = locations.keys().copied().collect();
+    location_ids.sort();
     if location_ids.is_empty() {
         return npcs;
     }
