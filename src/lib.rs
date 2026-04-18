@@ -1814,7 +1814,8 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
         Command::Attack(_) | Command::Approach(_) | Command::Retreat | Command::Dodge
         | Command::Disengage | Command::Dash | Command::TakeCover | Command::EndTurn
         | Command::OffHandAttack(_) | Command::BonusDash | Command::ReactionYes | Command::ReactionNo
-        | Command::Grapple(_) | Command::EscapeGrapple => {
+        | Command::Grapple(_) | Command::EscapeGrapple
+        | Command::Shove(_) | Command::ShoveProne(_) => {
             vec!["You're not in combat.".to_string()]
         }
         Command::NewGame => {
@@ -4551,6 +4552,57 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                     }
                 }
             }
+        }
+        Command::Shove(ref target_name) | Command::ShoveProne(ref target_name) => {
+            let knock_prone = matches!(command, Command::ShoveProne(_));
+            // Shove requires: action available, target within melee range (≤ 5 ft),
+            // target no more than 1 size category larger.
+            if combat.action_used {
+                state.active_combat = Some(combat);
+                return vec!["You've already used your action this turn.".to_string()];
+            }
+            // Resolve target.
+            let owned_candidates = build_combat_npc_candidates(&combat, state);
+            let candidates: Vec<(usize, &str)> = owned_candidates.iter()
+                .map(|(id, name)| (*id, name.as_str()))
+                .collect();
+            let target_id = match resolver::resolve_target(&target_name, &candidates) {
+                ResolveResult::Found(id) => id as u32,
+                ResolveResult::Ambiguous(opts) => {
+                    state.active_combat = Some(combat);
+                    let names: Vec<&str> = opts.iter().map(|(_, n)| n.as_str()).collect();
+                    return vec![format!("Did you mean: {}?", names.join(", "))];
+                }
+                ResolveResult::NotFound => {
+                    state.active_combat = Some(combat);
+                    return vec![format!("You don't see \"{}\" here.", target_name)];
+                }
+            };
+            // Distance check (shove is melee only, 5 ft).
+            let distance = *combat.distances.get(&target_id).unwrap_or(&30);
+            if distance > 5 {
+                state.active_combat = Some(combat);
+                return vec![
+                    "You're too far away to shove. Move closer first (approach <target>).".to_string()
+                ];
+            }
+            // Size check: target must not be more than 1 size category larger.
+            let target_size = state.world.npcs.get(&target_id)
+                .and_then(|n| n.combat_stats.as_ref())
+                .map(|s| s.size.clone())
+                .unwrap_or(combat::monsters::Size::Medium);
+            let shover_size = combat::monsters::Size::Medium; // PC is always Medium
+            if combat::target_exceeds_grapple_size_limit(&shover_size, &target_size) {
+                state.active_combat = Some(combat);
+                return vec![
+                    "The target is too large to shove.".to_string()
+                ];
+            }
+            combat.action_used = true;
+            let shove_lines = combat::handle_shove(
+                state, &mut combat, &mut rng, target_id, &target_name, knock_prone,
+            );
+            lines.extend(shove_lines);
         }
         Command::Unknown(s) => {
             state.active_combat = Some(combat);

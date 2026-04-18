@@ -1955,6 +1955,106 @@ pub fn release_grapple_on_npc(npc: &mut Npc, grappler_name: &str) {
     });
 }
 
+// ---------- Shove (2024 SRD) -------------------------------------------
+//
+// Shove: target makes a STR saving throw vs DC (8 + grappler STR mod + PB).
+// On failure:
+//   - push variant: narrative push 5 ft (distance +5 in 1D model).
+//   - knock prone: apply Prone condition to the NPC.
+// Target must not be more than one size category larger (same rule as grapple).
+
+/// Attempt to shove a target NPC. On a failed STR save the chosen effect is
+/// applied: push 5 ft away (narrative) or knock prone.
+///
+/// Returns narration lines. Marks `combat.action_used` on the caller's behalf
+/// to mirror the grapple pattern — callers MUST restore `state.active_combat`
+/// after collecting lines.
+///
+/// Returns `None` when the target does not exist or has no combat stats.
+pub fn handle_shove(
+    state: &mut GameState,
+    combat: &mut CombatState,
+    rng: &mut impl Rng,
+    target_id: u32,
+    target_name: &str,
+    knock_prone: bool,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+
+    // Compute DC: 8 + player STR mod + proficiency bonus.
+    let str_score = state.character.ability_scores
+        .get(&Ability::Strength).copied().unwrap_or(10);
+    let str_mod = Ability::modifier(str_score);
+    let pb = state.character.proficiency_bonus();
+    let dc = 8 + str_mod + pb;
+
+    // Roll NPC STR saving throw.
+    let npc = match state.world.npcs.get(&target_id) {
+        Some(n) => n,
+        None => {
+            lines.push(format!("You don't see \"{}\" here.", target_name));
+            return lines;
+        }
+    };
+    let stats = match npc.combat_stats.as_ref() {
+        Some(s) => s,
+        None => {
+            lines.push(format!("You can't shove {}.", target_name));
+            return lines;
+        }
+    };
+    let npc_display = npc.name.clone();
+    let npc_str = stats.ability_scores.get(&Ability::Strength).copied().unwrap_or(10);
+    let npc_str_mod = Ability::modifier(npc_str);
+    let roll = roll_d20(rng);
+    let npc_total = roll + npc_str_mod;
+
+    if npc_total >= dc {
+        // NPC succeeds: resists the shove.
+        lines.push(format!(
+            "{} resists the shove! (STR save: {}+{}={} vs DC {})",
+            npc_display, roll, npc_str_mod, npc_total, dc
+        ));
+        return lines;
+    }
+
+    // NPC fails the save.
+    if knock_prone {
+        // Apply Prone condition.
+        let new_cond = ActiveCondition::new(
+            ConditionType::Prone,
+            ConditionDuration::Permanent,
+        );
+        let npc_mut = match state.world.npcs.get_mut(&target_id) {
+            Some(n) => n,
+            None => return lines,
+        };
+        let applied = try_apply_condition_to_npc(npc_mut, new_cond);
+        if applied {
+            lines.push(format!(
+                "You knock {} prone! (STR save: {}+{}={} vs DC {})",
+                npc_display, roll, npc_str_mod, npc_total, dc
+            ));
+        } else {
+            lines.push(format!(
+                "{} fails the save but is immune to Prone. (STR save: {}+{}={} vs DC {})",
+                npc_display, roll, npc_str_mod, npc_total, dc
+            ));
+        }
+    } else {
+        // Push: increase distance by 5 ft (narrative push).
+        let current_dist = combat.distances.get(&target_id).copied().unwrap_or(5);
+        let new_dist = current_dist.saturating_add(5);
+        combat.distances.insert(target_id, new_dist);
+        lines.push(format!(
+            "You shove {} back 5 feet! (STR save: {}+{}={} vs DC {})",
+            npc_display, roll, npc_str_mod, npc_total, dc
+        ));
+    }
+
+    lines
+}
+
 /// Cleave: on a melee hit, if another hostile NPC is within 5 ft of the
 /// player (i.e., in melee range), make a second attack roll against that
 /// NPC with the same weapon. Damage ability modifier is omitted unless
@@ -4865,5 +4965,190 @@ mod tests {
             assert_eq!(cover.save_bonus(), cover.ac_bonus(),
                 "save_bonus should equal ac_bonus for {:?}", cover);
         }
+    }
+
+    // ---- Shove tests (2024 SRD) ----
+
+    fn test_state_with_large_goblin() -> GameState {
+        // Like test_state_with_goblin but with a Large size NPC.
+        let character = test_character();
+        let mut stats = goblin_stats();
+        stats.size = crate::combat::monsters::Size::Large;
+        let mut npcs = HashMap::new();
+        npcs.insert(0, Npc {
+            id: 0,
+            name: "Giant".to_string(),
+            role: NpcRole::Guard,
+            disposition: Disposition::Hostile,
+            dialogue_tags: vec![],
+            location: 0,
+            combat_stats: Some(stats),
+            conditions: Vec::new(),
+        });
+        GameState {
+            version: SAVE_VERSION.to_string(),
+            character,
+            current_location: 0,
+            discovered_locations: HashSet::new(),
+            world: WorldState {
+                locations: HashMap::new(), npcs, items: HashMap::new(),
+                triggers: HashMap::new(), triggered: HashSet::new(),
+            },
+            log: Vec::new(),
+            rng_seed: 42,
+            rng_counter: 0,
+            game_phase: GamePhase::Exploration,
+            active_combat: None,
+            ironman_mode: false,
+            progress: crate::state::ProgressState::default(),
+            in_world_minutes: 0,
+            last_long_rest_minutes: None,
+            pending_background_pattern: None,
+            pending_subrace: None,
+            pending_disambiguation: None,
+        }
+    }
+
+    fn test_state_with_huge_goblin() -> GameState {
+        let character = test_character();
+        let mut stats = goblin_stats();
+        stats.size = crate::combat::monsters::Size::Huge;
+        let mut npcs = HashMap::new();
+        npcs.insert(0, Npc {
+            id: 0,
+            name: "Dragon".to_string(),
+            role: NpcRole::Guard,
+            disposition: Disposition::Hostile,
+            dialogue_tags: vec![],
+            location: 0,
+            combat_stats: Some(stats),
+            conditions: Vec::new(),
+        });
+        GameState {
+            version: SAVE_VERSION.to_string(),
+            character,
+            current_location: 0,
+            discovered_locations: HashSet::new(),
+            world: WorldState {
+                locations: HashMap::new(), npcs, items: HashMap::new(),
+                triggers: HashMap::new(), triggered: HashSet::new(),
+            },
+            log: Vec::new(),
+            rng_seed: 42,
+            rng_counter: 0,
+            game_phase: GamePhase::Exploration,
+            active_combat: None,
+            ironman_mode: false,
+            progress: crate::state::ProgressState::default(),
+            in_world_minutes: 0,
+            last_long_rest_minutes: None,
+            pending_background_pattern: None,
+            pending_subrace: None,
+            pending_disambiguation: None,
+        }
+    }
+
+    /// Find a seed where the NPC fails its STR save against our test character.
+    fn find_shove_success_seed() -> u64 {
+        // test_character() has STR 17 (16 base + 1 human) at level 1:
+        //   STR mod = +3, PB = 2 -> DC = 13.
+        // goblin_stats has STR 8 -> mod -1.
+        // NPC fails on d20 + (-1) < 13, i.e. d20 <= 13.
+        // That is common; seed 0 should work.
+        for seed in 0..1000u64 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let roll = roll_d20(&mut rng);
+            if roll - 1 < 13 { // -1 is goblin's STR mod
+                return seed;
+            }
+        }
+        panic!("Could not find a seed where goblin fails STR save");
+    }
+
+    /// Find a seed where the NPC succeeds its STR save.
+    fn find_shove_fail_seed() -> u64 {
+        for seed in 0..1000u64 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let roll = roll_d20(&mut rng);
+            if roll - 1 >= 13 {
+                return seed;
+            }
+        }
+        panic!("Could not find a seed where goblin succeeds STR save");
+    }
+
+    #[test]
+    fn test_shove_push_npc_fails_save() {
+        let seed = find_shove_success_seed();
+        let mut rng = StdRng::seed_from_u64(seed);
+        let mut state = test_state_with_goblin();
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        combat.distances.insert(0, 5);
+        let initial_dist = 5u32;
+
+        let mut rng2 = StdRng::seed_from_u64(seed);
+        let lines = handle_shove(&mut state, &mut combat, &mut rng2, 0, "goblin", false);
+
+        assert!(lines.iter().any(|l| l.contains("shove") || l.contains("back")),
+            "Should report push message: {:?}", lines);
+        let new_dist = *combat.distances.get(&0).unwrap();
+        assert_eq!(new_dist, initial_dist + 5, "Pushed NPC should be 5 ft further");
+        assert!(!conditions::has_condition(&state.world.npcs[&0].conditions, ConditionType::Prone),
+            "Push variant should not apply Prone");
+    }
+
+    #[test]
+    fn test_shove_prone_npc_fails_save() {
+        let seed = find_shove_success_seed();
+        let mut rng = StdRng::seed_from_u64(seed);
+        let mut state = test_state_with_goblin();
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        combat.distances.insert(0, 5);
+
+        let mut rng2 = StdRng::seed_from_u64(seed);
+        let lines = handle_shove(&mut state, &mut combat, &mut rng2, 0, "goblin", true);
+
+        assert!(lines.iter().any(|l| l.to_lowercase().contains("prone")),
+            "Should report prone message: {:?}", lines);
+        assert!(conditions::has_condition(&state.world.npcs[&0].conditions, ConditionType::Prone),
+            "Prone condition should be applied on failed save");
+    }
+
+    #[test]
+    fn test_shove_npc_succeeds_save() {
+        let seed = find_shove_fail_seed();
+        let mut rng = StdRng::seed_from_u64(seed);
+        let mut state = test_state_with_goblin();
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        combat.distances.insert(0, 5);
+        let initial_dist = 5u32;
+
+        let mut rng2 = StdRng::seed_from_u64(seed);
+        let lines = handle_shove(&mut state, &mut combat, &mut rng2, 0, "goblin", false);
+
+        assert!(lines.iter().any(|l| l.contains("resists")),
+            "Should report resist message: {:?}", lines);
+        let new_dist = *combat.distances.get(&0).unwrap();
+        assert_eq!(new_dist, initial_dist, "Distance should be unchanged on resist");
+        assert!(!conditions::has_condition(&state.world.npcs[&0].conditions, ConditionType::Prone),
+            "No Prone should be applied when NPC resists");
+    }
+
+    #[test]
+    fn test_shove_size_restriction_large_is_ok() {
+        // PC (Medium) can shove a Large target — it's only 1 category larger.
+        let target_size = crate::combat::monsters::Size::Large;
+        let shover_size = crate::combat::monsters::Size::Medium;
+        assert!(!target_exceeds_grapple_size_limit(&shover_size, &target_size),
+            "Medium player should be able to shove Large target");
+    }
+
+    #[test]
+    fn test_shove_size_restriction_huge_blocked() {
+        // PC (Medium) cannot shove a Huge target — 2 categories larger.
+        let target_size = crate::combat::monsters::Size::Huge;
+        let shover_size = crate::combat::monsters::Size::Medium;
+        assert!(target_exceeds_grapple_size_limit(&shover_size, &target_size),
+            "Medium player should NOT be able to shove Huge target");
     }
 }

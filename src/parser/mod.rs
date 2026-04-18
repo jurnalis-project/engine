@@ -55,6 +55,11 @@ pub enum Command {
     /// Attempt to escape from a grapple. No argument; orchestrator looks for
     /// an active Grappled condition on the player.
     EscapeGrapple,
+    // Shove commands (2024 SRD unarmed strike option)
+    /// Shove a target 5 feet away (push, no prone). Argument is a free-form target name.
+    Shove(String),
+    /// Shove a target and knock them prone. Argument is a free-form target name.
+    ShoveProne(String),
     // Rest commands
     ShortRest,
     LongRest,
@@ -204,6 +209,14 @@ pub fn parse(input: &str) -> Command {
             "escape grapple" | "break grapple" | "break free" => {
                 return Command::EscapeGrapple;
             }
+            // Shove prone (2024 SRD): "shove prone <target>" / "push prone <target>"
+            "shove prone" | "push prone" => {
+                return if rest.is_empty() {
+                    Command::Unknown("Shove prone whom?".to_string())
+                } else {
+                    Command::ShoveProne(rest)
+                };
+            }
             "spell list" | "known spells" | "my spells" => {
                 return Command::Spells;
             }
@@ -335,6 +348,13 @@ pub fn parse(input: &str) -> Command {
                 Command::Unknown("Grapple whom?".to_string())
             } else {
                 Command::Grapple(args)
+            }
+        }
+        "shove" | "push" => {
+            if args.is_empty() {
+                Command::Unknown("Shove whom?".to_string())
+            } else {
+                Command::Shove(args)
             }
         }
         "escape" => Command::EscapeGrapple,
