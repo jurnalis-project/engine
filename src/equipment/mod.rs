@@ -84,7 +84,7 @@ pub const SRD_WEAPONS: &[WeaponDef] = &[
     WeaponDef { name: "Greataxe", category: WeaponCategory::Martial, cost_cp: 3000, damage_dice: 1, damage_die: 12, damage_type: DamageType::Slashing, weight_qp: 28, properties: HEAVY | TWO_HANDED, versatile_die: 0, range_normal: 0, range_long: 0, mastery: Mastery::Cleave },
     WeaponDef { name: "Greatsword", category: WeaponCategory::Martial, cost_cp: 5000, damage_dice: 2, damage_die: 6, damage_type: DamageType::Slashing, weight_qp: 24, properties: HEAVY | TWO_HANDED, versatile_die: 0, range_normal: 0, range_long: 0, mastery: Mastery::Graze },
     WeaponDef { name: "Halberd", category: WeaponCategory::Martial, cost_cp: 2000, damage_dice: 1, damage_die: 10, damage_type: DamageType::Slashing, weight_qp: 24, properties: HEAVY | REACH | TWO_HANDED, versatile_die: 0, range_normal: 0, range_long: 0, mastery: Mastery::Cleave },
-    WeaponDef { name: "Lance", category: WeaponCategory::Martial, cost_cp: 1000, damage_dice: 1, damage_die: 12, damage_type: DamageType::Piercing, weight_qp: 24, properties: REACH | SPECIAL, versatile_die: 0, range_normal: 0, range_long: 0, mastery: Mastery::Topple },
+    WeaponDef { name: "Lance", category: WeaponCategory::Martial, cost_cp: 1000, damage_dice: 1, damage_die: 10, damage_type: DamageType::Piercing, weight_qp: 24, properties: HEAVY | REACH | TWO_HANDED | SPECIAL, versatile_die: 0, range_normal: 0, range_long: 0, mastery: Mastery::Topple },
     WeaponDef { name: "Longsword", category: WeaponCategory::Martial, cost_cp: 1500, damage_dice: 1, damage_die: 8, damage_type: DamageType::Slashing, weight_qp: 12, properties: VERSATILE, versatile_die: 10, range_normal: 0, range_long: 0, mastery: Mastery::Sap },
     WeaponDef { name: "Maul", category: WeaponCategory::Martial, cost_cp: 1000, damage_dice: 2, damage_die: 6, damage_type: DamageType::Bludgeoning, weight_qp: 40, properties: HEAVY | TWO_HANDED, versatile_die: 0, range_normal: 0, range_long: 0, mastery: Mastery::Topple },
     WeaponDef { name: "Morningstar", category: WeaponCategory::Martial, cost_cp: 1500, damage_dice: 1, damage_die: 8, damage_type: DamageType::Piercing, weight_qp: 16, properties: 0, versatile_die: 0, range_normal: 0, range_long: 0, mastery: Mastery::Sap },
@@ -92,8 +92,8 @@ pub const SRD_WEAPONS: &[WeaponDef] = &[
     WeaponDef { name: "Rapier", category: WeaponCategory::Martial, cost_cp: 2500, damage_dice: 1, damage_die: 8, damage_type: DamageType::Piercing, weight_qp: 8, properties: FINESSE, versatile_die: 0, range_normal: 0, range_long: 0, mastery: Mastery::Vex },
     WeaponDef { name: "Scimitar", category: WeaponCategory::Martial, cost_cp: 2500, damage_dice: 1, damage_die: 6, damage_type: DamageType::Slashing, weight_qp: 12, properties: FINESSE | LIGHT, versatile_die: 0, range_normal: 0, range_long: 0, mastery: Mastery::Nick },
     WeaponDef { name: "Shortsword", category: WeaponCategory::Martial, cost_cp: 1000, damage_dice: 1, damage_die: 6, damage_type: DamageType::Piercing, weight_qp: 8, properties: FINESSE | LIGHT, versatile_die: 0, range_normal: 0, range_long: 0, mastery: Mastery::Vex },
-    WeaponDef { name: "Trident", category: WeaponCategory::Martial, cost_cp: 500, damage_dice: 1, damage_die: 6, damage_type: DamageType::Piercing, weight_qp: 16, properties: THROWN | VERSATILE, versatile_die: 8, range_normal: 20, range_long: 60, mastery: Mastery::Topple },
-    WeaponDef { name: "War Pick", category: WeaponCategory::Martial, cost_cp: 500, damage_dice: 1, damage_die: 8, damage_type: DamageType::Piercing, weight_qp: 8, properties: 0, versatile_die: 0, range_normal: 0, range_long: 0, mastery: Mastery::Sap },
+    WeaponDef { name: "Trident", category: WeaponCategory::Martial, cost_cp: 500, damage_dice: 1, damage_die: 8, damage_type: DamageType::Piercing, weight_qp: 16, properties: THROWN | VERSATILE, versatile_die: 10, range_normal: 20, range_long: 60, mastery: Mastery::Topple },
+    WeaponDef { name: "War Pick", category: WeaponCategory::Martial, cost_cp: 500, damage_dice: 1, damage_die: 8, damage_type: DamageType::Piercing, weight_qp: 8, properties: VERSATILE, versatile_die: 10, range_normal: 0, range_long: 0, mastery: Mastery::Sap },
     WeaponDef { name: "Warhammer", category: WeaponCategory::Martial, cost_cp: 1500, damage_dice: 1, damage_die: 8, damage_type: DamageType::Bludgeoning, weight_qp: 20, properties: VERSATILE, versatile_die: 10, range_normal: 0, range_long: 0, mastery: Mastery::Push },
     WeaponDef { name: "Whip", category: WeaponCategory::Martial, cost_cp: 200, damage_dice: 1, damage_die: 4, damage_type: DamageType::Slashing, weight_qp: 12, properties: FINESSE | REACH, versatile_die: 0, range_normal: 0, range_long: 0, mastery: Mastery::Slow },
     // === Martial Ranged ===
@@ -103,10 +103,6 @@ pub const SRD_WEAPONS: &[WeaponDef] = &[
     WeaponDef { name: "Longbow", category: WeaponCategory::Martial, cost_cp: 5000, damage_dice: 1, damage_die: 8, damage_type: DamageType::Piercing, weight_qp: 8, properties: AMMUNITION | HEAVY | TWO_HANDED, versatile_die: 0, range_normal: 150, range_long: 600, mastery: Mastery::Slow },
     WeaponDef { name: "Musket", category: WeaponCategory::Martial, cost_cp: 50000, damage_dice: 1, damage_die: 12, damage_type: DamageType::Piercing, weight_qp: 40, properties: AMMUNITION | LOADING | TWO_HANDED, versatile_die: 0, range_normal: 40, range_long: 120, mastery: Mastery::Slow },
     WeaponDef { name: "Pistol", category: WeaponCategory::Martial, cost_cp: 25000, damage_dice: 1, damage_die: 10, damage_type: DamageType::Piercing, weight_qp: 12, properties: AMMUNITION | LOADING, versatile_die: 0, range_normal: 30, range_long: 90, mastery: Mastery::Vex },
-    // Net is a SPECIAL weapon with no SRD-listed mastery (it never deals
-    // damage, so mastery hooks never fire). Filler Slow keeps the schema
-    // uniform; see the mastery tests for rationale.
-    WeaponDef { name: "Net", category: WeaponCategory::Martial, cost_cp: 100, damage_dice: 0, damage_die: 0, damage_type: DamageType::Bludgeoning, weight_qp: 12, properties: SPECIAL | THROWN, versatile_die: 0, range_normal: 5, range_long: 15, mastery: Mastery::Slow },
 ];
 
 pub const SRD_ARMOR: &[ArmorDef] = &[
@@ -331,7 +327,7 @@ mod tests {
 
     #[test]
     fn test_srd_weapons_count() {
-        assert_eq!(SRD_WEAPONS.len(), 39);
+        assert_eq!(SRD_WEAPONS.len(), 38);
     }
 
     #[test]
@@ -398,12 +394,34 @@ mod tests {
     }
 
     #[test]
-    fn test_net_zero_damage() {
-        let net = SRD_WEAPONS.iter().find(|w| w.name == "Net").unwrap();
-        assert_eq!(net.damage_dice, 0);
-        assert_eq!(net.damage_die, 0);
-        assert!(net.properties & SPECIAL != 0);
-        assert!(net.properties & THROWN != 0);
+    fn test_lance_properties() {
+        let lance = SRD_WEAPONS.iter().find(|w| w.name == "Lance").unwrap();
+        assert_eq!(lance.damage_die, 10);
+        assert!(lance.properties & HEAVY != 0);
+        assert!(lance.properties & REACH != 0);
+        assert!(lance.properties & TWO_HANDED != 0);
+        assert!(lance.properties & SPECIAL != 0);
+    }
+
+    #[test]
+    fn test_trident_properties() {
+        let trident = SRD_WEAPONS.iter().find(|w| w.name == "Trident").unwrap();
+        assert_eq!(trident.damage_die, 8);
+        assert_eq!(trident.versatile_die, 10);
+        assert!(trident.properties & VERSATILE != 0);
+    }
+
+    #[test]
+    fn test_war_pick_versatile() {
+        let wp = SRD_WEAPONS.iter().find(|w| w.name == "War Pick").unwrap();
+        assert!(wp.properties & VERSATILE != 0);
+        assert_eq!(wp.versatile_die, 10);
+    }
+
+    #[test]
+    fn test_net_not_in_srd_weapons() {
+        assert!(SRD_WEAPONS.iter().find(|w| w.name == "Net").is_none(),
+            "Net must not be in SRD_WEAPONS — it is adventuring gear, not a weapon");
     }
 
     // Hypothesis: SRD_WEAPONS is missing the two Martial Ranged firearms
@@ -612,12 +630,6 @@ mod tests {
         assert_eq!(find("Longbow").mastery, Mastery::Slow);
         assert_eq!(find("Musket").mastery, Mastery::Slow);
         assert_eq!(find("Pistol").mastery, Mastery::Vex);
-        // Net is a SPECIAL weapon. The SRD mastery table does not enumerate
-        // it because Net has no dice damage, but the engine still requires
-        // every WeaponDef to carry a mastery. We assign Slow as a harmless
-        // filler — the combat hooks check mastery unlock + damage dealt,
-        // and Net never deals damage, so Slow never fires.
-        assert_eq!(find("Net").mastery, Mastery::Slow);
     }
 
     #[test]
