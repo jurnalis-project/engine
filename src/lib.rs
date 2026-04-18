@@ -1803,7 +1803,8 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
         }
         Command::Attack(_) | Command::Approach(_) | Command::Retreat | Command::Dodge
         | Command::Disengage | Command::Dash | Command::EndTurn
-        | Command::OffHandAttack(_) | Command::BonusDash | Command::ReactionYes | Command::ReactionNo => {
+        | Command::OffHandAttack(_) | Command::BonusDash | Command::ReactionYes | Command::ReactionNo
+        | Command::Grapple(_) | Command::EscapeGrapple => {
             vec!["You're not in combat.".to_string()]
         }
         Command::NewGame => {
@@ -4298,6 +4299,150 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
             combat.bonus_action_used = true;
             lines.push(format!("You spend a Ki point on {}. ({} Ki remaining)",
                 ability, state.character.class_features.ki_points_remaining));
+        }
+        Command::Grapple(target_name) => {
+            // Grapple requires: action available, a free hand, target within
+            // melee range (≤ 5 ft), target no more than 1 size larger.
+            if combat.action_used {
+                state.active_combat = Some(combat);
+                return vec!["You've already used your action this turn.".to_string()];
+            }
+            // Free-hand check.
+            let has_free_hand = state.character.equipped.main_hand.is_none()
+                || state.character.equipped.off_hand.is_none();
+            if !has_free_hand {
+                state.active_combat = Some(combat);
+                return vec!["You need a free hand to grapple.".to_string()];
+            }
+            // Resolve target.
+            let owned_candidates = build_combat_npc_candidates(&combat, state);
+            let candidates: Vec<(usize, &str)> = owned_candidates.iter()
+                .map(|(id, name)| (*id, name.as_str()))
+                .collect();
+            let target_id = match resolver::resolve_target(&target_name, &candidates) {
+                ResolveResult::Found(id) => id as u32,
+                ResolveResult::Ambiguous(opts) => {
+                    state.active_combat = Some(combat);
+                    let names: Vec<&str> = opts.iter().map(|(_, n)| n.as_str()).collect();
+                    return vec![format!("Did you mean: {}?", names.join(", "))];
+                }
+                ResolveResult::NotFound => {
+                    state.active_combat = Some(combat);
+                    return vec![format!("You don't see \"{}\" here.", target_name)];
+                }
+            };
+            // Distance check (grapple is melee only, 5 ft).
+            let distance = *combat.distances.get(&target_id).unwrap_or(&30);
+            if distance > 5 {
+                state.active_combat = Some(combat);
+                return vec![
+                    "You're too far away to grapple. Move closer first (approach <target>).".to_string()
+                ];
+            }
+            // Size check: target must not be more than 1 size category larger.
+            let target_size = state.world.npcs.get(&target_id)
+                .and_then(|n| n.combat_stats.as_ref())
+                .map(|s| s.size.clone())
+                .unwrap_or(combat::monsters::Size::Medium);
+            let grappler_size = combat::monsters::Size::Medium; // PC is always Medium
+            if combat::target_exceeds_grapple_size_limit(&grappler_size, &target_size) {
+                state.active_combat = Some(combat);
+                return vec![
+                    "You can't grapple a creature that large — targets must be no more than one size category larger than you.".to_string()
+                ];
+            }
+            let npc_name = state.world.npcs.get(&target_id)
+                .map(|n| n.name.clone())
+                .unwrap_or_else(|| "the enemy".to_string());
+            // Grappler feat grants advantage.
+            let has_grappler_feat = state.character.origin_feat.as_deref() == Some("Grappler")
+                || state.character.general_feats.iter().any(|f| f == "Grappler");
+            let str_score = state.character.ability_scores
+                .get(&Ability::Strength).copied().unwrap_or(10);
+            let pb = state.character.proficiency_bonus();
+            // Clone the player name before the mutable borrow of state.
+            let player_name = state.character.name.clone();
+            let result = combat::resolve_grapple_attempt(
+                &mut rng, state, target_id,
+                str_score, pb,
+                &player_name,
+                has_grappler_feat,
+            );
+            combat.action_used = true;
+            match result {
+                None => {
+                    lines.push(format!(
+                        "You reach for {} but they slip away before you can grab them.",
+                        npc_name
+                    ));
+                }
+                Some(r) => {
+                    let ability_name = match r.save_ability {
+                        Ability::Strength => "STR",
+                        Ability::Dexterity => "DEX",
+                        _ => "save",
+                    };
+                    if r.success {
+                        lines.push(format!(
+                            "You grab {} and hold on tight! \
+                             ({} save: {}+{}={} vs DC {} — fails). {} is Grappled (speed 0).",
+                            npc_name, ability_name,
+                            r.target_d20, r.target_save_total - r.target_d20, r.target_save_total,
+                            r.dc, npc_name
+                        ));
+                        if has_grappler_feat {
+                            lines.push("(Grappler feat: advantage on the attempt.)".to_string());
+                        }
+                    } else {
+                        lines.push(format!(
+                            "{} resists your grapple! \
+                             ({} save: {}+{}={} vs DC {} — succeeds).",
+                            npc_name, ability_name,
+                            r.target_d20, r.target_save_total - r.target_d20, r.target_save_total,
+                            r.dc
+                        ));
+                    }
+                }
+            }
+        }
+        Command::EscapeGrapple => {
+            // Escape requires: action available, player must be grappled.
+            if combat.action_used {
+                state.active_combat = Some(combat);
+                return vec!["You've already used your action this turn.".to_string()];
+            }
+            let result = combat::resolve_escape_grapple(&mut rng, state);
+            match result {
+                None => {
+                    state.active_combat = Some(combat);
+                    return vec!["You are not grappled.".to_string()];
+                }
+                Some(r) => {
+                    combat.action_used = true;
+                    let skill_name = match r.skill_used {
+                        Skill::Athletics => "Athletics (STR)",
+                        Skill::Acrobatics => "Acrobatics (DEX)",
+                        _ => "check",
+                    };
+                    if r.success {
+                        lines.push(format!(
+                            "You break free of the grapple! \
+                             ({}: {}+{}={} vs DC {} — succeeds). You are no longer Grappled.",
+                            skill_name,
+                            r.player_d20, r.player_total - r.player_d20, r.player_total,
+                            r.dc
+                        ));
+                    } else {
+                        lines.push(format!(
+                            "You struggle but can't break free! \
+                             ({}: {}+{}={} vs DC {} — fails). You remain Grappled.",
+                            skill_name,
+                            r.player_d20, r.player_total - r.player_d20, r.player_total,
+                            r.dc
+                        ));
+                    }
+                }
+            }
         }
         Command::Unknown(s) => {
             state.active_combat = Some(combat);

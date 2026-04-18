@@ -49,6 +49,12 @@ pub enum Command {
     /// Decline a pending reaction prompt. Only meaningful when
     /// `CombatState::pending_reaction` is Some.
     ReactionNo,
+    // Grappling commands
+    /// Attempt to grapple an NPC. Argument is a free-form target name.
+    Grapple(String),
+    /// Attempt to escape from a grapple. No argument; orchestrator looks for
+    /// an active Grappled condition on the player.
+    EscapeGrapple,
     // Rest commands
     ShortRest,
     LongRest,
@@ -188,6 +194,9 @@ pub fn parse(input: &str) -> Command {
             "end turn" => {
                 return Command::EndTurn;
             }
+            "escape grapple" | "break grapple" | "break free" => {
+                return Command::EscapeGrapple;
+            }
             "spell list" | "known spells" | "my spells" => {
                 return Command::Spells;
             }
@@ -301,6 +310,14 @@ pub fn parse(input: &str) -> Command {
                 Command::Attack(args)
             }
         }
+        "grapple" | "wrestle" | "seize" => {
+            if args.is_empty() {
+                Command::Unknown("Grapple whom?".to_string())
+            } else {
+                Command::Grapple(args)
+            }
+        }
+        "escape" => Command::EscapeGrapple,
         "approach" | "advance" | "close" => {
             if args.is_empty() { Command::Unknown("Approach what?".to_string()) } else { Command::Approach(args) }
         }
@@ -1092,5 +1109,39 @@ mod tests {
             }
             other => panic!("Expected Unknown for bare 'rest', got {:?}", other),
         }
+    }
+
+    // ---- Grappling commands (feat/grappling-mechanics) ----
+
+    #[test]
+    fn test_grapple_command() {
+        assert_eq!(parse("grapple goblin"), Command::Grapple("goblin".to_string()));
+        assert_eq!(parse("wrestle orc"), Command::Grapple("orc".to_string()));
+        assert_eq!(parse("seize bandit"), Command::Grapple("bandit".to_string()));
+    }
+
+    #[test]
+    fn test_grapple_multi_word_target() {
+        assert_eq!(parse("grapple giant rat"), Command::Grapple("giant rat".to_string()));
+    }
+
+    #[test]
+    fn test_grapple_bare_verb_error() {
+        match parse("grapple") {
+            Command::Unknown(s) => assert!(s.to_lowercase().contains("whom")),
+            other => panic!("Expected Unknown, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_escape_grapple_phrases() {
+        assert_eq!(parse("escape grapple"), Command::EscapeGrapple);
+        assert_eq!(parse("break grapple"), Command::EscapeGrapple);
+        assert_eq!(parse("break free"), Command::EscapeGrapple);
+    }
+
+    #[test]
+    fn test_escape_bare_verb() {
+        assert_eq!(parse("escape"), Command::EscapeGrapple);
     }
 }
