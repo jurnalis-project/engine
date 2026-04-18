@@ -17,7 +17,7 @@ use std::collections::{HashMap, HashSet};
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 
-use output::GameOutput;
+use output::{GameOutput, format_roll};
 use parser::Command;
 use parser::resolver::{self, ResolveResult};
 use state::{GameState, GamePhase, CreationStep, PendingDisambiguation, SAVE_VERSION};
@@ -1904,8 +1904,12 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
         Command::Unknown(s) => {
             if s.is_empty() {
                 vec![]
-            } else {
+            } else if s.to_lowercase() == input.trim().to_lowercase() {
+                // The parser echoed the raw user input — it's truly unrecognised.
                 vec![narration::templates::UNKNOWN_COMMAND.replace("{input}", &s)]
+            } else {
+                // The parser generated a disambiguation hint — return it directly.
+                vec![s]
             }
         }
     }
@@ -2307,9 +2311,10 @@ fn resolve_single_npc_attack(
             lines.push(format!("{} {} {} -- CRITICAL HIT! {} {} damage!",
                 npc_name, verb, result.weapon_name, result.damage, result.damage_type));
         } else {
-            lines.push(format!("{} {} {} ({}+{}={} vs AC {}){} -- hit for {} {} damage.",
-                npc_name, verb, result.weapon_name, result.attack_roll,
-                attack.hit_bonus, result.total_attack, player_ac, disadv,
+            lines.push(format!("{} {} {} ({} vs AC {}){} -- hit for {} {} damage.",
+                npc_name, verb, result.weapon_name,
+                format_roll(result.attack_roll, attack.hit_bonus, result.total_attack),
+                player_ac, disadv,
                 result.damage, result.damage_type));
         }
         // Concentration check: if the player is concentrating on a spell,
@@ -2318,9 +2323,10 @@ fn resolve_single_npc_attack(
     } else if result.natural_1 {
         lines.push(format!("{} {} {} -- natural 1, miss!", npc_name, verb, result.weapon_name));
     } else {
-        lines.push(format!("{} {} {} ({}+{}={} vs AC {}){} -- miss.",
-            npc_name, verb, result.weapon_name, result.attack_roll,
-            attack.hit_bonus, result.total_attack, player_ac, disadv));
+        lines.push(format!("{} {} {} ({} vs AC {}){} -- miss.",
+            npc_name, verb, result.weapon_name,
+            format_roll(result.attack_roll, attack.hit_bonus, result.total_attack),
+            player_ac, disadv));
     }
     lines
 }
@@ -2973,14 +2979,16 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                                     npc_name, result.weapon_name, result.damage, result.damage_type));
                             }
                         } else if is_unarmed {
-                            lines.push(format!("You punch {} ({}+{}={} vs AC {}) -- hit for {} {} damage.",
-                                npc_name, result.attack_roll,
-                                result.total_attack - result.attack_roll, result.total_attack, target_ac,
+                            lines.push(format!("You punch {} ({} vs AC {}) -- hit for {} {} damage.",
+                                npc_name,
+                                format_roll(result.attack_roll, result.total_attack - result.attack_roll, result.total_attack),
+                                target_ac,
                                 result.damage, result.damage_type));
                         } else {
-                            lines.push(format!("You attack {} with {} ({}+{}={} vs AC {}) -- hit for {} {} damage.",
-                                npc_name, result.weapon_name, result.attack_roll,
-                                result.total_attack - result.attack_roll, result.total_attack, target_ac,
+                            lines.push(format!("You attack {} with {} ({} vs AC {}) -- hit for {} {} damage.",
+                                npc_name, result.weapon_name,
+                                format_roll(result.attack_roll, result.total_attack - result.attack_roll, result.total_attack),
+                                target_ac,
                                 result.damage, result.damage_type));
                         }
                     } else if result.natural_1 {
@@ -2991,13 +2999,15 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                                 npc_name, result.weapon_name));
                         }
                     } else if is_unarmed {
-                        lines.push(format!("You swing at {} ({}+{}={} vs AC {}) -- miss.",
-                            npc_name, result.attack_roll,
-                            result.total_attack - result.attack_roll, result.total_attack, target_ac));
+                        lines.push(format!("You swing at {} ({} vs AC {}) -- miss.",
+                            npc_name,
+                            format_roll(result.attack_roll, result.total_attack - result.attack_roll, result.total_attack),
+                            target_ac));
                     } else {
-                        lines.push(format!("You attack {} with {} ({}+{}={} vs AC {}) -- miss.",
-                            npc_name, result.weapon_name, result.attack_roll,
-                            result.total_attack - result.attack_roll, result.total_attack, target_ac));
+                        lines.push(format!("You attack {} with {} ({} vs AC {}) -- miss.",
+                            npc_name, result.weapon_name,
+                            format_roll(result.attack_roll, result.total_attack - result.attack_roll, result.total_attack),
+                            target_ac));
                     }
                     if result.disadvantage {
                         lines.push("(Rolled with disadvantage)".to_string());
@@ -3340,9 +3350,9 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                             ));
                         } else {
                             lines.push(format!(
-                                "You strike {} with your off-hand {} ({}+{}={} vs AC {}) -- hit for {} {} damage.",
-                                npc_name, result.weapon_name, result.attack_roll,
-                                result.total_attack - result.attack_roll, result.total_attack,
+                                "You strike {} with your off-hand {} ({} vs AC {}) -- hit for {} {} damage.",
+                                npc_name, result.weapon_name,
+                                format_roll(result.attack_roll, result.total_attack - result.attack_roll, result.total_attack),
                                 target_ac, adjusted_damage, result.damage_type
                             ));
                         }
@@ -3353,9 +3363,9 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                         ));
                     } else {
                         lines.push(format!(
-                            "You strike with your off-hand {} ({}+{}={} vs AC {}) -- miss.",
-                            result.weapon_name, result.attack_roll,
-                            result.total_attack - result.attack_roll, result.total_attack,
+                            "You strike with your off-hand {} ({} vs AC {}) -- miss.",
+                            result.weapon_name,
+                            format_roll(result.attack_roll, result.total_attack - result.attack_roll, result.total_attack),
                             target_ac
                         ));
                     }
@@ -3726,9 +3736,9 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                             .replace("{dc}", &dc.to_string()));
 
                         for result in &results {
-                            let save_str = format!("{}+{}={} vs DC {}",
-                                result.save_result.roll, result.save_result.modifier,
-                                result.save_result.total, result.save_result.dc);
+                            let save_str = format!("{} vs DC {}",
+                                format_roll(result.save_result.roll, result.save_result.modifier, result.save_result.total),
+                                result.save_result.dc);
                             if result.save_result.saved {
                                 lines.push(narration::templates::CAST_BURNING_HANDS_SAVE
                                     .replace("{target}", &result.name)
@@ -3837,9 +3847,9 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                             let npc_name = spell_target.name.clone();
                             let outcome = spells::resolve_sacred_flame(&mut rng, caster_score, prof_bonus, &spell_target);
                             if let spells::CastOutcome::SacredFlame { save_result, damage } = outcome {
-                                let save_str = format!("{}+{}={} vs DC {}",
-                                    save_result.roll, save_result.modifier,
-                                    save_result.total, save_result.dc);
+                                let save_str = format!("{} vs DC {}",
+                                    format_roll(save_result.roll, save_result.modifier, save_result.total),
+                                    save_result.dc);
                                 if save_result.saved {
                                     lines.push(narration::templates::CAST_SACRED_FLAME_SAVE
                                         .replace("{target}", &npc_name)
@@ -4048,9 +4058,9 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                             let npc_name = spell_target.name.clone();
                             let outcome = spells::resolve_vicious_mockery(&mut rng, caster_score, prof_bonus, &spell_target);
                             if let spells::CastOutcome::ViciousMockery { save_result, damage } = outcome {
-                                let save_str = format!("{}+{}={} vs DC {}",
-                                    save_result.roll, save_result.modifier,
-                                    save_result.total, save_result.dc);
+                                let save_str = format!("{} vs DC {}",
+                                    format_roll(save_result.roll, save_result.modifier, save_result.total),
+                                    save_result.dc);
                                 if save_result.saved {
                                     lines.push(narration::templates::CAST_VICIOUS_MOCKERY_SAVE
                                         .replace("{target}", &npc_name)
@@ -4109,9 +4119,9 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                             let npc_name = spell_target.name.clone();
                             let outcome = spells::resolve_charm_person(&mut rng, caster_score, prof_bonus, &spell_target);
                             if let spells::CastOutcome::CharmPerson { save_result } = outcome {
-                                let save_str = format!("{}+{}={} vs DC {}",
-                                    save_result.roll, save_result.modifier,
-                                    save_result.total, save_result.dc);
+                                let save_str = format!("{} vs DC {}",
+                                    format_roll(save_result.roll, save_result.modifier, save_result.total),
+                                    save_result.dc);
                                 if save_result.saved {
                                     lines.push(narration::templates::CAST_CHARM_PERSON_SAVE
                                         .replace("{target}", &npc_name)
@@ -4173,9 +4183,9 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                             let npc_name = spell_target.name.clone();
                             let outcome = spells::resolve_faerie_fire(&mut rng, caster_score, prof_bonus, &spell_target);
                             if let spells::CastOutcome::FaerieFire { save_result } = outcome {
-                                let save_str = format!("{}+{}={} vs DC {}",
-                                    save_result.roll, save_result.modifier,
-                                    save_result.total, save_result.dc);
+                                let save_str = format!("{} vs DC {}",
+                                    format_roll(save_result.roll, save_result.modifier, save_result.total),
+                                    save_result.dc);
                                 if save_result.saved {
                                     lines.push(narration::templates::CAST_FAERIE_FIRE_SAVE
                                         .replace("{target}", &npc_name)
@@ -4494,9 +4504,9 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                     if r.success {
                         lines.push(format!(
                             "You grab {} and hold on tight! \
-                             ({} save: {}+{}={} vs DC {} — fails). {} is Grappled (speed 0).",
+                             ({} save: {} vs DC {} — fails). {} is Grappled (speed 0).",
                             npc_name, ability_name,
-                            r.target_d20, r.target_save_total - r.target_d20, r.target_save_total,
+                            format_roll(r.target_d20, r.target_save_total - r.target_d20, r.target_save_total),
                             r.dc, npc_name
                         ));
                         if has_grappler_feat {
@@ -4505,9 +4515,9 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                     } else {
                         lines.push(format!(
                             "{} resists your grapple! \
-                             ({} save: {}+{}={} vs DC {} — succeeds).",
+                             ({} save: {} vs DC {} — succeeds).",
                             npc_name, ability_name,
-                            r.target_d20, r.target_save_total - r.target_d20, r.target_save_total,
+                            format_roll(r.target_d20, r.target_save_total - r.target_d20, r.target_save_total),
                             r.dc
                         ));
                     }
@@ -4536,17 +4546,17 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                     if r.success {
                         lines.push(format!(
                             "You break free of the grapple! \
-                             ({}: {}+{}={} vs DC {} — succeeds). You are no longer Grappled.",
+                             ({}: {} vs DC {} — succeeds). You are no longer Grappled.",
                             skill_name,
-                            r.player_d20, r.player_total - r.player_d20, r.player_total,
+                            format_roll(r.player_d20, r.player_total - r.player_d20, r.player_total),
                             r.dc
                         ));
                     } else {
                         lines.push(format!(
                             "You struggle but can't break free! \
-                             ({}: {}+{}={} vs DC {} — fails). You remain Grappled.",
+                             ({}: {} vs DC {} — fails). You remain Grappled.",
                             skill_name,
-                            r.player_d20, r.player_total - r.player_d20, r.player_total,
+                            format_roll(r.player_d20, r.player_total - r.player_d20, r.player_total),
                             r.dc
                         ));
                     }
@@ -4609,7 +4619,12 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
             if s.is_empty() {
                 return vec![];
             }
-            return vec![format!("Unknown combat command: \"{}\". Type 'help' for commands.", s)];
+            if s.to_lowercase() == input.trim().to_lowercase() {
+                // Echo of raw user input — truly unrecognised.
+                return vec![format!("Unknown combat command: \"{}\". Type 'help' for commands.", s)];
+            }
+            // Parser-generated hint — return directly without wrapping.
+            return vec![s];
         }
         _ => {
             state.active_combat = Some(combat);
@@ -9540,6 +9555,49 @@ mod tests {
         assert!(
             text.contains("short rest") && text.contains("long rest"),
             "Bare 'rest' should ask which rest. Got: {}",
+            text,
+        );
+    }
+
+    #[test]
+    fn test_bare_rest_hint_not_wrapped_in_unknown_command_template() {
+        // Bug #92: the disambiguation hint must NOT be wrapped inside
+        // `I don't understand "Short rest or long rest? ..."`. Type 'help'`.
+        let state = create_test_exploration_state();
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "rest");
+        let text = output.text.join("\n");
+        assert!(
+            !text.contains("I don't understand"),
+            "Disambiguation hint must not be wrapped in error template. Got: {}",
+            text,
+        );
+        assert!(
+            !text.contains("Type 'help' for commands"),
+            "Disambiguation hint must not end with help prompt. Got: {}",
+            text,
+        );
+    }
+
+    #[test]
+    fn test_negative_modifier_roll_format() {
+        // Bug #91: negative modifier must NOT display as "13+-1=12".
+        // We verify the format_roll helper directly and via the output module.
+        assert_eq!(crate::output::format_roll(13, -1, 12), "13-1=12");
+        assert_ne!(crate::output::format_roll(13, -1, 12), "13+-1=12");
+    }
+
+    #[test]
+    fn test_unknown_command_still_wrapped_for_actual_typo() {
+        // Regression: truly unrecognised input (e.g. "blorp") must still produce
+        // the "I don't understand" wrapper.
+        let state = create_test_exploration_state();
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "blorp");
+        let text = output.text.join("\n");
+        assert!(
+            text.contains("I don't understand"),
+            "Unrecognised input should be wrapped in error template. Got: {}",
             text,
         );
     }

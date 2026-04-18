@@ -13,6 +13,7 @@ use crate::rules::dice::{roll_d20, roll_dice};
 use crate::character::Character;
 use crate::conditions::{self, ConditionType, ConditionDuration, ActiveCondition};
 use crate::state::Npc;
+use crate::output::format_roll;
 
 /// Identifies a combatant in initiative order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -1094,9 +1095,10 @@ fn resolve_npc_attack_action(
                 lines.push(format!("{} {} {} -- CRITICAL HIT! {} {} damage!",
                     npc_name, verb, result.weapon_name, result.damage, result.damage_type));
             } else {
-                lines.push(format!("{} {} {} ({}+{}={} vs AC {}){} -- hit for {} {} damage.",
-                    npc_name, verb, result.weapon_name, result.attack_roll,
-                    attack.hit_bonus, result.total_attack, player_ac, disadv,
+                lines.push(format!("{} {} {} ({} vs AC {}){} -- hit for {} {} damage.",
+                    npc_name, verb, result.weapon_name,
+                    format_roll(result.attack_roll, attack.hit_bonus, result.total_attack),
+                    player_ac, disadv,
                     result.damage, result.damage_type));
             }
             // Damage-while-dying: if the player was already at 0 HP when
@@ -1110,9 +1112,10 @@ fn resolve_npc_attack_action(
         } else if result.natural_1 {
             lines.push(format!("{} {} {} -- natural 1, miss!", npc_name, verb, result.weapon_name));
         } else {
-            lines.push(format!("{} {} {} ({}+{}={} vs AC {}){} -- miss.",
-                npc_name, verb, result.weapon_name, result.attack_roll,
-                attack.hit_bonus, result.total_attack, player_ac, disadv));
+            lines.push(format!("{} {} {} ({} vs AC {}){} -- miss.",
+                npc_name, verb, result.weapon_name,
+                format_roll(result.attack_roll, attack.hit_bonus, result.total_attack),
+                player_ac, disadv));
         }
     }
     lines
@@ -1724,8 +1727,8 @@ pub fn apply_topple_mastery(
     let npc_name = npc.name.clone();
     if save_total >= dc {
         narration.push(format!(
-            "Topple: {} succeeds on a CON save ({}+{}={} vs DC {}).",
-            npc_name, roll, con_mod, save_total, dc
+            "Topple: {} succeeds on a CON save ({} vs DC {}).",
+            npc_name, format_roll(roll, con_mod, save_total), dc
         ));
         return false;
     }
@@ -1737,8 +1740,8 @@ pub fn apply_topple_mastery(
     let applied = conditions::apply_condition(&mut npc.conditions, new_cond);
     if applied {
         narration.push(format!(
-            "Topple: {} fails the CON save ({}+{}={} vs DC {}) and is knocked Prone!",
-            npc_name, roll, con_mod, save_total, dc
+            "Topple: {} fails the CON save ({} vs DC {}) and is knocked Prone!",
+            npc_name, format_roll(roll, con_mod, save_total), dc
         ));
     } else {
         narration.push(format!(
@@ -2012,8 +2015,8 @@ pub fn handle_shove(
     if npc_total >= dc {
         // NPC succeeds: resists the shove.
         lines.push(format!(
-            "{} resists the shove! (STR save: {}+{}={} vs DC {})",
-            npc_display, roll, npc_str_mod, npc_total, dc
+            "{} resists the shove! (STR save: {} vs DC {})",
+            npc_display, format_roll(roll, npc_str_mod, npc_total), dc
         ));
         return lines;
     }
@@ -2032,13 +2035,13 @@ pub fn handle_shove(
         let applied = try_apply_condition_to_npc(npc_mut, new_cond);
         if applied {
             lines.push(format!(
-                "You knock {} prone! (STR save: {}+{}={} vs DC {})",
-                npc_display, roll, npc_str_mod, npc_total, dc
+                "You knock {} prone! (STR save: {} vs DC {})",
+                npc_display, format_roll(roll, npc_str_mod, npc_total), dc
             ));
         } else {
             lines.push(format!(
-                "{} fails the save but is immune to Prone. (STR save: {}+{}={} vs DC {})",
-                npc_display, roll, npc_str_mod, npc_total, dc
+                "{} fails the save but is immune to Prone. (STR save: {} vs DC {})",
+                npc_display, format_roll(roll, npc_str_mod, npc_total), dc
             ));
         }
     } else {
@@ -2047,8 +2050,8 @@ pub fn handle_shove(
         let new_dist = current_dist.saturating_add(5);
         combat.distances.insert(target_id, new_dist);
         lines.push(format!(
-            "You shove {} back 5 feet! (STR save: {}+{}={} vs DC {})",
-            npc_display, roll, npc_str_mod, npc_total, dc
+            "You shove {} back 5 feet! (STR save: {} vs DC {})",
+            npc_display, format_roll(roll, npc_str_mod, npc_total), dc
         ));
     }
 

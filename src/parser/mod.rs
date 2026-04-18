@@ -1224,3 +1224,28 @@ mod tests {
         assert_eq!(parse("escape"), Command::EscapeGrapple);
     }
 }
+
+    #[test]
+    fn test_bare_attack_is_disambiguation_hint() {
+        // Bug #92: bare "attack" should produce a hint that doesn't get swallowed
+        // by the UNKNOWN_COMMAND wrapper in lib.rs. The message content is
+        // tested here; the wrapper behaviour is tested at the lib.rs integration level.
+        match parse("attack") {
+            Command::Unknown(s) => assert!(s.contains("what"), "Got: {}", s),
+            other => panic!("Expected Unknown, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_bare_rest_produces_hint_not_echoed_input() {
+        // Bug #92: The hint "Short rest or long rest? Try 'short rest' or 'long rest'."
+        // must NOT be the literal user input "rest". Verify the message is the hint text.
+        match parse("rest") {
+            Command::Unknown(s) => {
+                assert_ne!(s, "rest", "bare 'rest' hint should NOT echo user input");
+                assert!(s.contains("short") || s.contains("long"),
+                    "hint should mention short/long rest, got: {}", s);
+            }
+            other => panic!("Expected Unknown, got {:?}", other),
+        }
+    }
