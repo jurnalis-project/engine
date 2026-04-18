@@ -4,6 +4,43 @@ use std::collections::HashMap;
 use crate::types::{NpcId, LocationId};
 use crate::state::{Npc, NpcRole, Disposition, Location};
 
+impl Npc {
+    /// Return a multi-line inspection description for the NPC.
+    /// Lines:
+    ///   1. NPC full name
+    ///   2. Role description (e.g. "A wandering merchant.")
+    ///   3. Disposition sentence (e.g. "They seem friendly.")
+    ///   4+ (optional) Visible special traits, one per line, indented with two spaces.
+    pub fn inspect(&self) -> Vec<String> {
+        let mut lines = Vec::new();
+
+        lines.push(self.name.clone());
+
+        let role_line = match self.role {
+            NpcRole::Merchant => "A wandering merchant.",
+            NpcRole::Guard    => "A watchful guard.",
+            NpcRole::Hermit   => "A solitary hermit.",
+            NpcRole::Adventurer => "A seasoned adventurer.",
+        };
+        lines.push(role_line.to_string());
+
+        let disposition_line = match self.disposition {
+            Disposition::Friendly => "They seem friendly.",
+            Disposition::Neutral  => "They regard you neutrally.",
+            Disposition::Hostile  => "They eye you with hostility.",
+        };
+        lines.push(disposition_line.to_string());
+
+        if let Some(stats) = &self.combat_stats {
+            for (trait_name, trait_desc) in &stats.special_traits {
+                lines.push(format!("  {}: {}", trait_name, trait_desc));
+            }
+        }
+
+        lines
+    }
+}
+
 const FIRST_NAMES: &[&str] = &[
     "Aldric", "Brenna", "Corwin", "Dara", "Eldon", "Fiona",
     "Gareth", "Helena", "Ivar", "Jasmine", "Kael", "Lyra",
@@ -86,6 +123,92 @@ mod tests {
             triggers: Vec::new(),
             light_level: LightLevel::Bright,
         }
+    }
+
+    fn make_npc(role: NpcRole, disposition: Disposition) -> Npc {
+        Npc {
+            id: 0,
+            name: "Orin the Quiet".to_string(),
+            role,
+            disposition,
+            dialogue_tags: vec![],
+            location: 0,
+            combat_stats: None,
+            conditions: vec![],
+        }
+    }
+
+    #[test]
+    fn test_inspect_returns_name_as_first_line() {
+        let npc = make_npc(NpcRole::Hermit, Disposition::Neutral);
+        let lines = npc.inspect();
+        assert_eq!(lines[0], "Orin the Quiet");
+    }
+
+    #[test]
+    fn test_inspect_includes_role_description() {
+        let merchant = make_npc(NpcRole::Merchant, Disposition::Friendly);
+        let lines = merchant.inspect();
+        assert!(lines.iter().any(|l| l.to_lowercase().contains("merchant")),
+            "Expected 'merchant' in: {:?}", lines);
+
+        let guard = make_npc(NpcRole::Guard, Disposition::Neutral);
+        let lines = guard.inspect();
+        assert!(lines.iter().any(|l| l.to_lowercase().contains("guard")),
+            "Expected 'guard' in: {:?}", lines);
+
+        let hermit = make_npc(NpcRole::Hermit, Disposition::Hostile);
+        let lines = hermit.inspect();
+        assert!(lines.iter().any(|l| l.to_lowercase().contains("hermit")),
+            "Expected 'hermit' in: {:?}", lines);
+
+        let adventurer = make_npc(NpcRole::Adventurer, Disposition::Friendly);
+        let lines = adventurer.inspect();
+        assert!(lines.iter().any(|l| l.to_lowercase().contains("adventurer")),
+            "Expected 'adventurer' in: {:?}", lines);
+    }
+
+    #[test]
+    fn test_inspect_includes_disposition() {
+        let friendly = make_npc(NpcRole::Guard, Disposition::Friendly);
+        let lines = friendly.inspect();
+        assert!(lines.iter().any(|l| l.to_lowercase().contains("friendly")),
+            "Expected 'friendly' in: {:?}", lines);
+
+        let hostile = make_npc(NpcRole::Guard, Disposition::Hostile);
+        let lines = hostile.inspect();
+        assert!(lines.iter().any(|l| l.to_lowercase().contains("hostil")),
+            "Expected 'hostile' in: {:?}", lines);
+
+        let neutral = make_npc(NpcRole::Guard, Disposition::Neutral);
+        let lines = neutral.inspect();
+        assert!(lines.iter().any(|l| l.to_lowercase().contains("neutral")),
+            "Expected 'neutral' in: {:?}", lines);
+    }
+
+    #[test]
+    fn test_inspect_shows_special_traits() {
+        use crate::state::CombatStats;
+        let mut npc = make_npc(NpcRole::Adventurer, Disposition::Friendly);
+        npc.combat_stats = Some(CombatStats {
+            special_traits: vec![
+                ("Pack Tactics".to_string(), "Advantage when ally is adjacent.".to_string()),
+            ],
+            ..CombatStats::default()
+        });
+        let lines = npc.inspect();
+        assert!(lines.iter().any(|l| l.contains("Pack Tactics")),
+            "Expected 'Pack Tactics' in: {:?}", lines);
+        assert!(lines.iter().any(|l| l.contains("Advantage when ally is adjacent.")),
+            "Expected trait description in: {:?}", lines);
+    }
+
+    #[test]
+    fn test_inspect_no_traits_when_no_combat_stats() {
+        let npc = make_npc(NpcRole::Merchant, Disposition::Neutral);
+        let lines = npc.inspect();
+        // Should have exactly 3 lines: name, role, disposition
+        assert_eq!(lines.len(), 3, "Expected 3 lines, got: {:?}", lines);
     }
 
     #[test]

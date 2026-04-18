@@ -1149,7 +1149,7 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
                         if id & NPC_TAG != 0 {
                             let npc_id = (id & !NPC_TAG) as u32;
                             if let Some(npc) = state.world.npcs.get(&npc_id) {
-                                return vec![format!("{} — {} ({})", npc.name, npc.role_description(), npc.disposition_description())];
+                                return npc.inspect();
                             }
                         } else {
                             let item_id = id as u32;
@@ -7229,6 +7229,69 @@ mod tests {
         let state_json = serde_json::to_string(&state).unwrap();
         let output = process_input(&state_json, &format!("look {}", item_name.to_lowercase()));
         assert!(output.text.iter().any(|t| t.contains(&item_name)), "Should find item '{}' in inventory. Got: {:?}", item_name, output.text);
+    }
+
+    #[test]
+    fn test_look_at_npc_returns_rich_description() {
+        let state = create_test_exploration_state();
+        let loc = state.world.locations.get(&state.current_location).unwrap();
+        if let Some(&npc_id) = loc.npcs.first() {
+            let npc = state.world.npcs.get(&npc_id).unwrap();
+            let npc_name = npc.name.clone();
+            let state_json = serde_json::to_string(&state).unwrap();
+            // Use first word of NPC name (e.g. "Orin" from "Orin the Quiet")
+            let first_word: String = npc_name.split_whitespace().next().unwrap().to_lowercase();
+            let output = process_input(&state_json, &format!("look {}", first_word));
+            let all_text = output.text.join("\n");
+            // First line should be the NPC's full name
+            assert_eq!(output.text[0], npc_name,
+                "First line should be NPC name. Got: {:?}", output.text);
+            // Should include role info
+            assert!(
+                all_text.to_lowercase().contains("merchant") ||
+                all_text.to_lowercase().contains("guard") ||
+                all_text.to_lowercase().contains("hermit") ||
+                all_text.to_lowercase().contains("adventurer"),
+                "Expected role description in output. Got: {:?}", output.text
+            );
+            // Should include disposition info
+            assert!(
+                all_text.to_lowercase().contains("friendly") ||
+                all_text.to_lowercase().contains("neutral") ||
+                all_text.to_lowercase().contains("hostil"),
+                "Expected disposition description in output. Got: {:?}", output.text
+            );
+        }
+    }
+
+    #[test]
+    fn test_look_at_npc_shows_special_traits() {
+        let mut state = create_test_exploration_state();
+        let loc_id = state.current_location;
+        // Add an NPC with a special trait
+        let trait_npc_id: u32 = 999;
+        state.world.npcs.insert(trait_npc_id, state::Npc {
+            id: trait_npc_id,
+            name: "Trait Holder".to_string(),
+            role: state::NpcRole::Adventurer,
+            disposition: state::Disposition::Friendly,
+            dialogue_tags: vec![],
+            location: loc_id,
+            combat_stats: Some(state::CombatStats {
+                special_traits: vec![
+                    ("Pack Tactics".to_string(), "Gains advantage when ally is adjacent.".to_string()),
+                ],
+                ..state::CombatStats::default()
+            }),
+            conditions: vec![],
+        });
+        state.world.locations.get_mut(&loc_id).unwrap().npcs.push(trait_npc_id);
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "look trait holder");
+        let all_text = output.text.join("\n");
+        assert!(all_text.contains("Pack Tactics"),
+            "Expected trait name in output. Got: {:?}", output.text);
     }
 
     #[test]
