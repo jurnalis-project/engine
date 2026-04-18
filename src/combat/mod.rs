@@ -154,6 +154,12 @@ pub struct CombatState {
     /// `Cover::None`. Defaults to empty for older saves.
     #[serde(default)]
     pub npc_cover: HashMap<NpcId, Cover>,
+    // ---- Opportunity Attack Reaction Tracking (issue #43) ----------------
+    /// Set of NPC ids that have already used their reaction this round
+    /// (e.g., to make an opportunity attack). Cleared at the start of each
+    /// new round.
+    #[serde(default)]
+    pub npc_reactions_used: std::collections::HashSet<NpcId>,
 }
 
 /// Outcome of a single Death Saving Throw or damage-while-dying event.
@@ -335,6 +341,7 @@ impl CombatState {
             self.current_turn = (self.current_turn + 1) % self.initiative_order.len();
             if self.current_turn == 0 {
                 self.round += 1;
+                self.npc_reactions_used.clear();
             }
             let combatant = self.current_combatant();
             match combatant {
@@ -578,6 +585,7 @@ pub fn start_combat(
         death_save_failures: 0,
         player_cover: Cover::None,
         npc_cover: HashMap::new(),
+        npc_reactions_used: std::collections::HashSet::new(),
     }
 }
 
@@ -1256,53 +1264,14 @@ pub fn retreat(
 
     let move_amount = movement as u32;
 
-    // Check for opportunity attacks from NPCs only when retreat leaves their reach (if not disengaging)
+    // Build distance map: npc_id -> (old_distance, new_distance)
+    let distance_changes: Vec<(NpcId, u32, u32)> = combat.distances.iter()
+        .map(|(&id, &old)| (id, old, old.saturating_add(move_amount)))
+        .collect();
+
     if !combat.player_disengaging {
-        let player_ac = crate::equipment::calculate_ac(&state.character, &state.world.items);
-        let potential_attackers: Vec<(NpcId, u32, u32)> = combat.distances.iter()
-            .map(|(&id, &old_distance)| {
-                let new_distance = old_distance.saturating_add(move_amount);
-                (id, old_distance, new_distance)
-            })
-            .collect();
-
-        for (npc_id, old_distance, new_distance) in potential_attackers {
-            let leaves_reach = state.world.npcs.get(&npc_id)
-                .and_then(|npc| npc.combat_stats.as_ref())
-                .and_then(|stats| {
-                    if stats.current_hp <= 0 {
-                        return None;
-                    }
-                    let max_melee_reach = stats.attacks.iter()
-                        .filter(|a| a.reach > 0)
-                        .map(|a| a.reach as u32)
-                        .max()?;
-                    Some(old_distance <= max_melee_reach && new_distance > max_melee_reach)
-                })
-                .unwrap_or(false);
-
-            if !leaves_reach {
-                continue;
-            }
-
-            if let Some((npc_name, result)) = resolve_opportunity_attack(rng, npc_id, state, player_ac, old_distance) {
-                if result.hit {
-                    let was_dying = state.character.current_hp <= 0;
-                    state.character.current_hp -= result.damage;
-                    lines.push(format!("{} makes an opportunity attack with {} -- hit for {} {} damage!",
-                        npc_name, result.weapon_name, result.damage, result.damage_type));
-                    if was_dying {
-                        let outcome = combat.apply_damage_while_dying(
-                            &mut state.character, result.damage, result.natural_20,
-                        );
-                        lines.extend(narrate_damage_while_dying_outcome(outcome));
-                    }
-                } else {
-                    lines.push(format!("{} makes an opportunity attack with {} -- miss!",
-                        npc_name, result.weapon_name));
-                }
-            }
-        }
+        let oa_lines = fire_opportunity_attacks(rng, state, combat, &distance_changes);
+        lines.extend(oa_lines);
     }
 
     // Move all distances by movement amount
@@ -1312,6 +1281,67 @@ pub fn retreat(
     combat.player_movement_remaining = 0;
 
     lines.push(format!("You retreat {} ft.", move_amount));
+
+    lines
+}
+
+/// Check each NPC whose reach the player is leaving and fire an opportunity
+/// attack if that NPC still has its reaction this round.
+/// `distance_changes` is a list of `(npc_id, old_distance, new_distance)`.
+pub fn fire_opportunity_attacks(
+    rng: &mut impl Rng,
+    state: &mut GameState,
+    combat: &mut CombatState,
+    distance_changes: &[(NpcId, u32, u32)],
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    let player_ac = crate::equipment::calculate_ac(&state.character, &state.world.items);
+
+    for &(npc_id, old_distance, new_distance) in distance_changes {
+        // Skip if this NPC already used its reaction this round
+        if combat.npc_reactions_used.contains(&npc_id) {
+            continue;
+        }
+
+        let leaves_reach = state.world.npcs.get(&npc_id)
+            .and_then(|npc| npc.combat_stats.as_ref())
+            .and_then(|stats| {
+                if stats.current_hp <= 0 {
+                    return None;
+                }
+                let max_melee_reach = stats.attacks.iter()
+                    .filter(|a| a.reach > 0)
+                    .map(|a| a.reach as u32)
+                    .max()?;
+                Some(old_distance <= max_melee_reach && new_distance > max_melee_reach)
+            })
+            .unwrap_or(false);
+
+        if !leaves_reach {
+            continue;
+        }
+
+        // Consume the NPC's reaction
+        combat.npc_reactions_used.insert(npc_id);
+
+        if let Some((npc_name, result)) = resolve_opportunity_attack(rng, npc_id, state, player_ac, old_distance) {
+            if result.hit {
+                let was_dying = state.character.current_hp <= 0;
+                state.character.current_hp -= result.damage;
+                lines.push(format!("{} makes an opportunity attack with {} -- hit for {} {} damage!",
+                    npc_name, result.weapon_name, result.damage, result.damage_type));
+                if was_dying {
+                    let outcome = combat.apply_damage_while_dying(
+                        &mut state.character, result.damage, result.natural_20,
+                    );
+                    lines.extend(narrate_damage_while_dying_outcome(outcome));
+                }
+            } else {
+                lines.push(format!("{} makes an opportunity attack with {} -- miss!",
+                    npc_name, result.weapon_name));
+            }
+        }
+    }
 
     lines
 }
@@ -2653,6 +2683,80 @@ mod tests {
     }
 
     #[test]
+    fn test_fire_opportunity_attacks_consumes_reaction() {
+        // Verifies that a given NPC only fires one OA per round even if
+        // fire_opportunity_attacks is called twice.
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut state = test_state_with_goblin();
+        // Put goblin at 5ft so it is within reach
+        state.world.npcs.get_mut(&0).unwrap()
+            .combat_stats.as_mut().unwrap()
+            .attacks[0].reach = 5;
+
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        combat.distances.insert(0, 5);
+
+        // First call: old=5, new=u32::MAX — should potentially fire OA
+        let changes1 = vec![(0u32, 5u32, u32::MAX)];
+        let _lines1 = fire_opportunity_attacks(&mut rng, &mut state, &mut combat, &changes1);
+        assert!(combat.npc_reactions_used.contains(&0),
+            "NPC reaction should be marked used after OA");
+
+        // Second call: same scenario — should NOT fire another OA (reaction consumed)
+        let initial_hp = state.character.current_hp;
+        let changes2 = vec![(0u32, 5u32, u32::MAX)];
+        let lines2 = fire_opportunity_attacks(&mut rng, &mut state, &mut combat, &changes2);
+        assert!(!lines2.iter().any(|l| l.contains("opportunity attack")),
+            "Second OA call should be suppressed by spent reaction, got {:?}", lines2);
+        // HP should not change further from the second call
+        assert_eq!(state.character.current_hp, initial_hp,
+            "HP should be unchanged after second (suppressed) OA call");
+    }
+
+    #[test]
+    fn test_fire_opportunity_attacks_no_oa_when_disengaging() {
+        // Verifies disengage flag suppresses OAs (tested via retreat, but also
+        // directly confirms fire_opportunity_attacks isn't called by retreat when
+        // player is disengaging).
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut state = test_state_with_goblin();
+        state.world.npcs.get_mut(&0).unwrap()
+            .combat_stats.as_mut().unwrap()
+            .attacks[0].reach = 5;
+
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        combat.distances.insert(0, 5);
+        combat.player_movement_remaining = 30;
+        combat.player_disengaging = true;
+
+        let lines = retreat(&mut rng, &mut state, &mut combat);
+        assert!(!lines.iter().any(|l| l.contains("opportunity attack")),
+            "Disengage should suppress OA on retreat, got {:?}", lines);
+        assert!(!combat.npc_reactions_used.contains(&0),
+            "NPC reaction should NOT be consumed when disengaging");
+    }
+
+    #[test]
+    fn test_npc_reactions_cleared_on_new_round() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut state = test_state_with_goblin();
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+
+        // Mark NPC reaction used
+        combat.npc_reactions_used.insert(0);
+        assert!(combat.npc_reactions_used.contains(&0));
+
+        // Advance turn until round increments (cycle all combatants)
+        let n = combat.initiative_order.len();
+        // Force current_turn to just before wrap so next advance increments round
+        combat.current_turn = n - 1;
+        combat.advance_turn(&mut state);
+
+        assert!(combat.npc_reactions_used.is_empty(),
+            "npc_reactions_used should be cleared when a new round begins");
+    }
+
+    #[test]
     fn test_combat_end_victory() {
         let mut state = test_state_with_goblin();
         // Kill the goblin
@@ -2808,6 +2912,7 @@ mod tests {
             death_save_failures: 0,
             player_cover: Cover::None,
             npc_cover: HashMap::new(),
+            npc_reactions_used: std::collections::HashSet::new(),
         };
 
         // Kill the first goblin (the one with stats)

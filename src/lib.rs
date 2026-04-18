@@ -2643,6 +2643,47 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
         }
         Command::Objective => return render_objective(state),
         Command::Map => return render_map(state),
+        Command::Go(direction) => {
+            // Fleeing the room during combat: triggers OAs, ends combat if player survives.
+            let next_id = state.world.locations
+                .get(&state.current_location)
+                .and_then(|loc| loc.exits.get(direction).copied());
+
+            let mut combat = state.active_combat.take().unwrap();
+            let mut lines = Vec::new();
+
+            match next_id {
+                None => {
+                    state.active_combat = Some(combat);
+                    return vec![format!("There's no exit to the {}.", direction)];
+                }
+                Some(next_id) => {
+                    if !combat.player_disengaging {
+                        let distance_changes: Vec<(types::NpcId, u32, u32)> = combat.distances.iter()
+                            .map(|(&id, &old)| (id, old, u32::MAX))
+                            .collect();
+                        let oa_lines = combat::fire_opportunity_attacks(
+                            &mut rng, state, &mut combat, &distance_changes,
+                        );
+                        lines.extend(oa_lines);
+                    }
+
+                    if state.character.current_hp <= 0 && !combat.is_player_dying(state) {
+                        state.active_combat = Some(combat);
+                        lines.push("You have been cut down trying to flee!".to_string());
+                        return lines;
+                    }
+
+                    // Player successfully flees
+                    state.current_location = next_id;
+                    state.discovered_locations.insert(next_id);
+                    // Combat ends — do not put combat back
+                    lines.push(format!("You flee {}!", direction));
+                    lines.push("You escape from combat.".to_string());
+                    return lines;
+                }
+            }
+        }
         Command::Spells => {
             return spells::format_known_spells(
                 &state.character.known_spells,
@@ -2651,7 +2692,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
             );
         }
         // Block exploration commands
-        Command::Go(_) | Command::Talk(_) | Command::Take(_) | Command::Drop(_) => {
+        Command::Talk(_) | Command::Take(_) | Command::Drop(_) => {
             return vec!["You can't do that during combat!".to_string()];
         }
         Command::Save(_) | Command::Load(_) | Command::Check(_) => {
@@ -7369,9 +7410,13 @@ mod tests {
         let state = create_test_combat_state();
         let state_json = serde_json::to_string(&state).unwrap();
 
+        // go is now a flee command (not blocked); verify it returns flee or "no exit" text
         let go_output = process_input(&state_json, "go north");
-        assert!(go_output.text.iter().any(|t| t.contains("can't do that during combat")),
-            "Go should be blocked. Got: {:?}", go_output.text);
+        let go_text = go_output.text.join(" ");
+        assert!(
+            go_text.contains("flee") || go_text.contains("no exit") || go_text.contains("escape"),
+            "Go during combat should attempt to flee. Got: {:?}", go_output.text
+        );
 
         let take_output = process_input(&state_json, "take sword");
         assert!(take_output.text.iter().any(|t| t.contains("can't do that during combat")),
@@ -9505,6 +9550,7 @@ mod tests {
             death_save_failures: 0,
             player_cover: crate::types::Cover::None,
             npc_cover: std::collections::HashMap::new(),
+            npc_reactions_used: std::collections::HashSet::new(),
         });
         npc_id
     }
@@ -9565,6 +9611,7 @@ mod tests {
             death_save_failures: 0,
             player_cover: crate::types::Cover::None,
             npc_cover: std::collections::HashMap::new(),
+            npc_reactions_used: std::collections::HashSet::new(),
         });
         let _ = end_combat(&mut state, true);
         // Two goblins: 50 + 50 = 100 XP.
@@ -9623,6 +9670,7 @@ mod tests {
             death_save_failures: 0,
             player_cover: crate::types::Cover::None,
             npc_cover: std::collections::HashMap::new(),
+            npc_reactions_used: std::collections::HashSet::new(),
         });
         let _ = end_combat(&mut state, true);
         // No XP should be awarded — the hostile is still alive.
@@ -11179,6 +11227,7 @@ mod tests {
             death_save_failures: 0,
             player_cover: crate::types::Cover::None,
             npc_cover: std::collections::HashMap::new(),
+            npc_reactions_used: std::collections::HashSet::new(),
         });
 
         let lines = end_combat(&mut state, true);
@@ -11287,6 +11336,7 @@ mod tests {
             death_save_failures: 0,
             player_cover: crate::types::Cover::None,
             npc_cover: std::collections::HashMap::new(),
+            npc_reactions_used: std::collections::HashSet::new(),
         });
 
         // Try multiple seeds to get a hit (AC=1, nat 1 is the only miss)

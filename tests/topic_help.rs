@@ -50,6 +50,7 @@ fn create_combat_state_json() -> String {
         death_save_failures: 0,
         player_cover: jurnalis_engine::types::Cover::None,
         npc_cover: std::collections::HashMap::new(),
+        npc_reactions_used: std::collections::HashSet::new(),
     });
 
     serde_json::to_string(&state).unwrap()

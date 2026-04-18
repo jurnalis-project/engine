@@ -499,6 +499,7 @@ mod tests {
             death_save_failures: 0,
             player_cover: crate::types::Cover::None,
             npc_cover: std::collections::HashMap::new(),
+            npc_reactions_used: std::collections::HashSet::new(),
         });
         assert_eq!(check_rest_allowed(&state), Err(RestDenial::InCombat));
     }
@@ -767,6 +768,7 @@ mod tests {
             death_save_failures: 0,
             player_cover: crate::types::Cover::None,
             npc_cover: std::collections::HashMap::new(),
+            npc_reactions_used: std::collections::HashSet::new(),
         });
         state.character.current_hp = 1;
         let before_time = state.in_world_minutes;

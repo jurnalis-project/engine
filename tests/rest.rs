@@ -112,6 +112,7 @@ fn fake_combat() -> CombatState {
         death_save_failures: 0,
         player_cover: jurnalis_engine::types::Cover::None,
         npc_cover: std::collections::HashMap::new(),
+        npc_reactions_used: std::collections::HashSet::new(),
     }
 }
 
