@@ -83,6 +83,9 @@ pub enum Command {
     /// Take cover: grants the player Half cover until their next turn (or until
     /// they leave cover). Usable only in combat. See `docs/specs/cover-rules.md`.
     TakeCover,
+    /// Use a tool on a target. Parsed from "use <tool> on <target>".
+    /// Orchestrator checks inventory, proficiency, and makes an ability check.
+    UseTool { tool: String, target: String },
     Unknown(String),
 }
 
@@ -270,7 +273,20 @@ pub fn parse(input: &str) -> Command {
             if args.is_empty() { Command::Unknown("Drop what?".to_string()) } else { Command::Drop(args) }
         }
         "use" | "activate" | "apply" => {
-            if args.is_empty() { Command::Unknown("Use what?".to_string()) } else { Command::Use(args) }
+            if args.is_empty() {
+                Command::Unknown("Use what?".to_string())
+            } else if let Some(pos) = args.find(" on ") {
+                // "use <tool> on <target>"
+                let tool = args[..pos].trim().to_string();
+                let target = args[pos + 4..].trim().to_string();
+                if tool.is_empty() || target.is_empty() {
+                    Command::Use(args)
+                } else {
+                    Command::UseTool { tool, target }
+                }
+            } else {
+                Command::Use(args)
+            }
         }
         "equip" | "wear" | "wield" | "don" => {
             if args.is_empty() { Command::Unknown("Equip what?".to_string()) } else { Command::Equip(args) }

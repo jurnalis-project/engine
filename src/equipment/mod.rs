@@ -129,7 +129,48 @@ pub const SRD_ARMOR: &[ArmorDef] = &[
     ArmorDef { name: "Shield", category: ArmorCategory::Shield, base_ac: 2, max_dex_bonus: None, str_requirement: 0, stealth_disadvantage: false, cost_cp: 1000, weight_qp: 24 },
 ];
 
-/// Look up the Mastery property for a weapon by its canonical SRD name.
+/// An SRD adventuring gear item definition (static data).
+pub struct GearDef {
+    pub name: &'static str,
+    pub weight_qp: u32,  // quarter-pounds
+    pub cost_cp: u32,    // copper pieces
+    pub description: &'static str,
+}
+
+/// SRD adventuring gear table (22 items, PHB p. 148–153 / 2024 SRD §Equipment).
+/// Weight encoded as quarter-pounds (1 lb = 4 qp). Cost in copper pieces.
+pub const SRD_GEAR: &[GearDef] = &[
+    GearDef { name: "Rope (50 ft)",          weight_qp: 40,  cost_cp: 100,   description: "Fifty feet of hempen rope. Can bear up to 600 lb." },
+    GearDef { name: "Torch",                 weight_qp: 4,   cost_cp: 1,     description: "Burns for 1 hour, shedding bright light 20 ft and dim light 40 ft." },
+    GearDef { name: "Bullseye Lantern",      weight_qp: 8,   cost_cp: 1000,  description: "Sheds bright light 60 ft and dim light 120 ft in a cone; burns 6 hours per flask." },
+    GearDef { name: "Hooded Lantern",        weight_qp: 8,   cost_cp: 500,   description: "Sheds bright light 30 ft and dim light 60 ft; hood can cover the light." },
+    GearDef { name: "Tinderbox",             weight_qp: 4,   cost_cp: 50,    description: "Contains flint, steel, and tinder for lighting fires." },
+    GearDef { name: "Bedroll",               weight_qp: 28,  cost_cp: 100,   description: "A padded roll for sleeping." },
+    GearDef { name: "Rations (1 day)",       weight_qp: 8,   cost_cp: 50,    description: "Dried food sufficient for one day." },
+    GearDef { name: "Waterskin",             weight_qp: 20,  cost_cp: 20,    description: "Holds 4 pints of liquid; weighs 5 lb when full." },
+    GearDef { name: "Crowbar",               weight_qp: 20,  cost_cp: 200,   description: "Grants advantage on STR checks where leverage applies." },
+    GearDef { name: "Caltrops (bag)",        weight_qp: 8,   cost_cp: 100,   description: "Bag of 20 caltrops. Scattered over 5 ft; DC 15 DEX to avoid 1 piercing." },
+    GearDef { name: "Ball Bearings (bag)",   weight_qp: 8,   cost_cp: 100,   description: "Bag of 1,000 ball bearings. Scattered over 10 ft; DC 10 DEX to avoid falling." },
+    GearDef { name: "Hammer",               weight_qp: 4,   cost_cp: 100,   description: "A small iron hammer for driving pitons and stakes." },
+    GearDef { name: "Piton",                 weight_qp: 1,   cost_cp: 5,     description: "An iron spike driven into stone to create a handhold." },
+    GearDef { name: "Backpack",              weight_qp: 20,  cost_cp: 200,   description: "Can hold 1 cubic foot or 30 lb of gear." },
+    GearDef { name: "Pouch",                 weight_qp: 4,   cost_cp: 50,    description: "A small leather pouch. Holds 6 lb or 1/5 cubic foot." },
+    GearDef { name: "Sack",                  weight_qp: 4,   cost_cp: 1,     description: "A cloth sack. Holds 15 lb or 1 cubic foot." },
+    GearDef { name: "Component Pouch",       weight_qp: 8,   cost_cp: 2500,  description: "A belt pouch containing spell components; replaces material components without a cost." },
+    GearDef { name: "Spellbook",             weight_qp: 12,  cost_cp: 5000,  description: "A leather-bound tome holding up to 100 wizard spells." },
+    GearDef { name: "Arcane Focus",          weight_qp: 4,   cost_cp: 1000,  description: "A crystal, orb, rod, staff, or wand for arcane spellcasting." },
+    GearDef { name: "Holy Symbol",           weight_qp: 4,   cost_cp: 500,   description: "An amulet, emblem, or reliquary for divine spellcasting." },
+    GearDef { name: "Druidic Focus",         weight_qp: 4,   cost_cp: 100,   description: "A sprig of mistletoe, totem, staff, or yew wand for druidic spellcasting." },
+    GearDef { name: "Spyglass",              weight_qp: 4,   cost_cp: 100000, description: "Objects viewed through it appear twice as large." },
+    GearDef { name: "Grappling Hook",        weight_qp: 16,  cost_cp: 200,   description: "A four-pronged hook for climbing with rope." },
+];
+
+/// Look up a gear item by its canonical SRD name (case-sensitive).
+pub fn find_gear(name: &str) -> Option<&'static GearDef> {
+    SRD_GEAR.iter().find(|g| g.name == name)
+}
+
+
 /// Returns `None` when the name is not present in `SRD_WEAPONS`. Name match
 /// is case-sensitive, consistent with the rest of the SRD lookup API
 /// (`SRD_WEAPONS.iter().find(|w| w.name == name)`).
@@ -614,5 +655,31 @@ mod tests {
         c.equipped.body = Some(0);
         // 14 + min(4, 2) + 1 bonus = 17
         assert_eq!(calculate_ac(&c, &items), 17);
+    }
+
+    #[test]
+    fn test_srd_gear_count() {
+        assert_eq!(SRD_GEAR.len(), 23, "SRD_GEAR should have 23 entries");
+    }
+
+    #[test]
+    fn test_find_gear_returns_known_item() {
+        let g = find_gear("Rope (50 ft)").expect("Rope should exist in SRD_GEAR");
+        assert_eq!(g.name, "Rope (50 ft)");
+        assert_eq!(g.weight_qp, 40);
+        assert_eq!(g.cost_cp, 100);
+    }
+
+    #[test]
+    fn test_find_gear_returns_none_for_unknown() {
+        assert!(find_gear("Nonexistent Item").is_none());
+    }
+
+    #[test]
+    fn test_gear_names_are_unique() {
+        let mut names = std::collections::HashSet::new();
+        for g in SRD_GEAR {
+            assert!(names.insert(g.name), "Duplicate gear name: {}", g.name);
+        }
     }
 }

@@ -220,6 +220,85 @@ impl Cover {
     }
 }
 
+/// Tool proficiency categories per SRD 5.1. Defined in `types.rs` because
+/// `character`, `equipment`, and `rules` all reference it and feature modules
+/// cannot depend on each other directly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ToolProficiency {
+    ThievesTools,
+    ArtisansTools,
+    GamingSets,
+    MusicalInstrument,
+    Vehicles,
+    NavigatorsTools,
+    HerbalismKit,
+    HealersKit,
+    DisguiseKit,
+    ForgeryKit,
+    PoisonersKit,
+}
+
+impl ToolProficiency {
+    /// Return the canonical display name (matches SRD naming convention).
+    pub fn name(&self) -> &'static str {
+        match self {
+            ToolProficiency::ThievesTools => "Thieves' Tools",
+            ToolProficiency::ArtisansTools => "Artisan's Tools",
+            ToolProficiency::GamingSets => "Gaming Sets",
+            ToolProficiency::MusicalInstrument => "Musical Instrument",
+            ToolProficiency::Vehicles => "Vehicles",
+            ToolProficiency::NavigatorsTools => "Navigator's Tools",
+            ToolProficiency::HerbalismKit => "Herbalism Kit",
+            ToolProficiency::HealersKit => "Healer's Kit",
+            ToolProficiency::DisguiseKit => "Disguise Kit",
+            ToolProficiency::ForgeryKit => "Forgery Kit",
+            ToolProficiency::PoisonersKit => "Poisoner's Kit",
+        }
+    }
+
+    /// The ability used for checks with this tool (SRD defaults).
+    pub fn check_ability(&self) -> Ability {
+        match self {
+            ToolProficiency::ThievesTools => Ability::Dexterity,
+            ToolProficiency::ArtisansTools => Ability::Strength,
+            ToolProficiency::GamingSets => Ability::Intelligence,
+            ToolProficiency::MusicalInstrument => Ability::Charisma,
+            ToolProficiency::Vehicles => Ability::Dexterity,
+            ToolProficiency::NavigatorsTools => Ability::Wisdom,
+            ToolProficiency::HerbalismKit => Ability::Wisdom,
+            ToolProficiency::HealersKit => Ability::Wisdom,
+            ToolProficiency::DisguiseKit => Ability::Charisma,
+            ToolProficiency::ForgeryKit => Ability::Dexterity,
+            ToolProficiency::PoisonersKit => Ability::Intelligence,
+        }
+    }
+
+    /// Try to parse a tool name (case-insensitive) to a ToolProficiency.
+    pub fn from_name(name: &str) -> Option<ToolProficiency> {
+        let lower = name.to_lowercase();
+        match lower.as_str() {
+            "thieves' tools" | "thieves tools" | "thievestools" => Some(ToolProficiency::ThievesTools),
+            "artisan's tools" | "artisans tools" | "artisanstools" => Some(ToolProficiency::ArtisansTools),
+            "gaming sets" | "gaming set" => Some(ToolProficiency::GamingSets),
+            "musical instrument" | "instrument" => Some(ToolProficiency::MusicalInstrument),
+            "vehicles" | "vehicle" => Some(ToolProficiency::Vehicles),
+            "navigator's tools" | "navigators tools" | "navigatorstools" => Some(ToolProficiency::NavigatorsTools),
+            "herbalism kit" => Some(ToolProficiency::HerbalismKit),
+            "healer's kit" | "healers kit" | "healerskit" => Some(ToolProficiency::HealersKit),
+            "disguise kit" => Some(ToolProficiency::DisguiseKit),
+            "forgery kit" => Some(ToolProficiency::ForgeryKit),
+            "poisoner's kit" | "poisoners kit" | "poisonerskit" => Some(ToolProficiency::PoisonersKit),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for ToolProficiency {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.name())
+    }
+}
+
 /// Nine-axis alignment plus Unaligned. Shared between characters (chosen at
 /// creation) and monsters (declared per stat block). Canonical definition
 /// lives here in `types.rs` because it is referenced across feature modules

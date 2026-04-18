@@ -3,7 +3,7 @@ use rand::Rng;
 use std::collections::HashMap;
 use crate::types::{ItemId, LocationId};
 use crate::state::{Item, ItemType, WeaponCategory};
-use crate::equipment::{SRD_WEAPONS, SRD_ARMOR};
+use crate::equipment::{SRD_WEAPONS, SRD_ARMOR, SRD_GEAR};
 use crate::equipment::magic::{
     Rarity, MagicItemDef, MagicItemKind,
     SRD_MAGIC_WEAPONS, SRD_MAGIC_ARMOR, SRD_WONDROUS,
@@ -253,12 +253,27 @@ pub fn generate_items(
                 }
             }
             _ => {
-                let m = &MISC_ITEMS[rng.gen_range(0..MISC_ITEMS.len())];
-                Item {
-                    id, name: m.0.to_string(), description: m.1.to_string(),
-                    item_type: ItemType::Misc,
-                    location: Some(location), carried_by_player: false,
-                    charges_remaining: None,
+                // Slot 3: split between misc items and adventuring gear (50/50).
+                if rng.gen_bool(0.5) {
+                    let g = &SRD_GEAR[rng.gen_range(0..SRD_GEAR.len())];
+                    Item {
+                        id, name: g.name.to_string(), description: g.description.to_string(),
+                        item_type: ItemType::GearItem {
+                            gear_name: g.name.to_string(),
+                            weight_qp: g.weight_qp,
+                            cost_cp: g.cost_cp,
+                        },
+                        location: Some(location), carried_by_player: false,
+                        charges_remaining: None,
+                    }
+                } else {
+                    let m = &MISC_ITEMS[rng.gen_range(0..MISC_ITEMS.len())];
+                    Item {
+                        id, name: m.0.to_string(), description: m.1.to_string(),
+                        item_type: ItemType::Misc,
+                        location: Some(location), carried_by_player: false,
+                        charges_remaining: None,
+                    }
                 }
             }
         };

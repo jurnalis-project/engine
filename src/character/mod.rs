@@ -114,6 +114,12 @@ pub struct Character {
     /// and for legacy saves predating this field.
     #[serde(default)]
     pub subrace: Option<String>,
+    /// Ammunition counts by ammunition type (e.g. "Arrow", "Bolt",
+    /// "Sling Bullet", "Needle", "Bullet"). Decremented when an
+    /// AMMUNITION-property weapon is used in an attack. Zero count blocks
+    /// the attack. `#[serde(default)]` for backward compat.
+    #[serde(default)]
+    pub ammo: HashMap<String, u32>,
 }
 
 impl Character {
@@ -241,7 +247,10 @@ pub fn create_character(
         xp: 0,
         asi_credits: 0,
         background: Background::default(),
-        tool_proficiencies: Vec::new(),
+        tool_proficiencies: class.starting_tool_proficiencies()
+            .iter()
+            .map(|t| t.name().to_string())
+            .collect(),
         languages: vec!["Common".to_string()],
         attuned_items: Vec::new(),
         origin_feat: None,
@@ -250,6 +259,7 @@ pub fn create_character(
         weapon_masteries,
         wearing_nonproficient_armor: false,
         subrace: None,
+        ammo: HashMap::new(),
     }
 }
 

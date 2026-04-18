@@ -1,6 +1,6 @@
 // jurnalis-engine/src/character/class.rs
 use serde::{Deserialize, Serialize};
-use crate::types::{Ability, Skill};
+use crate::types::{Ability, Skill, ToolProficiency};
 use crate::state::ArmorCategory;
 
 /// Per-class feature-use tracking. All fields default so older saves
@@ -382,6 +382,22 @@ impl Class {
                 body: None,
                 extra_inventory: &["Dagger"],
             },
+        }
+    }
+}
+
+impl Class {
+    /// Starting tool proficiencies granted by the class at level 1 per SRD 5.1.
+    /// Returns an empty slice for classes with no class-granted tool proficiencies
+    /// (background-granted tools are handled separately in `lib.rs`).
+    pub fn starting_tool_proficiencies(&self) -> &'static [ToolProficiency] {
+        match self {
+            Class::Rogue => &[ToolProficiency::ThievesTools],
+            Class::Bard => &[ToolProficiency::MusicalInstrument],
+            Class::Monk => &[ToolProficiency::ArtisansTools],
+            Class::Druid => &[ToolProficiency::HerbalismKit],
+            // Most classes get no tool proficiencies from the class directly.
+            _ => &[],
         }
     }
 }

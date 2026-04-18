@@ -372,6 +372,17 @@ pub enum ItemType {
         rarity: crate::equipment::magic::Rarity,
         requires_attunement: bool,
     },
+    /// An adventuring gear item (rope, torch, tinderbox, etc.). Added in
+    /// v0.32 (feat/adventuring-gear). `#[serde(default)]`-safe because older
+    /// saves never emit this variant; new items produced by world-gen carry it.
+    GearItem {
+        /// Canonical SRD gear name, used for display and tool-use lookup.
+        gear_name: String,
+        /// Weight in quarter-pounds (1 lb = 4 qp). 0 = negligible / worn.
+        weight_qp: u32,
+        /// Cost in copper pieces.
+        cost_cp: u32,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
