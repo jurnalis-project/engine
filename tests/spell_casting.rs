@@ -111,6 +111,8 @@ fn create_wizard_combat_state_json() -> String {
         nick_used_this_turn: false,
         death_save_successes: 0,
         death_save_failures: 0,
+        player_cover: jurnalis_engine::types::Cover::None,
+        npc_cover: std::collections::HashMap::new(),
     });
 
     serde_json::to_string(&state).unwrap()
@@ -182,6 +184,8 @@ fn create_wizard_multi_combat_state_json() -> String {
         nick_used_this_turn: false,
         death_save_successes: 0,
         death_save_failures: 0,
+        player_cover: jurnalis_engine::types::Cover::None,
+        npc_cover: std::collections::HashMap::new(),
     });
 
     serde_json::to_string(&state).unwrap()
@@ -480,6 +484,8 @@ fn attach_goblin_and_start_combat(state_json: &str) -> String {
         nick_used_this_turn: false,
         death_save_successes: 0,
         death_save_failures: 0,
+        player_cover: jurnalis_engine::types::Cover::None,
+        npc_cover: std::collections::HashMap::new(),
     });
 
     serde_json::to_string(&state).unwrap()

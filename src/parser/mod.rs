@@ -80,6 +80,9 @@ pub enum Command {
     Unattune(String),
     /// List the character's currently attuned items.
     ListAttunements,
+    /// Take cover: grants the player Half cover until their next turn (or until
+    /// they leave cover). Usable only in combat. See `docs/specs/cover-rules.md`.
+    TakeCover,
     Unknown(String),
 }
 
@@ -117,6 +120,7 @@ pub fn parse(input: &str) -> Command {
         let rest = if words.len() > 2 { words[2..].join(" ") } else { String::new() };
 
         match two.as_str() {
+            "take cover" => return Command::TakeCover,
             "look at" | "check out" => {
                 return if rest.is_empty() { Command::Look(None) } else { Command::Look(Some(rest)) };
             }

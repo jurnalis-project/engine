@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 
-use crate::types::{NpcId, Ability, ItemId, Skill};
+use crate::types::{NpcId, Ability, ItemId, Skill, Cover};
 use crate::state::{GameState, CombatStats, NpcAttack, DamageType, ItemType};
 use crate::equipment::{FINESSE, THROWN, VERSATILE, REACH, AMMUNITION};
 use crate::rules::dice::{roll_d20, roll_dice};
@@ -146,6 +146,14 @@ pub struct CombatState {
     /// ends combat in defeat.
     #[serde(default)]
     pub death_save_failures: u8,
+    /// Cover level protecting the player from incoming attacks and DEX saves.
+    /// Defaults to `Cover::None` for older saves that pre-date this field.
+    #[serde(default)]
+    pub player_cover: Cover,
+    /// Cover level for each NPC. NPCs not present in this map have
+    /// `Cover::None`. Defaults to empty for older saves.
+    #[serde(default)]
+    pub npc_cover: HashMap<NpcId, Cover>,
 }
 
 /// Outcome of a single Death Saving Throw or damage-while-dying event.
@@ -568,6 +576,8 @@ pub fn start_combat(
         nick_used_this_turn: false,
         death_save_successes: 0,
         death_save_failures: 0,
+        player_cover: Cover::None,
+        npc_cover: HashMap::new(),
     }
 }
 
@@ -689,6 +699,11 @@ fn is_ranged_attack(weapon: &ItemType, distance: u32) -> bool {
 /// the Vex weapon mastery to grant advantage on the next attack against a
 /// marked target). It is combined with all other advantage sources and
 /// cancels normally against any disadvantage source.
+///
+/// `target_cover` is the cover level of the NPC. If the target has
+/// `Cover::Total`, the attack is rejected by the caller before reaching
+/// this function; `resolve_player_attack` itself only applies the AC bonus
+/// for Half and Three-quarters cover.
 #[allow(clippy::too_many_arguments)]
 pub fn resolve_player_attack(
     rng: &mut impl Rng,
@@ -703,6 +718,7 @@ pub fn resolve_player_attack(
     target_conditions: &[ActiveCondition],
     extra_disadvantage: bool,
     extra_advantage: bool,
+    target_cover: &Cover,
 ) -> AttackResult {
     // Base weapon fields come from either a mundane `Weapon` or a
     // `MagicWeapon` (which embeds the same mechanical fields). Magic
@@ -839,7 +855,8 @@ pub fn resolve_player_attack(
     let natural_1 = attack_roll == 1;
 
     let total_attack = attack_roll + ability_mod + prof_bonus;
-    let hit = if natural_1 { false } else if natural_20 { true } else { total_attack >= target_ac };
+    let effective_ac = target_ac + target_cover.ac_bonus();
+    let hit = if natural_1 { false } else if natural_20 { true } else { total_attack >= effective_ac };
 
     // Check for auto-crit (paralyzed target within 5ft)
     let auto_crit = hit && conditions::is_auto_crit_target(target_conditions) && distance <= 5;
@@ -872,7 +889,7 @@ pub fn resolve_player_attack(
         natural_1,
         attack_roll,
         total_attack,
-        target_ac,
+        target_ac: effective_ac,
         damage,
         damage_type,
         weapon_name,
@@ -891,6 +908,7 @@ pub fn resolve_npc_attack(
     npc_conditions: &[ActiveCondition],
     player_conditions: &[ActiveCondition],
     extra_disadvantage: bool,
+    player_cover: &Cover,
 ) -> AttackResult {
     let mut disadvantage = false;
     let mut advantage = false;
@@ -952,7 +970,8 @@ pub fn resolve_npc_attack(
     let natural_1 = attack_roll == 1;
 
     let total_attack = attack_roll + attack.hit_bonus;
-    let hit = if natural_1 { false } else if natural_20 { true } else { total_attack >= player_ac };
+    let effective_player_ac = player_ac + player_cover.ac_bonus();
+    let hit = if natural_1 { false } else if natural_20 { true } else { total_attack >= effective_player_ac };
 
     // Check for auto-crit (paralyzed player within 5ft)
     let auto_crit = hit && conditions::is_auto_crit_target(player_conditions) && distance <= 5;
@@ -971,7 +990,7 @@ pub fn resolve_npc_attack(
         natural_1,
         attack_roll,
         total_attack,
-        target_ac: player_ac,
+        target_ac: effective_player_ac,
         damage,
         damage_type: attack.damage_type,
         weapon_name: attack.name.clone(),
@@ -1005,6 +1024,7 @@ pub fn resolve_opportunity_attack(
     let result = resolve_npc_attack(
         rng, melee_attack, player_ac, false, distance,
         &npc.conditions, &state.character.conditions, extra_disadvantage,
+        &Cover::None, // opportunity attacks don't check cover (player is fleeing)
     );
     Some((npc.name.clone(), result))
 }
@@ -1056,7 +1076,7 @@ fn resolve_npc_attack_action(
         let iter_disadv = grappled || (sapped_first_attack && i == 0);
         let player_ac = crate::equipment::calculate_ac(&state.character, &state.world.items);
         let player_dodging = combat.player_dodging;
-        let result = resolve_npc_attack(rng, &attack, player_ac, player_dodging, distance, npc_conditions, player_conditions, iter_disadv);
+        let result = resolve_npc_attack(rng, &attack, player_ac, player_dodging, distance, npc_conditions, player_conditions, iter_disadv, &combat.player_cover);
         let disadv = if result.disadvantage { " (with disadvantage)" } else { "" };
 
         if result.hit {
@@ -1972,6 +1992,7 @@ pub fn apply_cleave_mastery(
         &secondary_conditions,
         false,
         false,
+        combat.npc_cover.get(&secondary_id).unwrap_or(&Cover::None),
     );
     // Per SRD: the second attack does not include ability-mod damage
     // unless the modifier is negative. We subtract the positive modifier
@@ -2350,7 +2371,7 @@ mod tests {
         let mut misses = 0;
         for seed in 0..100 {
             let mut rng = StdRng::seed_from_u64(seed);
-            let result = resolve_npc_attack(&mut rng, &attack, 15, false, 5, &[], &[], false);
+            let result = resolve_npc_attack(&mut rng, &attack, 15, false, 5, &[], &[], false, &Cover::None);
             if result.hit { hits += 1; } else { misses += 1; }
         }
         assert!(hits > 0, "Should have some hits");
@@ -2368,7 +2389,7 @@ mod tests {
         // Find a seed that gives nat 20
         for seed in 0..1000 {
             let mut rng = StdRng::seed_from_u64(seed);
-            let result = resolve_npc_attack(&mut rng, &attack, 30, false, 5, &[], &[], false);
+            let result = resolve_npc_attack(&mut rng, &attack, 30, false, 5, &[], &[], false, &Cover::None);
             if result.natural_20 {
                 assert!(result.hit, "Natural 20 should always hit");
                 return;
@@ -2387,7 +2408,7 @@ mod tests {
         };
         for seed in 0..1000 {
             let mut rng = StdRng::seed_from_u64(seed);
-            let result = resolve_npc_attack(&mut rng, &attack, 1, false, 5, &[], &[], false);
+            let result = resolve_npc_attack(&mut rng, &attack, 1, false, 5, &[], &[], false, &Cover::None);
             if result.natural_1 {
                 assert!(!result.hit, "Natural 1 should always miss");
                 return;
@@ -2408,7 +2429,7 @@ mod tests {
         let mut crit_damages = Vec::new();
         for seed in 0..1000 {
             let mut rng = StdRng::seed_from_u64(seed);
-            let result = resolve_npc_attack(&mut rng, &attack, 10, false, 5, &[], &[], false);
+            let result = resolve_npc_attack(&mut rng, &attack, 10, false, 5, &[], &[], false, &Cover::None);
             if result.natural_20 {
                 crit_damages.push(result.damage);
             }
@@ -2434,8 +2455,8 @@ mod tests {
         for seed in 0..1000 {
             let mut rng1 = StdRng::seed_from_u64(seed);
             let mut rng2 = StdRng::seed_from_u64(seed);
-            let dodge = resolve_npc_attack(&mut rng1, &attack, 15, true, 5, &[], &[], false);
-            let normal = resolve_npc_attack(&mut rng2, &attack, 15, false, 5, &[], &[], false);
+            let dodge = resolve_npc_attack(&mut rng1, &attack, 15, true, 5, &[], &[], false, &Cover::None);
+            let normal = resolve_npc_attack(&mut rng2, &attack, 15, false, 5, &[], &[], false, &Cover::None);
             if dodge.hit { dodge_hits += 1; }
             if normal.hit { normal_hits += 1; }
         }
@@ -2459,7 +2480,7 @@ mod tests {
         let mut saw_miss = false;
         for seed in 0..200 {
             let mut rng = StdRng::seed_from_u64(seed);
-            let result = resolve_player_attack(&mut rng, &player, 100, false, None, &items, 5, true, false, &[], false, false);
+            let result = resolve_player_attack(&mut rng, &player, 100, false, None, &items, 5, true, false, &[], false, false, &Cover::None);
             assert_eq!(result.weapon_name, "Unarmed");
             assert!(result.attack_roll >= 1 && result.attack_roll <= 20,
                 "Attack roll must be a real d20 (seed={}, roll={})", seed, result.attack_roll);
@@ -2488,7 +2509,7 @@ mod tests {
         let mut crit_damage_seen = false;
         for seed in 0..200 {
             let mut rng = StdRng::seed_from_u64(seed);
-            let result = resolve_player_attack(&mut rng, &player, 1, false, None, &items, 5, true, false, &[], false, false);
+            let result = resolve_player_attack(&mut rng, &player, 1, false, None, &items, 5, true, false, &[], false, false, &Cover::None);
             assert_eq!(result.weapon_name, "Unarmed");
             assert_eq!(result.damage_type, DamageType::Bludgeoning);
             if result.hit {
@@ -2527,8 +2548,8 @@ mod tests {
         for seed in 0..1000 {
             let mut rng1 = StdRng::seed_from_u64(seed);
             let mut rng2 = StdRng::seed_from_u64(seed);
-            let normal = resolve_player_attack(&mut rng1, &player, 15, false, None, &items, 5, true, false, &[], false, false);
-            let poisoned = resolve_player_attack(&mut rng2, &poisoned_player, 15, false, None, &items, 5, true, false, &[], false, false);
+            let normal = resolve_player_attack(&mut rng1, &player, 15, false, None, &items, 5, true, false, &[], false, false, &Cover::None);
+            let poisoned = resolve_player_attack(&mut rng2, &poisoned_player, 15, false, None, &items, 5, true, false, &[], false, false, &Cover::None);
             if normal.hit { normal_hits += 1; }
             if poisoned.hit { poisoned_hits += 1; }
         }
@@ -2785,6 +2806,8 @@ mod tests {
             nick_used_this_turn: false,
             death_save_successes: 0,
             death_save_failures: 0,
+            player_cover: Cover::None,
+            npc_cover: HashMap::new(),
         };
 
         // Kill the first goblin (the one with stats)
@@ -3228,12 +3251,12 @@ mod tests {
                 &mut rng1, &state_adv.character, target_ac, false, Some(9999),
                 &state_adv.world.items, distance, true, false,
                 &[], // defender has no conditions
-                false, false,
+                false, false, &Cover::None,
             );
             let res_neu = resolve_player_attack(
                 &mut rng2, &state_neu.character, target_ac, false, Some(9999),
                 &state_neu.world.items, distance, true, false, &[],
-                false, false,
+                false, false, &Cover::None,
             );
 
             if res_adv.hit { wins_with_adv += 1; }
@@ -3284,11 +3307,11 @@ mod tests {
 
             let res_disadv = resolve_player_attack(
                 &mut rng1, &state.character, 15, false, Some(9999),
-                &state.world.items, 5, true, false, &[], true, false,
+                &state.world.items, 5, true, false, &[], true, false, &Cover::None,
             );
             let res_neu = resolve_player_attack(
                 &mut rng2, &state.character, 15, false, Some(9999),
-                &state.world.items, 5, true, false, &[], false, false,
+                &state.world.items, 5, true, false, &[], false, false, &Cover::None,
             );
             if res_disadv.hit { wins_disadv += 1; }
             if res_neu.hit { wins_neutral += 1; }
@@ -4617,5 +4640,125 @@ mod tests {
         let npc = state.world.npcs.get(&0).unwrap();
         assert!(!conditions::has_condition(&npc.conditions, ConditionType::Grappled),
             "Grappled should be released when grappler is incapacitated");
+    }
+
+    // ---- SRD Cover Rules ----
+
+    fn make_attack() -> NpcAttack {
+        NpcAttack {
+            name: "Longsword".to_string(),
+            hit_bonus: 0,
+            damage_dice: 1,
+            damage_die: 8,
+            damage_bonus: 0,
+            damage_type: DamageType::Slashing,
+            reach: 5,
+            range_normal: 0,
+            range_long: 0,
+        }
+    }
+
+    #[test]
+    fn test_cover_half_increases_player_ac_by_2() {
+        // An attack that would barely hit AC 10 should miss AC 10 with Half Cover (AC becomes 12).
+        let attack = make_attack();
+        // hit_bonus = 0; we need roll+0 >= 10 to hit normally.
+        // With Half Cover, effective AC = 12; roll+0 >= 12 needed.
+        // Use a deterministic seed that gives a d20 roll of exactly 10 (hits AC 10, misses AC 12).
+        for seed in 0..10000u64 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let result_no_cover = resolve_npc_attack(&mut rng, &attack, 10, false, 5, &[], &[], false, &Cover::None);
+            let mut rng2 = StdRng::seed_from_u64(seed);
+            let result_half = resolve_npc_attack(&mut rng2, &attack, 10, false, 5, &[], &[], false, &Cover::Half);
+            // Effective AC for Half cover is 10+2=12. Effective AC for None is 10.
+            assert_eq!(result_half.target_ac, 12, "Half cover should raise effective AC to 12");
+            assert_eq!(result_no_cover.target_ac, 10, "No cover AC should be 10");
+            // The test is structural: effective_ac is applied. Early exit after first seed.
+            return;
+        }
+    }
+
+    #[test]
+    fn test_cover_three_quarters_increases_player_ac_by_5() {
+        let attack = make_attack();
+        let seed = 0u64;
+        let mut rng = StdRng::seed_from_u64(seed);
+        let result = resolve_npc_attack(&mut rng, &attack, 10, false, 5, &[], &[], false, &Cover::ThreeQuarters);
+        assert_eq!(result.target_ac, 15, "Three-quarters cover should raise effective AC to 15");
+    }
+
+    #[test]
+    fn test_cover_none_does_not_change_player_ac() {
+        let attack = make_attack();
+        let seed = 0u64;
+        let mut rng = StdRng::seed_from_u64(seed);
+        let result = resolve_npc_attack(&mut rng, &attack, 14, false, 5, &[], &[], false, &Cover::None);
+        assert_eq!(result.target_ac, 14, "No cover: effective AC unchanged");
+    }
+
+    #[test]
+    fn test_player_attacking_npc_with_half_cover_increases_npc_ac() {
+        use std::collections::HashMap;
+        use crate::character::{create_character, race::Race, class::Class};
+        use crate::types::Ability;
+
+        let mut scores = HashMap::new();
+        scores.insert(Ability::Strength, 16);
+        scores.insert(Ability::Dexterity, 10);
+        scores.insert(Ability::Constitution, 14);
+        scores.insert(Ability::Intelligence, 8);
+        scores.insert(Ability::Wisdom, 10);
+        scores.insert(Ability::Charisma, 8);
+        let player = create_character("Hero".to_string(), Race::Human, Class::Fighter, scores, vec![]);
+        let items = HashMap::new();
+
+        let seed = 0u64;
+        let mut rng = StdRng::seed_from_u64(seed);
+        let result = resolve_player_attack(
+            &mut rng, &player, 10, false, None, &items, 5, true, false, &[], false, false, &Cover::Half,
+        );
+        assert_eq!(result.target_ac, 12, "NPC with Half cover should have effective AC 12");
+    }
+
+    #[test]
+    fn test_player_attacking_npc_with_no_cover_unmodified_ac() {
+        use std::collections::HashMap;
+        use crate::character::{create_character, race::Race, class::Class};
+        use crate::types::Ability;
+
+        let mut scores = HashMap::new();
+        scores.insert(Ability::Strength, 16);
+        scores.insert(Ability::Dexterity, 10);
+        scores.insert(Ability::Constitution, 14);
+        scores.insert(Ability::Intelligence, 8);
+        scores.insert(Ability::Wisdom, 10);
+        scores.insert(Ability::Charisma, 8);
+        let player = create_character("Hero".to_string(), Race::Human, Class::Fighter, scores, vec![]);
+        let items = HashMap::new();
+
+        let seed = 0u64;
+        let mut rng = StdRng::seed_from_u64(seed);
+        let result = resolve_player_attack(
+            &mut rng, &player, 10, false, None, &items, 5, true, false, &[], false, false, &Cover::None,
+        );
+        assert_eq!(result.target_ac, 10, "NPC with no cover: AC unchanged at 10");
+    }
+
+    #[test]
+    fn test_cover_ac_bonus_values() {
+        // Structural test: Cover enum returns the correct SRD bonuses.
+        assert_eq!(Cover::None.ac_bonus(), 0);
+        assert_eq!(Cover::Half.ac_bonus(), 2);
+        assert_eq!(Cover::ThreeQuarters.ac_bonus(), 5);
+        assert_eq!(Cover::Total.ac_bonus(), 0); // Total blocks targeting; no numeric AC bonus
+    }
+
+    #[test]
+    fn test_cover_save_bonus_matches_ac_bonus() {
+        // Per SRD, cover bonus applies equally to AC and DEX saves.
+        for cover in [Cover::None, Cover::Half, Cover::ThreeQuarters, Cover::Total] {
+            assert_eq!(cover.save_bonus(), cover.ac_bonus(),
+                "save_bonus should equal ac_bonus for {:?}", cover);
+        }
     }
 }

@@ -488,6 +488,8 @@ fn make_combat_disambiguation_state() -> GameState {
         nick_used_this_turn: false,
         death_save_successes: 0,
         death_save_failures: 0,
+        player_cover: jurnalis_engine::types::Cover::None,
+        npc_cover: std::collections::HashMap::new(),
     };
 
     let mut state = GameState {

@@ -497,6 +497,8 @@ mod tests {
             nick_used_this_turn: false,
             death_save_successes: 0,
             death_save_failures: 0,
+            player_cover: crate::types::Cover::None,
+            npc_cover: std::collections::HashMap::new(),
         });
         assert_eq!(check_rest_allowed(&state), Err(RestDenial::InCombat));
     }
@@ -763,6 +765,8 @@ mod tests {
             nick_used_this_turn: false,
             death_save_successes: 0,
             death_save_failures: 0,
+            player_cover: crate::types::Cover::None,
+            npc_cover: std::collections::HashMap::new(),
         });
         state.character.current_hp = 1;
         let before_time = state.in_world_minutes;

@@ -1217,10 +1217,20 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
                                         let disadv = armor_disadvantage_for_ability(
                                             &state.character, *ability,
                                         );
+                                        // SRD cover rules: half/three-quarters cover adds a bonus
+                                        // to the player's DEX saving throws.
+                                        let cover_bonus = if *ability == Ability::Dexterity {
+                                            state.active_combat.as_ref()
+                                                .map(|c| c.player_cover.save_bonus())
+                                                .unwrap_or(0)
+                                        } else {
+                                            0
+                                        };
+                                        let effective_dc = trigger.dc - cover_bonus;
                                         let result = rules::checks::ability_check(
                                             &mut rng, score,
                                             state.character.proficiency_bonus(),
-                                            is_prof, trigger.dc, false, disadv,
+                                            is_prof, effective_dc, false, disadv,
                                         );
                                         let narration = narration::narrate_skill_check(&mut rng, &format!("{} save", ability), &result);
                                         Some((result.success, narration))
@@ -1802,7 +1812,7 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
             }
         }
         Command::Attack(_) | Command::Approach(_) | Command::Retreat | Command::Dodge
-        | Command::Disengage | Command::Dash | Command::EndTurn
+        | Command::Disengage | Command::Dash | Command::TakeCover | Command::EndTurn
         | Command::OffHandAttack(_) | Command::BonusDash | Command::ReactionYes | Command::ReactionNo
         | Command::Grapple(_) | Command::EscapeGrapple => {
             vec!["You're not in combat.".to_string()]
@@ -2199,6 +2209,7 @@ fn resolve_reaction_decision(
                     &target_conditions,
                     grappled_disadv,
                     false,
+                    &crate::types::Cover::None, // opportunity attacks: cover not applied
                 );
                 // Apply magic weapon bonuses (if wielding a MagicWeapon).
                 let (atk_b, dmg_b) = magic_weapon_bonuses(state, weapon_id);
@@ -2280,6 +2291,7 @@ fn resolve_single_npc_attack(
         rng, &attack, player_ac, combat.player_dodging, distance,
         &npc_conditions, &player_conditions,
         extra_disadvantage,
+        &combat.player_cover,
     );
     if sapped {
         lines.push("(Disadvantage from Sap mastery.)".to_string());
@@ -2825,6 +2837,15 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                         )];
                     }
 
+                    // Cover: a target with Total cover cannot be directly targeted.
+                    if combat.npc_cover.get(&npc_id) == Some(&crate::types::Cover::Total) {
+                        state.active_combat = Some(combat);
+                        return vec![format!(
+                            "{} has total cover and cannot be directly targeted.",
+                            npc_name
+                        )];
+                    }
+
                     // Grappled: disadvantage on attacks against any target other than
                     // the grappler.
                     let grappled_disadv = crate::conditions::grappled_attack_disadvantage(
@@ -2845,6 +2866,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                         target_conditions,
                         grappled_disadv,
                         vex_advantage,
+                        combat.npc_cover.get(&npc_id).unwrap_or(&crate::types::Cover::None),
                     );
                     if vex_advantage {
                         lines.push("(Advantage from Vex mastery.)".to_string());
@@ -3001,6 +3023,17 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
             combat.player_movement_remaining += state.character.speed;
             combat.action_used = true;
             lines.push(format!("You take the Dash action. Movement this turn: {} ft.", combat.player_movement_remaining));
+        }
+        Command::TakeCover => {
+            if combat.action_used {
+                state.active_combat = Some(combat);
+                return vec!["You've already used your action this turn.".to_string()];
+            }
+            combat.player_cover = crate::types::Cover::Half;
+            combat.action_used = true;
+            lines.push(
+                "You take cover behind the nearest obstacle, gaining +2 AC and +2 to DEX saving throws (Half Cover).".to_string()
+            );
         }
         Command::BonusDash => {
             if combat.bonus_action_used {
@@ -3165,6 +3198,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                         target_conditions,
                         grappled_disadv,
                         vex_advantage,
+                        combat.npc_cover.get(&npc_id).unwrap_or(&crate::types::Cover::None),
                     );
                     if vex_advantage {
                         lines.push("(Advantage from Vex mastery.)".to_string());
@@ -9361,6 +9395,8 @@ mod tests {
             nick_used_this_turn: false,
             death_save_successes: 0,
             death_save_failures: 0,
+            player_cover: crate::types::Cover::None,
+            npc_cover: std::collections::HashMap::new(),
         });
         npc_id
     }
@@ -9419,6 +9455,8 @@ mod tests {
             nick_used_this_turn: false,
             death_save_successes: 0,
             death_save_failures: 0,
+            player_cover: crate::types::Cover::None,
+            npc_cover: std::collections::HashMap::new(),
         });
         let _ = end_combat(&mut state, true);
         // Two goblins: 50 + 50 = 100 XP.
@@ -9475,6 +9513,8 @@ mod tests {
             nick_used_this_turn: false,
             death_save_successes: 0,
             death_save_failures: 0,
+            player_cover: crate::types::Cover::None,
+            npc_cover: std::collections::HashMap::new(),
         });
         let _ = end_combat(&mut state, true);
         // No XP should be awarded — the hostile is still alive.
@@ -11029,6 +11069,8 @@ mod tests {
             nick_used_this_turn: false,
             death_save_successes: 0,
             death_save_failures: 0,
+            player_cover: crate::types::Cover::None,
+            npc_cover: std::collections::HashMap::new(),
         });
 
         let lines = end_combat(&mut state, true);
@@ -11135,6 +11177,8 @@ mod tests {
             nick_used_this_turn: false,
             death_save_successes: 0,
             death_save_failures: 0,
+            player_cover: crate::types::Cover::None,
+            npc_cover: std::collections::HashMap::new(),
         });
 
         // Try multiple seeds to get a hit (AC=1, nat 1 is the only miss)

@@ -184,6 +184,42 @@ impl std::fmt::Display for Mastery {
     }
 }
 
+/// SRD 5.1 cover levels. A creature behind cover gains a bonus to AC and
+/// Dexterity saving throws based on how much of its body is obscured.
+/// See `docs/specs/cover-rules.md` and SRD "Cover" (Playing the Game).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub enum Cover {
+    /// No cover — no bonus.
+    #[default]
+    None,
+    /// Half cover — a low wall, large furniture, a creature, etc.
+    /// Grants +2 to AC and DEX saving throws.
+    Half,
+    /// Three-quarters cover — a portcullis, thick tree trunk, etc.
+    /// Grants +5 to AC and DEX saving throws.
+    ThreeQuarters,
+    /// Total cover — completely concealed behind an obstacle.
+    /// The creature cannot be directly targeted.
+    Total,
+}
+
+impl Cover {
+    /// Bonus added to the target's AC when this cover level applies.
+    pub fn ac_bonus(&self) -> i32 {
+        match self {
+            Cover::None => 0,
+            Cover::Half => 2,
+            Cover::ThreeQuarters => 5,
+            Cover::Total => 0, // total cover blocks targeting outright
+        }
+    }
+
+    /// Bonus added to the target's Dexterity saving throw when this cover level applies.
+    pub fn save_bonus(&self) -> i32 {
+        self.ac_bonus()
+    }
+}
+
 /// Nine-axis alignment plus Unaligned. Shared between characters (chosen at
 /// creation) and monsters (declared per stat block). Canonical definition
 /// lives here in `types.rs` because it is referenced across feature modules
