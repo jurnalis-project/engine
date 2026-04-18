@@ -177,6 +177,10 @@ pub fn create_character(
     for (ability, bonus) in race.ability_bonuses() {
         *final_scores.entry(ability).or_insert(10) += bonus;
     }
+    // SRD 5.1: "None of these increases can raise a score above 20."
+    for score in final_scores.values_mut() {
+        *score = (*score).min(20);
+    }
     let con_mod = Ability::modifier(*final_scores.get(&Ability::Constitution).unwrap_or(&10));
     let hp = calculate_hp(class, con_mod, 1);
     let save_profs = class.saving_throw_proficiencies();
@@ -931,5 +935,38 @@ mod tests {
         json.as_object_mut().unwrap().remove("weapon_masteries");
         let loaded: Character = serde_json::from_value(json).unwrap();
         assert!(loaded.weapon_masteries.is_empty());
+    }
+
+    // ---- Ability score cap (SRD 5.1: scores cannot exceed 20) ----
+
+    #[test]
+    fn test_ability_score_cap_clamps_scores_exceeding_20() {
+        // Start with scores that would exceed 20 after racial bonus.
+        // Elf gives +2 DEX; if we set DEX to 19, post-bonus would be 21 -> clamped to 20.
+        let mut scores = test_scores();
+        scores.insert(Ability::Dexterity, 19); // 19 + 2 (Elf) = 21, should clamp to 20
+        let c = create_character("Test".to_string(), Race::Elf, Class::Rogue, scores, vec![]);
+        assert_eq!(c.ability_scores[&Ability::Dexterity], 20,
+            "DEX 19 + Elf +2 should be clamped to 20, not 21");
+    }
+
+    #[test]
+    fn test_ability_score_cap_does_not_clamp_scores_below_20() {
+        // Scores that don't exceed 20 should be unchanged.
+        let mut scores = test_scores(); // STR 15, DEX 14, ...
+        scores.insert(Ability::Dexterity, 14); // 14 + 2 (Elf) = 16, no clamp needed
+        let c = create_character("Test".to_string(), Race::Elf, Class::Rogue, scores, vec![]);
+        assert_eq!(c.ability_scores[&Ability::Dexterity], 16,
+            "DEX 14 + Elf +2 = 16, should not be clamped");
+    }
+
+    #[test]
+    fn test_ability_score_cap_allows_exactly_20() {
+        // A score of exactly 20 must not be reduced.
+        let mut scores = test_scores();
+        scores.insert(Ability::Dexterity, 18); // 18 + 2 (Elf) = 20, exactly at cap
+        let c = create_character("Test".to_string(), Race::Elf, Class::Rogue, scores, vec![]);
+        assert_eq!(c.ability_scores[&Ability::Dexterity], 20,
+            "DEX 18 + Elf +2 = 20 exactly, must not be reduced");
     }
 }
