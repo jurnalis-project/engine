@@ -11167,4 +11167,92 @@ mod tests {
             t.contains("already used") || t.contains("can't")),
             "Should be blocked when both free interaction and action are used. Got: {:?}", output.text);
     }
+
+    // ---- End-to-end smoke test ----
+
+    /// Drives a complete character-creation flow for a Human Fighter Acolyte
+    /// and returns the state JSON at the point the world is entered.
+    fn drive_human_fighter_creation() -> String {
+        let output = new_game(99, false);
+        // ChooseRace: Human (1)
+        let output = process_input(&output.state_json, "1");
+        // ChooseClass: Fighter — use name to be ordering-stable
+        let output = process_input(&output.state_json, "Fighter");
+        // ChooseBackground: Acolyte (1)
+        let output = process_input(&output.state_json, "1");
+        // ChooseOriginFeat: default (background suggestion)
+        let output = process_input(&output.state_json, "");
+        // ChooseBackgroundAbilityPattern: +2/+1 (1)
+        let output = process_input(&output.state_json, "1");
+        // ChooseAbilityMethod: Standard Array (1)
+        let output = process_input(&output.state_json, "1");
+        // AssignAbilities: STR 15, DEX 14, CON 13, INT 12, WIS 10, CHA 8
+        let output = process_input(&output.state_json, "15 14 13 12 10 8");
+        // ChooseSkills: Fighter gets 2 skill picks
+        let output = process_input(&output.state_json, "1 2");
+        // ChooseAlignment: Lawful Good (1)
+        let output = process_input(&output.state_json, "1");
+        // ChooseName
+        let output = process_input(&output.state_json, "Smoke");
+        output.state_json
+    }
+
+    #[test]
+    fn test_smoke_end_to_end_public_api() {
+        // ── 1. new_game returns a valid prompt ──────────────────────────────
+        let output = new_game(99, false);
+        assert!(!output.text.is_empty(), "new_game: text must not be empty");
+        assert!(!output.state_json.is_empty(), "new_game: state_json must not be empty");
+        let state: GameState = serde_json::from_str(&output.state_json)
+            .expect("new_game: state_json must be valid JSON");
+        assert!(matches!(state.game_phase, GamePhase::CharacterCreation(CreationStep::ChooseRace)),
+            "new_game: initial phase must be ChooseRace");
+
+        // ── 2. Complete character creation → Exploration ────────────────────
+        let exploration_json = drive_human_fighter_creation();
+        let state: GameState = serde_json::from_str(&exploration_json)
+            .expect("post-creation: state_json must be valid JSON");
+        assert!(matches!(state.game_phase, GamePhase::Exploration),
+            "After character creation, game_phase must be Exploration");
+        assert_eq!(state.character.name, "Smoke");
+        assert_eq!(state.character.race, Race::Human);
+        assert_eq!(state.character.class, Class::Fighter);
+        assert_eq!(state.character.level, 1);
+        assert!(state.character.current_hp > 0,
+            "Character must be alive entering exploration");
+        assert!(!state.world.locations.is_empty(),
+            "World must have been generated");
+        assert!(!state.character.inventory.is_empty(),
+            "Fighter must have starting equipment");
+
+        // ── 3. look → non-empty narrative text ─────────────────────────────
+        let look_out = process_input(&exploration_json, "look");
+        assert!(!look_out.text.is_empty(), "look: must return text");
+        // look with no target must return at least one non-empty line
+        assert!(look_out.text.iter().any(|l| !l.is_empty()),
+            "look: must return at least one non-empty line");
+
+        // ── 4. inventory → lists carried items ─────────────────────────────
+        let inv_out = process_input(&exploration_json, "inventory");
+        assert!(!inv_out.text.is_empty(), "inventory: must return text");
+
+        // ── 5. help → returns guidance ──────────────────────────────────────
+        let help_out = process_input(&exploration_json, "help");
+        assert!(!help_out.text.is_empty(), "help: must return text");
+        assert!(help_out.text.iter().any(|l| !l.is_empty()),
+            "help: must return at least one non-empty line");
+
+        // ── 6. State serialization round-trips cleanly ──────────────────────
+        let state2: GameState = serde_json::from_str(&exploration_json).unwrap();
+        let json2 = serde_json::to_string(&state2).unwrap();
+        let state3: GameState = serde_json::from_str(&json2).unwrap();
+        assert_eq!(state3.character.name, state2.character.name);
+        assert_eq!(state3.character.level, state2.character.level);
+        assert_eq!(state3.character.current_hp, state2.character.current_hp);
+
+        // ── 7. process_input on re-serialized state still works ─────────────
+        let look_out2 = process_input(&json2, "look");
+        assert!(!look_out2.text.is_empty(),
+            "process_input on re-serialized state must work");
+    }
 }
