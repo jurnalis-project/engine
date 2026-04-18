@@ -90,6 +90,7 @@ pub fn new_game(seed: u64, ironman_mode: bool) -> GameOutput {
         pending_background_pattern: None,
         pending_subrace: None,
         pending_disambiguation: None,
+        pending_new_game_confirm: false,
     };
 
     let state_json = serde_json::to_string(&state).unwrap();
@@ -150,6 +151,29 @@ pub fn process_input(state_json: &str, input: &str) -> GameOutput {
             return GameOutput::new(text, old_state_json, false);
         }
         // else: dying in combat; fall through to normal combat handling.
+    }
+
+    // --- New-game confirmation routing (#95) ---
+    //
+    // When the player types `new game` during active play (Exploration or Combat),
+    // the engine sets `pending_new_game_confirm = true` and asks for confirmation.
+    // On the next input: "yes" reinitializes; anything else cancels and clears the flag.
+    if state.pending_new_game_confirm
+        && (state.active_combat.is_some() || matches!(state.game_phase, GamePhase::Exploration))
+    {
+        state.pending_new_game_confirm = false;
+        let answer = input.trim().to_lowercase();
+        if answer == "yes" || answer == "y" {
+            let new_seed = state.rng_seed.wrapping_add(state.rng_counter);
+            return new_game(new_seed, state.ironman_mode);
+        } else {
+            let new_state_json = serde_json::to_string(&state).unwrap();
+            return GameOutput::new(
+                vec!["New game cancelled.".to_string()],
+                new_state_json,
+                true,
+            );
+        }
     }
 
     // --- Disambiguation selection routing (#62) ---
@@ -1418,18 +1442,44 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
                 return vec![narration::templates::EMPTY_INVENTORY.to_string()];
             }
             let mut lines = vec!["You are carrying:".to_string()];
+
+            // Group items by name, tracking count and equipped tags (#96).
+            // Preserve insertion order using a Vec of (name, count, equipped_tag).
+            let mut seen_names: Vec<String> = Vec::new();
+            let mut grouped: std::collections::HashMap<String, (usize, String)> = std::collections::HashMap::new();
+
             for &item_id in &state.character.inventory {
                 if let Some(item) = state.world.items.get(&item_id) {
                     let equipped_tag = if state.character.equipped.main_hand == Some(item_id) {
-                        " (equipped - main hand)"
+                        " (equipped - main hand)".to_string()
                     } else if state.character.equipped.off_hand == Some(item_id) {
-                        " (equipped - off hand)"
+                        " (equipped - off hand)".to_string()
                     } else if state.character.equipped.body == Some(item_id) {
-                        " (equipped - body)"
+                        " (equipped - body)".to_string()
                     } else {
-                        ""
+                        String::new()
                     };
-                    lines.push(format!("  - {}{}", item.name, equipped_tag));
+
+                    let entry = grouped.entry(item.name.clone()).or_insert_with(|| {
+                        seen_names.push(item.name.clone());
+                        (0, String::new())
+                    });
+                    entry.0 += 1;
+                    // Keep the first non-empty equipped tag we encounter for this name group.
+                    if entry.1.is_empty() && !equipped_tag.is_empty() {
+                        entry.1 = equipped_tag;
+                    }
+                }
+            }
+
+            for name in &seen_names {
+                if let Some((count, equipped_tag)) = grouped.get(name) {
+                    let count_suffix = if *count > 1 {
+                        format!(" (x{})", count)
+                    } else {
+                        String::new()
+                    };
+                    lines.push(format!("  - {}{}{}", name, count_suffix, equipped_tag));
                 }
             }
             lines
@@ -1819,7 +1869,10 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
             vec!["You're not in combat.".to_string()]
         }
         Command::NewGame => {
-            vec!["You can only start a new game after being defeated.".to_string()]
+            state.pending_new_game_confirm = true;
+            vec![
+                "Start a new game? You will lose all current progress. (yes/no)".to_string(),
+            ]
         }
         Command::ShortRest => {
             rest::handle_short_rest(state, &mut rng)
@@ -2540,6 +2593,32 @@ fn check_all_objectives_complete(state: &mut GameState) -> Vec<String> {
 
 fn append_player_turn_prompt(lines: &mut Vec<String>, state: &GameState, combat: &combat::CombatState) {
     lines.push(String::new());
+
+    // #97: One-line HP header showing player HP and first living enemy HP.
+    let first_enemy = combat.initiative_order.iter().find_map(|(c, _)| {
+        if let combat::Combatant::Npc(id) = c {
+            let npc = state.world.npcs.get(id)?;
+            let stats = npc.combat_stats.as_ref()?;
+            if stats.current_hp > 0 {
+                Some((npc.name.clone(), stats.current_hp, stats.max_hp))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    });
+    let hp_header = if let Some((enemy_name, enemy_hp, enemy_max)) = first_enemy {
+        format!(
+            "[HP: {}/{} | {}: {}/{}]",
+            state.character.current_hp, state.character.max_hp,
+            enemy_name, enemy_hp, enemy_max,
+        )
+    } else {
+        format!("[HP: {}/{}]", state.character.current_hp, state.character.max_hp)
+    };
+    lines.push(hp_header);
+
     lines.push(format!(
         "Your turn! (Round {}, HP: {}/{})",
         combat.round,
@@ -9325,6 +9404,7 @@ mod tests {
             pending_background_pattern: None,
             pending_subrace: None,
             pending_disambiguation: None,
+            pending_new_game_confirm: false,
         }
     }
 
@@ -9491,6 +9571,7 @@ mod tests {
             pending_background_pattern: None,
             pending_subrace: None,
             pending_disambiguation: None,
+            pending_new_game_confirm: false,
         }
     }
 
@@ -10258,6 +10339,7 @@ mod tests {
             pending_background_pattern: None,
             pending_subrace: None,
             pending_disambiguation: None,
+            pending_new_game_confirm: false,
         }
     }
 
@@ -11892,5 +11974,113 @@ mod tests {
         let state = create_test_exploration_state();
         assert!(state.character.ammo.is_empty(), "ammo map should be empty for opt-out");
         assert!(!state.character.ammo.contains_key("Arrow"));
+    }
+
+    // ---- UX Improvements (#95, #96, #97) ------------------------------------
+
+    #[test]
+    fn test_combat_turn_prompt_contains_hp_header() {
+        // #97: Every combat turn prompt should contain a one-line HP header:
+        // "[HP: X/Y | EnemyName: A/B]"
+        let mut state = create_test_combat_state();
+        force_player_turn(&mut state);
+        let state_json = serde_json::to_string(&state).unwrap();
+        // "dodge" keeps the player turn open, triggering append_player_turn_prompt
+        let output = process_input(&state_json, "dodge");
+        assert!(
+            output.text.iter().any(|l| l.starts_with("[HP:") && l.contains("|")),
+            "Combat turn prompt must contain [HP: X/Y | EnemyName: A/B]. Got: {:?}",
+            output.text
+        );
+    }
+
+    #[test]
+    fn test_new_game_mid_exploration_shows_confirmation() {
+        // #95: "new game" during exploration should show a confirmation prompt
+        let state = create_test_exploration_state();
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "new game");
+        assert!(
+            output.text.iter().any(|l| l.contains("Start a new game") || l.contains("lose")),
+            "Should show confirmation prompt. Got: {:?}", output.text
+        );
+        // State should NOT have reset to CharacterCreation
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert!(
+            matches!(new_state.game_phase, GamePhase::Exploration),
+            "Phase should still be Exploration after first 'new game'. Got: {:?}", new_state.game_phase
+        );
+        assert!(new_state.pending_new_game_confirm,
+            "pending_new_game_confirm should be true after first 'new game'");
+    }
+
+    #[test]
+    fn test_new_game_confirmation_yes_reinitializes() {
+        // #95: "yes" after confirmation should reinitialize the game
+        let state = create_test_exploration_state();
+        let state_json = serde_json::to_string(&state).unwrap();
+        // First: trigger confirmation
+        let confirm_out = process_input(&state_json, "new game");
+        // Second: confirm with "yes"
+        let output = process_input(&confirm_out.state_json, "yes");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert!(
+            matches!(new_state.game_phase, GamePhase::CharacterCreation(CreationStep::ChooseRace)),
+            "Game should reinitialize to CharacterCreation. Got: {:?}", new_state.game_phase
+        );
+    }
+
+    #[test]
+    fn test_new_game_confirmation_no_cancels() {
+        // #95: "no" after confirmation should cancel and stay in exploration
+        let state = create_test_exploration_state();
+        let state_json = serde_json::to_string(&state).unwrap();
+        let confirm_out = process_input(&state_json, "new game");
+        let output = process_input(&confirm_out.state_json, "no");
+        assert!(
+            output.text.iter().any(|l| l.contains("cancelled")),
+            "Should say cancelled. Got: {:?}", output.text
+        );
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert!(
+            matches!(new_state.game_phase, GamePhase::Exploration),
+            "Should stay in Exploration after cancel"
+        );
+        assert!(!new_state.pending_new_game_confirm, "pending should be cleared");
+    }
+
+    #[test]
+    fn test_inventory_groups_identical_items() {
+        // #96: inventory should group items with the same name and show count
+        let mut state = create_test_exploration_state();
+        // Add 3 Javelins to the inventory
+        for i in 300..303u32 {
+            state.world.items.insert(i, state::Item {
+                id: i,
+                name: "Javelin".to_string(),
+                description: "A javelin.".to_string(),
+                item_type: state::ItemType::Weapon {
+                    damage_dice: 1, damage_die: 6,
+                    damage_type: state::DamageType::Piercing,
+                    properties: 0,
+                    category: state::WeaponCategory::Simple,
+                    versatile_die: 0, range_normal: 30, range_long: 120,
+                },
+                location: None,
+                carried_by_player: true,
+                charges_remaining: None,
+            });
+            state.character.inventory.push(i);
+        }
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "inventory");
+        // Should have a line with "Javelin (x3)" rather than three separate "Javelin" lines
+        assert!(
+            output.text.iter().any(|l| l.contains("Javelin") && l.contains("(x3)")),
+            "Inventory should show 'Javelin (x3)'. Got: {:?}", output.text
+        );
+        // Should not have three separate Javelin lines
+        let javelin_count = output.text.iter().filter(|l| l.contains("Javelin")).count();
+        assert_eq!(javelin_count, 1, "Javelins should be grouped into one line. Got: {:?}", output.text);
     }
 }

@@ -66,6 +66,12 @@ pub struct GameState {
     /// and stored on the Character. `None` for species without subraces.
     #[serde(default)]
     pub pending_subrace: Option<String>,
+    /// Transient flag set when the player types `new game` during active play.
+    /// Requires a "yes" confirmation to reinitialize. Cleared on any input
+    /// that resolves the prompt. `#[serde(default)]` for forward-compatibility
+    /// with saves produced before this field existed.
+    #[serde(default)]
+    pub pending_new_game_confirm: bool,
     /// Transient state used after the engine emits a disambiguation prompt.
     /// Carries the verb prefix (e.g. "take", "equip off hand") and the exact
     /// candidate names the prompt listed, in display order. When set, the
@@ -496,6 +502,7 @@ mod tests {
             pending_background_pattern: None,
             pending_subrace: None,
             pending_disambiguation: None,
+            pending_new_game_confirm: false,
         }
     }
 

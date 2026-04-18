@@ -2293,6 +2293,7 @@ mod tests {
             pending_background_pattern: None,
             pending_subrace: None,
             pending_disambiguation: None,
+            pending_new_game_confirm: false,
         }
     }
 
@@ -2939,6 +2940,7 @@ mod tests {
             pending_background_pattern: None,
             pending_subrace: None,
             pending_disambiguation: None,
+            pending_new_game_confirm: false,
         }
     }
 
@@ -4469,6 +4471,7 @@ mod tests {
             pending_background_pattern: None,
             pending_subrace: None,
             pending_disambiguation: None,
+            pending_new_game_confirm: false,
         }
     }
 
@@ -5009,6 +5012,7 @@ mod tests {
             pending_background_pattern: None,
             pending_subrace: None,
             pending_disambiguation: None,
+            pending_new_game_confirm: false,
         }
     }
 
@@ -5048,6 +5052,7 @@ mod tests {
             pending_background_pattern: None,
             pending_subrace: None,
             pending_disambiguation: None,
+            pending_new_game_confirm: false,
         }
     }
 

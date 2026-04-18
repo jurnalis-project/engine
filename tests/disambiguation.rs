@@ -131,6 +131,7 @@ fn make_two_item_room_state() -> GameState {
         pending_background_pattern: None,
         pending_subrace: None,
         pending_disambiguation: None,
+            pending_new_game_confirm: false,
     }
 }
 
@@ -516,6 +517,7 @@ fn make_combat_disambiguation_state() -> GameState {
         last_long_rest_minutes: None,
         pending_background_pattern: None,
         pending_disambiguation: None,
+            pending_new_game_confirm: false,
         pending_subrace: None,
     };
     state.character.inventory = vec![1, 2];

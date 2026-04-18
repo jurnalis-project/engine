@@ -75,6 +75,7 @@ fn make_exploration_state(class: Class) -> GameState {
         pending_background_pattern: None,
         pending_subrace: None,
         pending_disambiguation: None,
+            pending_new_game_confirm: false,
     }
 }
 
