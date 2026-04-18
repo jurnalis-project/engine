@@ -33,7 +33,16 @@ fn handle_cli_persistence_command(
         "load" | "restore" => {
             let slot = sanitize_save_name(arg);
             let path = save_dir.join(format!("{}.json", slot));
-            let loaded = std::fs::read_to_string(&path)?;
+            let loaded = std::fs::read_to_string(&path).map_err(|e| {
+                if e.kind() == io::ErrorKind::NotFound {
+                    io::Error::new(
+                        io::ErrorKind::NotFound,
+                        format!("No save file named '{}' was found.", slot),
+                    )
+                } else {
+                    e
+                }
+            })?;
             // Validate shape/version through engine state loader.
             jurnalis_engine::state::load_game(&loaded)
                 .map_err(|msg| io::Error::new(io::ErrorKind::InvalidData, msg))?;
@@ -207,6 +216,37 @@ mod tests {
 
         let output_str = String::from_utf8(output).unwrap();
         assert!(output_str.contains("Farewell, adventurer."));
+    }
+
+    // ---- Bug #90: load nonexistent returns raw OS error ----
+    #[test]
+    fn load_nonexistent_file_returns_friendly_error() {
+        // Hypothesis: std::fs::read_to_string returns an OS-level "No such
+        // file or directory" error which is printed raw. Fix: intercept
+        // NotFound and replace with a human-readable message.
+        let tmp = std::env::temp_dir().join(format!("jurnalis_cli_nonexistent_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let mut state_json = new_game(42, false).state_json;
+        let result = handle_cli_persistence_command("load nonexistent", &mut state_json, &tmp);
+
+        match result {
+            Err(e) => {
+                let msg = e.to_string();
+                assert!(
+                    msg.contains("No save file named") || msg.contains("nonexistent"),
+                    "Expected friendly error message, got: {}", msg
+                );
+                assert!(
+                    !msg.to_lowercase().contains("os error") && !msg.contains("(os error"),
+                    "Error should not expose raw OS error, got: {}", msg
+                );
+            }
+            Ok(_) => panic!("Expected error for nonexistent save, got Ok"),
+        }
+
+        std::fs::remove_dir_all(&tmp).ok();
     }
 
     #[test]

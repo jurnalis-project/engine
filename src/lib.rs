@@ -5019,6 +5019,9 @@ fn handle_victory(state: &mut GameState, input: &str) -> Vec<String> {
             )
         }
         Command::Objective => render_objective(state),
+        Command::Check(_) => {
+            vec!["Skill checks are not available after the game is over.".to_string()]
+        }
         _ => {
             vec![
                 "=== VICTORY ===".to_string(),
@@ -9047,6 +9050,28 @@ mod tests {
         assert_eq!(new_state.game_phase,
             GamePhase::CharacterCreation(CreationStep::ChooseRace),
             "new game from victory should start character creation");
+    }
+
+    // ---- Bug #89: check command in victory phase (#89) ----
+    #[test]
+    fn test_victory_phase_check_returns_not_available_message() {
+        // Hypothesis: handle_victory catches Command::Check in the wildcard arm
+        // and displays the victory banner instead of a skill-check-unavailable message.
+        // Fix: add explicit Command::Check arm in handle_victory.
+        let mut state = create_test_exploration_state();
+        state.game_phase = GamePhase::Victory;
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "check perception");
+
+        assert!(
+            output.text.iter().any(|t| t.contains("not available") || t.contains("Skill checks")),
+            "check in victory phase should say skill checks not available, got: {:?}", output.text
+        );
+        assert!(
+            !output.text.iter().any(|t| t.contains("VICTORY")),
+            "check in victory phase should NOT show victory banner, got: {:?}", output.text
+        );
     }
 
     #[test]

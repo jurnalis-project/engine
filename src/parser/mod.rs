@@ -280,7 +280,13 @@ pub fn parse(input: &str) -> Command {
             if args.is_empty() { Command::Unknown("Talk to whom?".to_string()) } else { Command::Talk(args) }
         }
         "take" | "get" | "grab" | "collect" => {
-            if args.is_empty() { Command::Unknown("Take what?".to_string()) } else { Command::Take(args) }
+            if args.is_empty() {
+                Command::Unknown("Take what?".to_string())
+            } else if args == "all" || args == "everything" {
+                Command::Unknown("`take all` is not supported — pick up items individually.".to_string())
+            } else {
+                Command::Take(args)
+            }
         }
         "drop" | "discard" => {
             if args.is_empty() { Command::Unknown("Drop what?".to_string()) } else { Command::Drop(args) }
@@ -1042,6 +1048,39 @@ mod tests {
         // "take off" -> Unequip, "take" -> Take
         assert_eq!(parse("take off helmet"), Command::Unequip("helmet".to_string()));
         assert_eq!(parse("take sword"), Command::Take("sword".to_string()));
+    }
+
+    // ---- Bug #94: take all returns misleading error ----
+    #[test]
+    fn test_take_all_returns_not_supported_message() {
+        // Hypothesis: "take all" routes to Command::Take("all") and the
+        // orchestrator returns `You don't see any "all" here.` Fix: detect
+        // "all"/"everything" in the parser and return an Unknown with the
+        // proper message.
+        match parse("take all") {
+            Command::Unknown(s) => assert!(
+                s.contains("not supported") || s.contains("individually"),
+                "take all should explain it's unsupported, got: {}", s
+            ),
+            other => panic!("Expected Unknown for 'take all', got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_take_everything_returns_not_supported_message() {
+        match parse("take everything") {
+            Command::Unknown(s) => assert!(
+                s.contains("not supported") || s.contains("individually"),
+                "take everything should explain it's unsupported, got: {}", s
+            ),
+            other => panic!("Expected Unknown for 'take everything', got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_take_specific_item_still_works() {
+        // Ensure "take" with a non-"all" argument still routes to Take
+        assert_eq!(parse("take torch"), Command::Take("torch".to_string()));
     }
 
     #[test]
