@@ -309,104 +309,6 @@ fn emit_disambiguation_with_suffix(
     resolver::format_disambiguation(matches)
 }
 
-fn choose_background_prompt(class: Class) -> Vec<String> {
-    let mut lines = vec![
-        format!("Class: {}. Choose your background:", class),
-    ];
-    for (i, &bg) in Background::all().iter().enumerate() {
-        let feat = bg.origin_feat();
-        let skills = bg.skill_proficiencies();
-        lines.push(format!(
-            "  {}. {} ({} / {}, feat: {})",
-            i + 1, bg, skills[0], skills[1], feat,
-        ));
-    }
-    lines.push("Enter a number or name.".to_string());
-    lines
-}
-
-fn parse_background_selection(input: &str) -> Option<Background> {
-    let input_lower = input.trim().to_lowercase();
-    let all_bgs = Background::all();
-    input.trim().parse::<usize>().ok()
-        .and_then(|n| if (1..=all_bgs.len()).contains(&n) { Some(all_bgs[n - 1]) } else { None })
-        .or_else(|| all_bgs.iter().copied().find(|bg| bg.to_string().to_lowercase() == input_lower))
-}
-
-fn wizard_level_one_spell_choices() -> Vec<String> {
-    spells::spells_for_class("wizard")
-        .into_iter()
-        .filter(|spell| spell.level == 1)
-        .map(|spell| spell.name.to_string())
-        .collect()
-}
-
-fn wizard_starting_cantrips() -> Vec<String> {
-    character::default_starting_spells(Class::Wizard)
-        .into_iter()
-        .filter(|spell_name| {
-            spells::find_spell(spell_name)
-                .map(|spell| spell.level == 0)
-                .unwrap_or(false)
-        })
-        .collect()
-}
-
-fn render_wizard_spellbook_prompt() -> Vec<String> {
-    let choices = wizard_level_one_spell_choices();
-    let mut lines = vec![
-        "Wizard selected. Choose 6 level-1 spells for your spellbook:".to_string(),
-    ];
-    for (i, spell) in choices.iter().enumerate() {
-        lines.push(format!("  {}. {}", i + 1, spell));
-    }
-    lines.push("Enter 6 numbers separated by spaces.".to_string());
-    lines
-}
-
-fn wizard_prepared_spell_limit(state: &GameState) -> usize {
-    (1 + state.character.ability_modifier(Ability::Intelligence).max(0)) as usize
-}
-
-fn apply_default_wizard_spell_setup(state: &mut GameState) {
-    let mut known_spells = wizard_starting_cantrips();
-    let level_one_choices = wizard_level_one_spell_choices();
-    known_spells.extend(level_one_choices.iter().take(6).cloned());
-    state.character.known_spells = known_spells;
-    state.character.class_features.prepared_spells = level_one_choices
-        .into_iter()
-        .take(wizard_prepared_spell_limit(state))
-        .collect();
-}
-
-fn render_wizard_prepared_spell_prompt(state: &GameState) -> Vec<String> {
-    let limit = wizard_prepared_spell_limit(state);
-    let spellbook: Vec<String> = state.character.known_spells.iter()
-        .filter(|spell_name| {
-            spells::find_spell(spell_name)
-                .map(|spell| spell.level == 1)
-                .unwrap_or(false)
-        })
-        .cloned()
-        .collect();
-    let mut lines = vec![
-        format!(
-            "Choose {} prepared spell{} from your spellbook:",
-            limit,
-            if limit == 1 { "" } else { "s" }
-        ),
-    ];
-    for (i, spell) in spellbook.iter().enumerate() {
-        lines.push(format!("  {}. {}", i + 1, spell));
-    }
-    lines.push(format!(
-        "Enter {} number{} separated by spaces.",
-        limit,
-        if limit == 1 { "" } else { "s" }
-    ));
-    lines
-}
-
 fn handle_creation(state: &mut GameState, input: &str, step: CreationStep) -> Vec<String> {
     let input = input.trim();
     match step {
@@ -535,9 +437,6 @@ fn handle_creation(state: &mut GameState, input: &str, step: CreationStep) -> Ve
             state.character.spell_slots_max = class.starting_spell_slots();
             state.character.spell_slots_remaining = state.character.spell_slots_max.clone();
             state.character.known_spells = character::default_starting_spells(class);
-            if class == Class::Wizard {
-                state.character.known_spells = wizard_starting_cantrips();
-            }
             // Initialize per-class feature state. CHA mod uses the current ability
             // scores (which may be unset at this point — defaults to 10 -> +0 mod
             // -> 1 inspiration min for Bard).
@@ -575,100 +474,6 @@ fn handle_creation(state: &mut GameState, input: &str, step: CreationStep) -> Ve
             }
             lines.push("Enter a number or name.".to_string());
             lines
-        }
-        CreationStep::ChooseWizardSpellbook => {
-            if input.is_empty() {
-                return render_wizard_spellbook_prompt();
-            }
-
-            if parse_background_selection(input).is_some() {
-                apply_default_wizard_spell_setup(state);
-                state.game_phase = GamePhase::CharacterCreation(CreationStep::ChooseBackground);
-                return handle_creation(state, input, CreationStep::ChooseBackground);
-            }
-
-            let choices = wizard_level_one_spell_choices();
-            let indices: Vec<usize> = input.split_whitespace()
-                .filter_map(|s| s.parse::<usize>().ok())
-                .collect();
-
-            if indices.len() != 6 {
-                return vec!["Choose exactly 6 spellbook spells by number.".to_string()];
-            }
-
-            let mut chosen = Vec::new();
-            let mut seen = std::collections::HashSet::new();
-            for idx in indices {
-                if idx < 1 || idx > choices.len() {
-                    return vec![format!("Invalid spell choice: {}. Pick from 1-{}.", idx, choices.len())];
-                }
-                if !seen.insert(idx) {
-                    return vec![format!("Duplicate spell choice: {}. Each spell must be different.", idx)];
-                }
-                chosen.push(choices[idx - 1].clone());
-            }
-
-            let mut known_spells = wizard_starting_cantrips();
-            known_spells.extend(chosen);
-            state.character.known_spells = known_spells;
-            state.game_phase = GamePhase::CharacterCreation(CreationStep::ChooseWizardPreparedSpells);
-            render_wizard_prepared_spell_prompt(state)
-        }
-        CreationStep::ChooseWizardPreparedSpells => {
-            if input.is_empty() {
-                return render_wizard_prepared_spell_prompt(state);
-            }
-
-            if parse_background_selection(input).is_some() {
-                state.character.class_features.prepared_spells = state.character.known_spells.iter()
-                    .filter(|spell_name| {
-                        spells::find_spell(spell_name)
-                            .map(|spell| spell.level == 1)
-                            .unwrap_or(false)
-                    })
-                    .take(wizard_prepared_spell_limit(state))
-                    .cloned()
-                    .collect();
-                state.game_phase = GamePhase::CharacterCreation(CreationStep::ChooseBackground);
-                return handle_creation(state, input, CreationStep::ChooseBackground);
-            }
-
-            let spellbook: Vec<String> = state.character.known_spells.iter()
-                .filter(|spell_name| {
-                    spells::find_spell(spell_name)
-                        .map(|spell| spell.level == 1)
-                        .unwrap_or(false)
-                })
-                .cloned()
-                .collect();
-            let limit = wizard_prepared_spell_limit(state);
-            let indices: Vec<usize> = input.split_whitespace()
-                .filter_map(|s| s.parse::<usize>().ok())
-                .collect();
-
-            if indices.len() != limit {
-                return vec![format!(
-                    "Choose exactly {} prepared spell{}.",
-                    limit,
-                    if limit == 1 { "" } else { "s" }
-                )];
-            }
-
-            let mut prepared = Vec::new();
-            let mut seen = std::collections::HashSet::new();
-            for idx in indices {
-                if idx < 1 || idx > spellbook.len() {
-                    return vec![format!("Invalid prepared-spell choice: {}. Pick from 1-{}.", idx, spellbook.len())];
-                }
-                if !seen.insert(idx) {
-                    return vec![format!("Duplicate prepared-spell choice: {}. Each spell must be different.", idx)];
-                }
-                prepared.push(spellbook[idx - 1].clone());
-            }
-
-            state.character.class_features.prepared_spells = prepared;
-            state.game_phase = GamePhase::CharacterCreation(CreationStep::ChooseBackground);
-            choose_background_prompt(state.character.class)
         }
         CreationStep::ChooseBackground => {
             let input_lower = input.to_lowercase();
@@ -7413,6 +7218,8 @@ mod tests {
         let output = new_game(42, false);
         let output = process_input(&output.state_json, "1"); // Human
         let output = process_input(&output.state_json, "Wizard");
+        let output = process_input(&output.state_json, "1 2 3 4 5 6"); // spellbook
+        let output = process_input(&output.state_json, "1 2 3 4"); // prepared spells
         let output = process_input(&output.state_json, "12"); // Sage (index 12 in Background::all())
         let output = process_input(&output.state_json, "default"); // origin feat
         let output = process_input(&output.state_json, "2"); // +1/+1/+1 pattern
@@ -7598,6 +7405,8 @@ mod tests {
         let output = new_game(42, false);
         let output = process_input(&output.state_json, "1"); // Human
         let output = process_input(&output.state_json, "Wizard");
+        let output = process_input(&output.state_json, "1 2 3 4 5 6"); // spellbook
+        let output = process_input(&output.state_json, "1 2 3 4"); // prepared spells
         let output = process_input(&output.state_json, "1"); // Background: Acolyte
         let output = process_input(&output.state_json, "default"); // origin feat
         let output = process_input(&output.state_json, "2"); // Ability pattern: +1/+1/+1
