@@ -11,9 +11,18 @@ use jurnalis_engine::{
 fn create_wizard_state_json() -> String {
     let mut output = new_game(42, false);
 
-    // Race, Class, Background, Origin feat, Background ability pattern,
+    // Race, Class
+    output = process_input(&output.state_json, "1");
+    output = process_input(&output.state_json, "Wizard");
+
+    // Wizard interactive spell selection: pick 6 spellbook spells, then 1 prepared spell
+    // (default INT 10 → modifier 0 → prepared = max(1, 0+1) = 1)
+    output = process_input(&output.state_json, "1 2 3 4 5 6"); // spellbook
+    output = process_input(&output.state_json, "1"); // prepared spell
+
+    // Background, Origin feat, Background ability pattern,
     // Ability method, Assign scores, Choose skills, Alignment, Name
-    for input in ["1", "Wizard", "1", "default", "2", "1", "15 14 13 12 10 8", "1 2", "5", "Elara"] {
+    for input in ["1", "default", "2", "1", "15 14 13 12 10 8", "1 2", "5", "Elara"] {
         output = process_input(&output.state_json, input);
     }
 
@@ -371,14 +380,14 @@ fn wizard_spell_slots_serialize_roundtrip() {
     let state: GameState = serde_json::from_str(&state_json).unwrap();
     assert_eq!(state.character.spell_slots_max, vec![2]);
     assert_eq!(state.character.spell_slots_remaining, vec![2]);
-    assert_eq!(state.character.known_spells.len(), 6);
+    assert_eq!(state.character.known_spells.len(), 8);
 
     // Save and load
     let json = serde_json::to_string(&state).unwrap();
     let loaded: GameState = serde_json::from_str(&json).unwrap();
     assert_eq!(loaded.character.spell_slots_max, vec![2]);
     assert_eq!(loaded.character.spell_slots_remaining, vec![2]);
-    assert_eq!(loaded.character.known_spells.len(), 6);
+    assert_eq!(loaded.character.known_spells.len(), 8);
 }
 
 // ---- Non-Wizard caster integration tests ----
