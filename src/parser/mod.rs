@@ -91,6 +91,9 @@ pub enum Command {
     /// Use a tool on a target. Parsed from "use <tool> on <target>".
     /// Orchestrator checks inventory, proficiency, and makes an ability check.
     UseTool { tool: String, target: String },
+    /// Drink a consumable item (potion). In combat, costs a Bonus Action per
+    /// 2024 SRD. Parsed from "drink <item>" or "quaff <item>".
+    Drink(String),
     Unknown(String),
 }
 
@@ -410,6 +413,13 @@ pub fn parse(input: &str) -> Command {
                 Command::Unknown("Attune to what? (e.g. 'attune cloak')".to_string())
             } else {
                 Command::Attune(args)
+            }
+        }
+        "drink" | "quaff" | "swallow" => {
+            if args.is_empty() {
+                Command::Unknown("Drink what?".to_string())
+            } else {
+                Command::Drink(args)
             }
         }
         "unattune" => {

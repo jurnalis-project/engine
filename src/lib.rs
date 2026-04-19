@@ -1437,6 +1437,11 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
             let (lines, _consumed) = resolve_use_item(state, &mut rng, &item_name);
             lines
         }
+        Command::Drink(item_name) => {
+            // Outside combat: no action-economy constraint. Delegate to use.
+            let (lines, _consumed) = resolve_use_item(state, &mut rng, &item_name);
+            lines
+        }
         Command::Inventory => {
             if state.character.inventory.is_empty() {
                 return vec![narration::templates::EMPTY_INVENTORY.to_string()];
@@ -3537,14 +3542,40 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
             }
         }
         Command::Use(item_name) => {
-            if combat.action_used {
-                state.active_combat = Some(combat);
-                return vec!["You've already used your action this turn. You can still move (approach/retreat).".to_string()];
+            // Per 2024 SRD, drinking a healing potion in combat is a Bonus
+            // Action. All other item uses remain an Action.
+            if item_is_healing_potion(state, &item_name) {
+                if combat.bonus_action_used {
+                    state.active_combat = Some(combat);
+                    return vec!["You've already used your bonus action this turn.".to_string()];
+                }
+                let (mut use_lines, consumed) = resolve_use_item(state, &mut rng, &item_name);
+                lines.append(&mut use_lines);
+                if consumed {
+                    combat.bonus_action_used = true;
+                }
+            } else {
+                if combat.action_used {
+                    state.active_combat = Some(combat);
+                    return vec!["You've already used your action this turn. You can still move (approach/retreat).".to_string()];
+                }
+                let (mut use_lines, consumed_action) = resolve_use_item(state, &mut rng, &item_name);
+                lines.append(&mut use_lines);
+                if consumed_action {
+                    combat.action_used = true;
+                }
             }
-            let (mut use_lines, consumed_action) = resolve_use_item(state, &mut rng, &item_name);
+        }
+        Command::Drink(item_name) => {
+            // `drink` is the dedicated bonus-action potion command (2024 SRD).
+            if combat.bonus_action_used {
+                state.active_combat = Some(combat);
+                return vec!["You've already used your bonus action this turn.".to_string()];
+            }
+            let (mut use_lines, consumed) = resolve_use_item(state, &mut rng, &item_name);
             lines.append(&mut use_lines);
-            if consumed_action {
-                combat.action_used = true;
+            if consumed {
+                combat.bonus_action_used = true;
             }
         }
         Command::EndTurn => {
@@ -4743,6 +4774,35 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
     }
 
     lines
+}
+
+/// Returns `true` when the named inventory item is a healing potion.
+///
+/// Per 2024 SRD, drinking a potion is a Bonus Action in combat. This helper
+/// lets the orchestrator route the cost to the correct resource budget before
+/// delegating to `resolve_use_item`.
+///
+/// A "healing potion" is either:
+/// - `ItemType::Consumable` with a `heal_*` effect (legacy), or
+/// - `ItemType::Potion` whose `PotionEffect` is `Healing { .. }`.
+fn item_is_healing_potion(state: &GameState, item_name: &str) -> bool {
+    let owned_candidates = inventory_item_candidates(state);
+    let candidates: Vec<(usize, &str)> = owned_candidates.iter()
+        .map(|(id, name)| (*id, name.as_str()))
+        .collect();
+    match resolver::resolve_target(item_name, &candidates) {
+        ResolveResult::Found(id) => {
+            let item_id = id as u32;
+            match state.world.items.get(&item_id).map(|i| &i.item_type) {
+                Some(state::ItemType::Consumable { effect }) => effect.starts_with("heal"),
+                Some(state::ItemType::Potion { effect, .. }) => {
+                    matches!(effect, equipment::magic::PotionEffect::Healing { .. })
+                }
+                _ => false,
+            }
+        }
+        _ => false,
+    }
 }
 
 fn resolve_use_item(
@@ -8064,6 +8124,8 @@ mod tests {
 
     #[test]
     fn test_combat_use_healing_potion_heals_and_consumes_action() {
+        // Per 2024 SRD, drinking a healing potion is a Bonus Action, not an
+        // Action. This test is updated to reflect the new semantics.
         let mut state = create_test_combat_state();
         force_player_turn(&mut state);
         state.character.current_hp = state.character.max_hp - 4;
@@ -8076,23 +8138,27 @@ mod tests {
 
         let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
         let combat = new_state.active_combat.as_ref().unwrap();
-        assert!(combat.action_used, "Using potion should consume action in combat");
+        assert!(combat.bonus_action_used, "Using potion should consume bonus action in combat (2024 SRD)");
+        assert!(!combat.action_used, "Using potion should NOT consume the main action");
         assert!(new_state.character.current_hp > state.character.current_hp);
     }
 
     #[test]
     fn test_combat_use_after_action_is_blocked_without_consuming_item() {
+        // Healing potions cost a Bonus Action (2024 SRD). Spending the bonus
+        // action via off-hand attack should block subsequent potion use.
         let mut state = create_test_combat_state();
         force_player_turn(&mut state);
         give_consumable_to_player(&mut state, "Healing Potion", "A potion.", "heal_1d8");
+        // Pre-spend the bonus action directly.
+        if let Some(ref mut combat) = state.active_combat {
+            combat.bonus_action_used = true;
+        }
 
-        let first_json = serde_json::to_string(&state).unwrap();
-        // Use dodge to consume action without ending combat (no damage dealt)
-        let after_dodge = process_input(&first_json, "dodge");
-        // Now try to use potion - should be blocked
-        let after_use = process_input(&after_dodge.state_json, "use healing potion");
+        let state_json = serde_json::to_string(&state).unwrap();
+        let after_use = process_input(&state_json, "use healing potion");
 
-        assert!(after_use.text.iter().any(|t| t.contains("already used your action")));
+        assert!(after_use.text.iter().any(|t| t.contains("bonus action")));
 
         let post: GameState = serde_json::from_str(&after_use.state_json).unwrap();
         assert!(post.character.inventory.iter().any(|id| {
@@ -11994,6 +12060,28 @@ mod tests {
         );
     }
 
+    // ==== Potion Bonus Action tests (feat/potion-bonus-action, 2024 SRD) ====
+
+    /// Helper: create a combat state with player at player's turn and low HP.
+    fn create_test_combat_state_low_hp() -> GameState {
+        let mut state = create_test_combat_state();
+        force_player_turn(&mut state);
+        state.character.current_hp = state.character.max_hp - 6;
+        state
+    }
+
+    #[test]
+    fn test_drink_command_parses() {
+        assert_eq!(
+            parser::parse("drink healing potion"),
+            parser::Command::Drink("healing potion".to_string()),
+        );
+        assert_eq!(
+            parser::parse("drink potion"),
+            parser::Command::Drink("potion".to_string()),
+        );
+    }
+
     #[test]
     fn test_new_game_mid_exploration_shows_confirmation() {
         // #95: "new game" during exploration should show a confirmation prompt
@@ -12082,5 +12170,168 @@ mod tests {
         // Should not have three separate Javelin lines
         let javelin_count = output.text.iter().filter(|l| l.contains("Javelin")).count();
         assert_eq!(javelin_count, 1, "Javelins should be grouped into one line. Got: {:?}", output.text);
+    }
+
+    #[test]
+    fn test_drink_bare_gives_helpful_error() {
+        match parser::parse("drink") {
+            parser::Command::Unknown(s) => assert!(
+                s.to_lowercase().contains("what"),
+                "Expected 'what' hint, got: {}",
+                s,
+            ),
+            other => panic!("Expected Unknown, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_combat_drink_healing_potion_consumes_bonus_action_not_action() {
+        // Per 2024 SRD, drinking a potion is a Bonus Action in combat.
+        let mut state = create_test_combat_state_low_hp();
+        give_consumable_to_player(&mut state, "Healing Potion", "A potion.", "heal_1d8");
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "drink healing potion");
+
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        let combat = new_state.active_combat.as_ref().unwrap();
+        assert!(
+            combat.bonus_action_used,
+            "Drinking a potion in combat should consume the bonus action"
+        );
+        assert!(
+            !combat.action_used,
+            "Drinking a potion should NOT consume the main action"
+        );
+        assert!(
+            new_state.character.current_hp > state.character.current_hp,
+            "HP should have increased after drinking the potion"
+        );
+    }
+
+    #[test]
+    fn test_combat_use_healing_potion_consumes_bonus_action_not_action() {
+        // `use healing potion` in combat also costs bonus action (2024 SRD).
+        let mut state = create_test_combat_state_low_hp();
+        give_consumable_to_player(&mut state, "Healing Potion", "A potion.", "heal_1d8");
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "use healing potion");
+
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        let combat = new_state.active_combat.as_ref().unwrap();
+        assert!(
+            combat.bonus_action_used,
+            "Using a healing potion via 'use' in combat should consume the bonus action"
+        );
+        assert!(
+            !combat.action_used,
+            "Using a healing potion should NOT consume the main action"
+        );
+    }
+
+    #[test]
+    fn test_combat_magic_potion_of_healing_consumes_bonus_action() {
+        use equipment::magic::{PotionEffect, Rarity};
+        let mut state = create_test_combat_state_low_hp();
+        give_potion_to_player(
+            &mut state,
+            "Potion of Healing",
+            PotionEffect::Healing { dice: 2, die: 4, bonus: 2 },
+            Rarity::Common,
+        );
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "use potion of healing");
+
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        let combat = new_state.active_combat.as_ref().unwrap();
+        assert!(
+            combat.bonus_action_used,
+            "Using a magic Potion of Healing should consume bonus action in combat"
+        );
+        assert!(
+            !combat.action_used,
+            "Using a healing potion should NOT consume the main action"
+        );
+    }
+
+    #[test]
+    fn test_combat_potion_blocked_when_bonus_action_spent() {
+        let mut state = create_test_combat_state_low_hp();
+        give_consumable_to_player(&mut state, "Healing Potion", "A potion.", "heal_1d8");
+        // Pre-spend the bonus action.
+        if let Some(ref mut combat) = state.active_combat {
+            combat.bonus_action_used = true;
+        }
+
+        let initial_hp = state.character.current_hp;
+        let initial_inv = state.character.inventory.len();
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "drink healing potion");
+
+        assert!(
+            output.text.iter().any(|t| t.to_lowercase().contains("bonus action")),
+            "Should mention bonus action already spent. Got: {:?}",
+            output.text,
+        );
+        let post: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(
+            post.character.current_hp, initial_hp,
+            "HP should not change when blocked"
+        );
+        assert_eq!(
+            post.character.inventory.len(),
+            initial_inv,
+            "Potion should not be consumed when blocked"
+        );
+    }
+
+    #[test]
+    fn test_combat_potion_allows_main_action_attack_after_drink() {
+        // Player should still be able to attack after drinking a potion
+        // (bonus action cost only).
+        let mut state = create_test_combat_state_low_hp();
+        give_consumable_to_player(&mut state, "Healing Potion", "A potion.", "heal_1d8");
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let after_drink = process_input(&state_json, "drink healing potion");
+        let drink_state: GameState = serde_json::from_str(&after_drink.state_json).unwrap();
+        let combat = drink_state.active_combat.as_ref().unwrap();
+        assert!(combat.bonus_action_used, "Bonus action should be spent");
+        assert!(!combat.action_used, "Main action should still be available after drinking");
+    }
+
+    #[test]
+    fn test_potion_narration_mentions_recover() {
+        let mut state = create_test_combat_state_low_hp();
+        give_consumable_to_player(&mut state, "Healing Potion", "A potion.", "heal_1d8");
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "drink healing potion");
+
+        assert!(
+            output.text.iter().any(|t| t.to_lowercase().contains("recover") || t.to_lowercase().contains("hp")),
+            "Narration should mention recovery. Got: {:?}",
+            output.text,
+        );
+    }
+
+    #[test]
+    fn test_non_potion_use_still_costs_action_in_combat() {
+        // Using a non-healing item in combat should still consume the main action.
+        let mut state = create_test_combat_state();
+        force_player_turn(&mut state);
+        give_consumable_to_player(&mut state, "Torch", "A torch.", "light");
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "use torch");
+
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        let combat = new_state.active_combat.as_ref().unwrap();
+        assert!(
+            combat.action_used,
+            "Using non-potion consumable should consume main action"
+        );
     }
 }
