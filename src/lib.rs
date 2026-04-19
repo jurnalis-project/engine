@@ -59,6 +59,14 @@ const ALIGNMENT_OPTIONS: &[Alignment] = &[
     Alignment::Unaligned,
 ];
 
+const WIZARD_STARTING_CANTRIPS: &[&str] = &[
+    "Fire Bolt",
+    "Prestidigitation",
+];
+
+const WIZARD_SPELLBOOK_SPELL_COUNT: usize = 6;
+const WIZARD_PREPARED_SPELL_COUNT: usize = 4;
+
 pub fn new_game(seed: u64, ironman_mode: bool) -> GameOutput {
     let state = GameState {
         version: SAVE_VERSION.to_string(),
@@ -441,6 +449,17 @@ fn handle_creation(state: &mut GameState, input: &str, step: CreationStep) -> Ve
                 &state.character.known_spells,
             );
 
+            if class == Class::Wizard {
+                state.character.known_spells = WIZARD_STARTING_CANTRIPS
+                    .iter()
+                    .map(|spell| (*spell).to_string())
+                    .collect();
+                state.character.class_features.prepared_spells.clear();
+                state.game_phase = GamePhase::CharacterCreation(CreationStep::ChooseWizardSpellbook);
+
+                return wizard_spellbook_prompt();
+            }
+
             state.game_phase = GamePhase::CharacterCreation(CreationStep::ChooseBackground);
             let mut lines = vec![
                 format!("Class: {}. Choose your background:", class),
@@ -772,6 +791,84 @@ fn handle_creation(state: &mut GameState, input: &str, step: CreationStep) -> Ve
                 format!("Alignment: {}. Enter your character's name:", chosen),
             ]
         }
+        CreationStep::ChooseWizardSpellbook => {
+            let trimmed = input.trim();
+            if trimmed.is_empty() {
+                return wizard_spellbook_prompt();
+            }
+
+            let wizard_spells = wizard_level_one_spell_options();
+            let selected = match parse_numbered_selection_list(trimmed, wizard_spells.len()) {
+                Ok(indices) => indices,
+                Err(message) => return vec![message],
+            };
+
+            if selected.len() != WIZARD_SPELLBOOK_SPELL_COUNT {
+                return vec![format!(
+                    "Choose exactly {} spells for your spellbook.",
+                    WIZARD_SPELLBOOK_SPELL_COUNT,
+                )];
+            }
+
+            state.character.known_spells = WIZARD_STARTING_CANTRIPS
+                .iter()
+                .map(|spell| (*spell).to_string())
+                .collect();
+            state.character.known_spells.extend(
+                selected
+                    .iter()
+                    .map(|index| wizard_spells[*index - 1].name.to_string()),
+            );
+            state.character.class_features.prepared_spells.clear();
+            state.game_phase = GamePhase::CharacterCreation(CreationStep::ChooseWizardPreparedSpells);
+
+            wizard_prepared_spells_prompt(&state.character.known_spells)
+        }
+        CreationStep::ChooseWizardPreparedSpells => {
+            let trimmed = input.trim();
+            if trimmed.is_empty() {
+                return wizard_prepared_spells_prompt(&state.character.known_spells);
+            }
+
+            let spellbook: Vec<String> = state.character.known_spells.iter()
+                .filter(|spell| crate::spells::find_spell(spell).map(|def| def.level == 1).unwrap_or(false))
+                .cloned()
+                .collect();
+            let selected = match parse_numbered_selection_list(trimmed, spellbook.len()) {
+                Ok(indices) => indices,
+                Err(message) => return vec![message],
+            };
+
+            if selected.len() != WIZARD_PREPARED_SPELL_COUNT {
+                return vec![format!(
+                    "Prepare exactly {} level-1 spells from your spellbook.",
+                    WIZARD_PREPARED_SPELL_COUNT,
+                )];
+            }
+
+            state.character.class_features.prepared_spells = selected
+                .iter()
+                .map(|index| spellbook[*index - 1].clone())
+                .collect();
+            state.game_phase = GamePhase::CharacterCreation(CreationStep::ChooseBackground);
+
+            let mut lines = vec![
+                format!(
+                    "Prepared spells recorded ({}). Choose your background:",
+                    state.character.class_features.prepared_spells.join(", "),
+                ),
+            ];
+            for (i, &bg) in Background::all().iter().enumerate() {
+                let feat = bg.origin_feat();
+                let skills = bg.skill_proficiencies();
+                lines.push(format!(
+                    "  {}. {} ({} / {}, feat: {})",
+                    i + 1, bg, skills[0], skills[1], feat,
+                ));
+            }
+            lines.push("Enter a number or name.".to_string());
+            lines
+        }
         CreationStep::ChooseName => {
             let name = input.trim().to_string();
             if name.is_empty() {
@@ -852,6 +949,69 @@ fn handle_creation(state: &mut GameState, input: &str, step: CreationStep) -> Ve
             lines
         }
     }
+}
+
+fn wizard_level_one_spell_options() -> Vec<&'static crate::spells::SpellDef> {
+    crate::spells::spells_for_class("wizard")
+        .into_iter()
+        .filter(|spell| spell.level == 1)
+        .collect()
+}
+
+fn wizard_spellbook_prompt() -> Vec<String> {
+    let mut lines = vec![format!(
+        "Wizard spellbook: choose {} level-1 spells to copy into your spellbook.",
+        WIZARD_SPELLBOOK_SPELL_COUNT,
+    )];
+    for (i, spell) in wizard_level_one_spell_options().iter().enumerate() {
+        lines.push(format!("  {}. {}", i + 1, spell.name));
+    }
+    lines.push(format!(
+        "Enter {} different numbers separated by spaces.",
+        WIZARD_SPELLBOOK_SPELL_COUNT,
+    ));
+    lines
+}
+
+fn wizard_prepared_spells_prompt(known_spells: &[String]) -> Vec<String> {
+    let spellbook: Vec<&String> = known_spells.iter()
+        .filter(|spell| crate::spells::find_spell(spell).map(|def| def.level == 1).unwrap_or(false))
+        .collect();
+    let mut lines = vec![format!(
+        "Prepare {} level-1 spells from your spellbook.",
+        WIZARD_PREPARED_SPELL_COUNT,
+    )];
+    for (i, spell) in spellbook.iter().enumerate() {
+        lines.push(format!("  {}. {}", i + 1, spell));
+    }
+    lines.push(format!(
+        "Enter {} different numbers separated by spaces.",
+        WIZARD_PREPARED_SPELL_COUNT,
+    ));
+    lines
+}
+
+fn parse_numbered_selection_list(input: &str, max: usize) -> Result<Vec<usize>, String> {
+    let values: Vec<usize> = input
+        .split_whitespace()
+        .filter_map(|part| part.parse::<usize>().ok())
+        .collect();
+
+    if values.is_empty() {
+        return Err("Enter one or more numbers separated by spaces.".to_string());
+    }
+
+    let mut seen = std::collections::HashSet::new();
+    for &value in &values {
+        if value == 0 || value > max {
+            return Err(format!("Invalid choice: {}. Pick from 1-{}.", value, max));
+        }
+        if !seen.insert(value) {
+            return Err(format!("Duplicate choice: {}. Each spell must be different.", value));
+        }
+    }
+
+    Ok(values)
 }
 
 /// Grant starting equipment to the character based on class loadout.
@@ -12412,12 +12572,28 @@ mod tests {
         let state_json = wizard_after_class_selection();
         let prompt_out = process_input(&state_json, "");
         let after_book = process_input(&prompt_out.state_json, "1 2 3 4 5 6");
-        let out = process_input(&after_book.state_json, "1");
+        let out = process_input(&after_book.state_json, "1 2 3 4");
         let state: GameState = serde_json::from_str(&out.state_json).unwrap();
         assert!(
             !matches!(state.game_phase, GamePhase::CharacterCreation(CreationStep::ChooseWizardPreparedSpells)),
             "Should have left ChooseWizardPreparedSpells, got {:?}", state.game_phase
         );
+    }
+
+    #[test]
+    fn test_wizard_prepared_spells_rejects_wrong_count() {
+        let state_json = wizard_after_class_selection();
+        let prompt_out = process_input(&state_json, "");
+        let after_book = process_input(&prompt_out.state_json, "1 2 3 4 5 6");
+        let out = process_input(&after_book.state_json, "1 2 3");
+        let state: GameState = serde_json::from_str(&out.state_json).unwrap();
+        assert_eq!(
+            state.game_phase,
+            GamePhase::CharacterCreation(CreationStep::ChooseWizardPreparedSpells),
+            "Should stay in ChooseWizardPreparedSpells if wrong count given"
+        );
+        let combined = out.text.join(" ").to_lowercase();
+        assert!(combined.contains("4"), "Error should mention requiring 4 spells");
     }
 
     #[test]
@@ -12440,11 +12616,11 @@ mod tests {
         let state_json = wizard_after_class_selection();
         let prompt_out = process_input(&state_json, "");
         let after_book = process_input(&prompt_out.state_json, "1 2 3 4 5 6");
-        let after_prep = process_input(&after_book.state_json, "1");
+        let after_prep = process_input(&after_book.state_json, "1 2 3 4");
         let state: GameState = serde_json::from_str(&after_prep.state_json).unwrap();
         assert_eq!(
-            state.character.class_features.prepared_spells.len(), 1,
-            "Wizard should have 1 prepared spell (INT mod 0 + level 1)"
+            state.character.class_features.prepared_spells.len(), 4,
+            "Wizard should have 4 prepared spells at level 1"
         );
     }
 

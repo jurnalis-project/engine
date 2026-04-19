@@ -285,6 +285,7 @@ pub fn default_starting_spells(class: Class) -> Vec<String> {
         Class::Wizard => v(&[
             "Fire Bolt", "Prestidigitation",
             "Magic Missile", "Burning Hands", "Sleep", "Shield",
+            "Charm Person", "Detect Magic",
         ]),
         Class::Sorcerer => v(&[
             "Fire Bolt", "Mage Hand",
@@ -316,6 +317,15 @@ pub fn default_starting_spells(class: Class) -> Vec<String> {
         Class::Ranger => Vec::new(),
         Class::Barbarian | Class::Fighter | Class::Monk | Class::Rogue => Vec::new(),
     }
+}
+
+fn default_wizard_prepared_spells(known_spells: &[String]) -> Vec<String> {
+    known_spells
+        .iter()
+        .filter(|spell| crate::spells::find_spell(spell).map(|def| def.level == 1).unwrap_or(false))
+        .take(4)
+        .cloned()
+        .collect()
 }
 
 /// Total initiative bonus granted by the character's feats. Iterates all
@@ -393,7 +403,7 @@ pub(crate) fn init_class_features(
             features.ki_points_remaining = if level < 2 { 0 } else { level };
         }
         Class::Wizard => {
-            features.prepared_spells = known_spells.to_vec();
+            features.prepared_spells = default_wizard_prepared_spells(known_spells);
         }
         // Known casters (Bard/Ranger/Sorcerer/Warlock) and pure martials:
         // defaults stand.
@@ -477,14 +487,16 @@ mod tests {
         // Wizard level 1: 2 first-level slots
         assert_eq!(c.spell_slots_max, vec![2]);
         assert_eq!(c.spell_slots_remaining, vec![2]);
-        // Wizard knows all 6 MVP spells
-        assert_eq!(c.known_spells.len(), 6);
+        // Wizard starts with 2 cantrips plus 6 spellbook spells.
+        assert_eq!(c.known_spells.len(), 8);
         assert!(c.known_spells.contains(&"Fire Bolt".to_string()));
         assert!(c.known_spells.contains(&"Prestidigitation".to_string()));
         assert!(c.known_spells.contains(&"Magic Missile".to_string()));
         assert!(c.known_spells.contains(&"Burning Hands".to_string()));
         assert!(c.known_spells.contains(&"Sleep".to_string()));
         assert!(c.known_spells.contains(&"Shield".to_string()));
+        assert!(c.known_spells.contains(&"Charm Person".to_string()));
+        assert!(c.known_spells.contains(&"Detect Magic".to_string()));
     }
 
     #[test]
@@ -619,7 +631,10 @@ mod tests {
     #[test]
     fn test_wizard_prepared_spells_mirror_known() {
         let c = create_character("Gan".to_string(), Race::Human, Class::Wizard, test_scores(), vec![]);
-        assert_eq!(c.class_features.prepared_spells, c.known_spells);
+        assert_eq!(c.class_features.prepared_spells.len(), 4);
+        for spell in &c.class_features.prepared_spells {
+            assert!(c.known_spells.contains(spell), "prepared spell must be known: {}", spell);
+        }
     }
 
     #[test]
@@ -762,7 +777,7 @@ mod tests {
     #[test]
     fn test_wizard_default_known_spells_matches_mvp_catalog() {
         let c = create_character("Wizmage".to_string(), Race::Human, Class::Wizard, test_scores(), vec![]);
-        assert_eq!(c.known_spells.len(), 6);
+        assert_eq!(c.known_spells.len(), 8);
         assert!(c.known_spells.contains(&"Fire Bolt".to_string()));
         assert!(c.known_spells.contains(&"Shield".to_string()));
     }
