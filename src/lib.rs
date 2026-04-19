@@ -12447,4 +12447,234 @@ mod tests {
             "Wizard should have 1 prepared spell (INT mod 0 + level 1)"
         );
     }
+
+    // --- Dev mode tests (compiled only when `dev` feature is active) ---
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn test_new_game_from_state_valid_json_returns_ready_output() {
+        let state = create_test_exploration_state();
+        let state_json = serde_json::to_string(&state).unwrap();
+
+        let output = crate::new_game_from_state(&state_json);
+
+        assert!(!output.text.is_empty(), "Expected non-empty text output");
+        assert!(
+            output.text.iter().any(|l| l.contains("DEV MODE")),
+            "Expected DEV MODE banner in output text"
+        );
+        assert!(output.state_changed, "Expected state_changed == true for valid state");
+        assert!(!output.state_json.is_empty(), "Expected non-empty state_json");
+        let _: crate::state::GameState = serde_json::from_str(&output.state_json)
+            .expect("Returned state_json should deserialize cleanly");
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    #[ignore]
+    fn generate_fixture_json() {
+        use std::collections::HashMap;
+        use crate::state::*;
+        use crate::types::*;
+        use crate::character::{create_character, race::Race, class::Class};
+
+        let mut scores = HashMap::new();
+        scores.insert(Ability::Strength, 16);
+        scores.insert(Ability::Dexterity, 13);
+        scores.insert(Ability::Constitution, 15);
+        scores.insert(Ability::Intelligence, 10);
+        scores.insert(Ability::Wisdom, 12);
+        scores.insert(Ability::Charisma, 9);
+
+        let mut fighter = create_character(
+            "Aldric".to_string(), Race::Human, Class::Fighter, scores.clone(), vec![],
+        );
+        fighter.max_hp = 12;
+        fighter.current_hp = 8;
+        fighter.level = 1;
+        fighter.speed = 30;
+
+        let goblin_id: NpcId = 1;
+        let mut goblin_scores = HashMap::new();
+        goblin_scores.insert(Ability::Strength, 8);
+        goblin_scores.insert(Ability::Dexterity, 14);
+        goblin_scores.insert(Ability::Constitution, 10);
+        goblin_scores.insert(Ability::Intelligence, 10);
+        goblin_scores.insert(Ability::Wisdom, 8);
+        goblin_scores.insert(Ability::Charisma, 8);
+
+        let goblin = Npc {
+            id: goblin_id,
+            name: "Goblin".to_string(),
+            role: NpcRole::Guard,
+            disposition: Disposition::Hostile,
+            dialogue_tags: vec![],
+            location: 0,
+            combat_stats: Some(CombatStats {
+                max_hp: 7,
+                current_hp: 5,
+                ac: 15,
+                speed: 30,
+                ability_scores: goblin_scores,
+                attacks: vec![NpcAttack {
+                    name: "Scimitar".to_string(),
+                    hit_bonus: 4,
+                    damage_dice: 1,
+                    damage_die: 6,
+                    damage_bonus: 2,
+                    damage_type: DamageType::Slashing,
+                    reach: 5,
+                    range_normal: 0,
+                    range_long: 0,
+                }],
+                proficiency_bonus: 2,
+                cr: 0.25,
+                ..CombatStats::default()
+            }),
+            conditions: vec![],
+        };
+
+        let mut npcs = HashMap::new();
+        npcs.insert(goblin_id, goblin);
+
+        let loc = Location {
+            id: 0,
+            name: "Goblin Cave".to_string(),
+            description: "A damp cave reeking of goblin filth.".to_string(),
+            location_type: LocationType::Cave,
+            exits: HashMap::new(),
+            npcs: vec![goblin_id],
+            items: vec![],
+            triggers: vec![],
+            light_level: LightLevel::Dim,
+        };
+        let mut locations = HashMap::new();
+        locations.insert(0u32, loc);
+
+        let combat = crate::combat::CombatState {
+            initiative_order: vec![
+                (crate::combat::Combatant::Player, 15),
+                (crate::combat::Combatant::Npc(goblin_id), 12),
+            ],
+            current_turn: 0,
+            round: 1,
+            distances: {
+                let mut d = HashMap::new();
+                d.insert(goblin_id, 10u32);
+                d
+            },
+            death_save_successes: 0,
+            death_save_failures: 0,
+            bonus_action_used: false,
+            action_used: false,
+            player_movement_remaining: 30,
+            reaction_used: false,
+            player_dodging: false,
+            player_disengaging: false,
+            free_interaction_used: false,
+            npc_dodging: HashMap::new(),
+            npc_disengaging: HashMap::new(),
+            player_shield_ac_bonus: 0,
+            pending_reaction: None,
+            player_vex_target: None,
+            sap_targets: std::collections::HashSet::new(),
+            slow_targets: HashMap::new(),
+            cleave_used_this_turn: false,
+            nick_used_this_turn: false,
+            player_cover: crate::types::Cover::None,
+            npc_cover: HashMap::new(),
+            npc_reactions_used: std::collections::HashSet::new(),
+        };
+
+        let mut discovered = std::collections::HashSet::new();
+        discovered.insert(0u32);
+
+        let state = GameState {
+            version: SAVE_VERSION.to_string(),
+            character: fighter,
+            current_location: 0,
+            discovered_locations: discovered.clone(),
+            world: WorldState {
+                locations,
+                npcs,
+                items: HashMap::new(),
+                triggers: HashMap::new(),
+                triggered: std::collections::HashSet::new(),
+            },
+            log: vec![],
+            rng_seed: 12345,
+            rng_counter: 3,
+            game_phase: GamePhase::Exploration,
+            active_combat: Some(combat),
+            ironman_mode: false,
+            progress: ProgressState::default(),
+            in_world_minutes: 30,
+            last_long_rest_minutes: None,
+            pending_background_pattern: None,
+            pending_subrace: None,
+            pending_disambiguation: None,
+        };
+
+        let json = serde_json::to_string_pretty(&state).unwrap();
+        println!("COMBAT_FIXTURE:\n{}", json);
+
+        let mut rested_scores = HashMap::new();
+        rested_scores.insert(Ability::Strength, 14);
+        rested_scores.insert(Ability::Dexterity, 12);
+        rested_scores.insert(Ability::Constitution, 14);
+        rested_scores.insert(Ability::Intelligence, 10);
+        rested_scores.insert(Ability::Wisdom, 13);
+        rested_scores.insert(Ability::Charisma, 10);
+
+        let mut rested_fighter = create_character(
+            "Senna".to_string(), Race::Human, Class::Fighter, rested_scores, vec![],
+        );
+        rested_fighter.max_hp = 12;
+        rested_fighter.current_hp = 12;
+        rested_fighter.level = 2;
+        rested_fighter.speed = 30;
+
+        let rest_loc = Location {
+            id: 0,
+            name: "Stone Chamber".to_string(),
+            description: "A quiet chamber where you rested briefly.".to_string(),
+            location_type: LocationType::Room,
+            exits: HashMap::new(),
+            npcs: vec![],
+            items: vec![],
+            triggers: vec![],
+            light_level: LightLevel::Bright,
+        };
+        let mut rest_locations = HashMap::new();
+        rest_locations.insert(0u32, rest_loc);
+
+        let rest_state = GameState {
+            version: SAVE_VERSION.to_string(),
+            character: rested_fighter,
+            current_location: 0,
+            discovered_locations: discovered,
+            world: WorldState {
+                locations: rest_locations,
+                npcs: HashMap::new(),
+                items: HashMap::new(),
+                triggers: HashMap::new(),
+                triggered: std::collections::HashSet::new(),
+            },
+            log: vec!["Took a short rest. Spent 1 Hit Die: regained 6 HP.".to_string()],
+            rng_seed: 99999,
+            rng_counter: 10,
+            game_phase: GamePhase::Exploration,
+            active_combat: None,
+            ironman_mode: false,
+            progress: ProgressState::default(),
+            in_world_minutes: 90,
+            last_long_rest_minutes: Some(0),
+            pending_background_pattern: None,
+            pending_subrace: None,
+            pending_disambiguation: None,
+        };
+
+        let rest_json = serde_json::to_string_pretty(&rest_state).unwrap();
+        println!("REST_FIXTURE:\n{}", rest_json);
+    }
 }
