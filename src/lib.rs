@@ -1548,6 +1548,41 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
                 ResolveResult::NotFound => vec![narration::templates::ITEM_NOT_FOUND.replace("{item}", &item_name)],
             }
         }
+        Command::TakeAll => {
+            let item_ids = state.world.locations.get(&state.current_location)
+                .map(|loc| loc.items.clone())
+                .unwrap_or_default();
+
+            if item_ids.is_empty() {
+                return vec!["There is nothing here to take.".to_string()];
+            }
+
+            let item_names: Vec<String> = item_ids.iter()
+                .filter_map(|id| state.world.items.get(id).map(|item| item.name.clone()))
+                .collect();
+
+            for item_id in &item_ids {
+                if let Some(item) = state.world.items.get_mut(item_id) {
+                    item.carried_by_player = true;
+                    item.location = None;
+                }
+                state.character.inventory.push(*item_id);
+            }
+
+            if let Some(loc) = state.world.locations.get_mut(&state.current_location) {
+                loc.items.clear();
+            }
+
+            let mut lines = vec![format!("You pick up everything: {}.", item_names.join(", "))];
+
+            for item_id in item_ids {
+                lines.extend(check_find_item_objectives(state, item_id));
+            }
+
+            lines.extend(check_all_objectives_complete(state));
+            lines.extend(check_and_enter_asi_phase(state));
+            lines
+        }
         Command::Drop(item_name) => {
             let owned_candidates = inventory_item_candidates(state);
             let candidates: Vec<(usize, &str)> = owned_candidates.iter()
@@ -2764,7 +2799,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
             );
         }
         // Block exploration commands
-        Command::Talk(_) | Command::Take(_) | Command::Drop(_) => {
+        Command::Talk(_) | Command::Take(_) | Command::TakeAll | Command::Drop(_) => {
             return vec!["You can't do that during combat!".to_string()];
         }
         Command::Save(_) | Command::Load(_) | Command::Check(_) => {
@@ -7491,6 +7526,57 @@ mod tests {
     }
 
     #[test]
+    fn test_take_all_picks_up_every_room_item() {
+        let mut state = create_test_exploration_state();
+        let room_item_ids = vec![990_u32, 991_u32];
+        for (item_id, item_name) in [(990_u32, "Torch"), (991_u32, "Rope")].into_iter() {
+            state.world.items.insert(item_id, state::Item {
+                id: item_id,
+                name: item_name.to_string(),
+                description: format!("A {}.", item_name.to_lowercase()),
+                item_type: state::ItemType::Misc,
+                location: Some(state.current_location),
+                carried_by_player: false,
+                charges_remaining: None,
+            });
+        }
+        state.world.locations.get_mut(&state.current_location).unwrap().items = room_item_ids.clone();
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "take all");
+        assert!(output.text.iter().any(|line| line.contains("pick up everything")),
+            "Expected bulk pickup narration. Got: {:?}", output.text);
+
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert!(new_state.world.locations[&new_state.current_location].items.is_empty(),
+            "Room items should be cleared after take all");
+        for item_id in room_item_ids {
+            assert!(new_state.character.inventory.contains(&item_id),
+                "Inventory should contain picked up item {}", item_id);
+            assert!(new_state.world.items[&item_id].carried_by_player,
+                "Item {} should be marked carried by player", item_id);
+        }
+    }
+
+    #[test]
+    fn test_take_all_in_empty_room_reports_nothing() {
+        let mut state = create_test_exploration_state();
+        let current_location = state.current_location;
+        let room_item_ids = state.world.locations[&current_location].items.clone();
+        for item_id in &room_item_ids {
+            if let Some(item) = state.world.items.get_mut(item_id) {
+                item.location = None;
+            }
+        }
+        state.world.locations.get_mut(&current_location).unwrap().items.clear();
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "take all");
+        assert!(output.text.iter().any(|line| line.contains("nothing here to take")),
+            "Expected empty-room message. Got: {:?}", output.text);
+    }
+
+    #[test]
     fn test_fuzzy_target_npc() {
         let state = create_test_exploration_state();
         let state_json = serde_json::to_string(&state).unwrap();
@@ -9420,6 +9506,42 @@ mod tests {
         assert_eq!(new_state.character.xp, leveling::OBJECTIVE_XP_REWARD,
             "FindItem completion should award OBJECTIVE_XP_REWARD ({}); got {}",
             leveling::OBJECTIVE_XP_REWARD, new_state.character.xp);
+    }
+
+    #[test]
+    fn test_take_all_completes_find_item_objective_for_target_item() {
+        let mut state = create_test_exploration_state();
+
+        let artifact_id: u32 = 998;
+        state.world.items.insert(artifact_id, state::Item {
+            id: artifact_id,
+            name: "Ancient Gem".to_string(),
+            description: "A glowing gem of power.".to_string(),
+            item_type: state::ItemType::Misc,
+            location: Some(state.current_location),
+            carried_by_player: false,
+            charges_remaining: None,
+        });
+        if let Some(loc) = state.world.locations.get_mut(&state.current_location) {
+            loc.items.push(artifact_id);
+        }
+
+        state.progress.objectives.push(state::Objective {
+            id: "find_artifact".to_string(),
+            title: "Find the Ancient Gem".to_string(),
+            description: "Locate the gem hidden in the ruins.".to_string(),
+            completed: false,
+        });
+        state.progress.objective_triggers.push(state::ObjectiveType::FindItem(artifact_id));
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "take all");
+
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert!(new_state.progress.objectives[0].completed,
+            "Take all should complete FindItem objective when target item is present");
+        assert!(output.text.iter().any(|l| l.contains("Objective complete") && l.contains("Ancient Gem")),
+            "Should announce objective completion after take all: {:?}", output.text);
     }
 
     #[test]

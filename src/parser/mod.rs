@@ -9,6 +9,7 @@ pub enum Command {
     Go(Direction),
     Talk(String),
     Take(String),
+    TakeAll,
     Drop(String),
     Use(String),
     Equip(String),
@@ -286,7 +287,7 @@ pub fn parse(input: &str) -> Command {
             if args.is_empty() {
                 Command::Unknown("Take what?".to_string())
             } else if args == "all" || args == "everything" {
-                Command::Unknown("`take all` is not supported — pick up items individually.".to_string())
+                Command::TakeAll
             } else {
                 Command::Take(args)
             }
@@ -1060,31 +1061,15 @@ mod tests {
         assert_eq!(parse("take sword"), Command::Take("sword".to_string()));
     }
 
-    // ---- Bug #94: take all returns misleading error ----
+    // ---- Bulk pickup ----
     #[test]
-    fn test_take_all_returns_not_supported_message() {
-        // Hypothesis: "take all" routes to Command::Take("all") and the
-        // orchestrator returns `You don't see any "all" here.` Fix: detect
-        // "all"/"everything" in the parser and return an Unknown with the
-        // proper message.
-        match parse("take all") {
-            Command::Unknown(s) => assert!(
-                s.contains("not supported") || s.contains("individually"),
-                "take all should explain it's unsupported, got: {}", s
-            ),
-            other => panic!("Expected Unknown for 'take all', got {:?}", other),
-        }
+    fn test_take_all_routes_to_bulk_pickup() {
+        assert_eq!(parse("take all"), Command::TakeAll);
     }
 
     #[test]
-    fn test_take_everything_returns_not_supported_message() {
-        match parse("take everything") {
-            Command::Unknown(s) => assert!(
-                s.contains("not supported") || s.contains("individually"),
-                "take everything should explain it's unsupported, got: {}", s
-            ),
-            other => panic!("Expected Unknown for 'take everything', got {:?}", other),
-        }
+    fn test_take_everything_routes_to_bulk_pickup() {
+        assert_eq!(parse("take everything"), Command::TakeAll);
     }
 
     #[test]
