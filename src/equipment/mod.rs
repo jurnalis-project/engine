@@ -189,6 +189,13 @@ pub fn calculate_ac(character: &Character, items: &HashMap<ItemId, Item>) -> i32
     } else {
         10 + dex_mod
     };
+    let mage_armor_base = 13 + dex_mod;
+    let mage_armor_active = character.class_features.mage_armor_until_minutes.is_some();
+    let unarmored_base = if mage_armor_active {
+        unarmored_base.max(mage_armor_base)
+    } else {
+        unarmored_base
+    };
 
     // Body slot: mundane Armor or MagicArmor both contribute. MagicArmor adds
     // its `ac_bonus` on top of the base. `requires_attunement`-gated magic
@@ -381,6 +388,34 @@ mod tests {
         c.equipped.body = Some(0);
         // Armor formula applies: 12 + min(2, 2) = 14, not 15.
         assert_eq!(calculate_ac(&c, &items), 14);
+    }
+
+    #[test]
+    fn test_mage_armor_sets_unarmored_base_to_13_plus_dex() {
+        let mut c = test_character(14); // DEX mod +2
+        let items = HashMap::new();
+        c.class_features.mage_armor_until_minutes = Some(480);
+        assert_eq!(calculate_ac(&c, &items), 15); // 13 + 2
+    }
+
+    #[test]
+    fn test_mage_armor_does_not_stack_with_body_armor() {
+        let mut c = test_character(16); // DEX mod +3
+        let mut items = HashMap::new();
+        items.insert(0, make_armor(0, "Leather", ArmorCategory::Light, 11, None));
+        c.equipped.body = Some(0);
+        c.class_features.mage_armor_until_minutes = Some(480);
+        assert_eq!(calculate_ac(&c, &items), 14); // Leather 11 + 3, not 16
+    }
+
+    #[test]
+    fn test_mage_armor_stacks_with_shield() {
+        let mut c = test_character(14); // DEX mod +2
+        let mut items = HashMap::new();
+        items.insert(0, make_armor(0, "Shield", ArmorCategory::Shield, 2, None));
+        c.equipped.off_hand = Some(0);
+        c.class_features.mage_armor_until_minutes = Some(480);
+        assert_eq!(calculate_ac(&c, &items), 17); // 13 + 2 + 2
     }
 
     #[test]

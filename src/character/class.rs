@@ -71,6 +71,10 @@ pub struct ClassFeatureState {
     /// the spell deliberately.
     #[serde(default)]
     pub concentration_spell: Option<String>,
+    /// In-world minute when Mage Armor expires. `None` means the spell is not
+    /// currently active. Saves from before this field existed default cleanly.
+    #[serde(default)]
+    pub mage_armor_until_minutes: Option<u64>,
 }
 
 fn default_true() -> bool { true }
@@ -91,6 +95,7 @@ impl Default for ClassFeatureState {
             cunning_action_used: false,
             sneak_attack_used_this_turn: false,
             concentration_spell: None,
+            mage_armor_until_minutes: None,
         }
     }
 }

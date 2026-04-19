@@ -1713,10 +1713,27 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
                     return vec![narration::templates::CAST_NOT_A_RITUAL
                         .replace("{spell}", spell_def.name)];
                 }
-                return vec![
+                let mut lines = vec![
                     narration::templates::CAST_RITUAL_INTRO
                         .replace("{spell}", spell_def.name),
                 ];
+                if spell_def.concentration {
+                    match spells::begin_concentration(
+                        &mut state.character.class_features.concentration_spell,
+                        spell_def.name,
+                    ) {
+                        spells::ConcentrationStart::ReplacedPrior(prior) => {
+                            lines.push(narration::templates::CONCENTRATION_DROPPED
+                                .replace("{old}", &prior)
+                                .replace("{new}", spell_def.name));
+                        }
+                        spells::ConcentrationStart::Started => {
+                            lines.push(narration::templates::CONCENTRATION_STARTED
+                                .replace("{spell}", spell_def.name));
+                        }
+                    }
+                }
+                return lines;
             }
             // In exploration, only a subset of spells resolve meaningfully:
             // flavor cantrips, healing spells (self-target for MVP), and
@@ -1823,6 +1840,23 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
                             .replace("{level}", "1"));
                     }
                     out
+                }
+                "Mage Armor" => {
+                    if !spells::consume_spell_slot(
+                        spell_def.level,
+                        &mut state.character.spell_slots_remaining,
+                    ) {
+                        return vec![narration::templates::CAST_NO_SLOTS.to_string()];
+                    }
+                    state.character.class_features.mage_armor_until_minutes =
+                        Some(state.in_world_minutes + (8 * 60));
+                    vec![
+                        narration::templates::CAST_MAGE_ARMOR.to_string(),
+                        narration::templates::CAST_SLOT_USED
+                            .replace("{remaining}", &state.character.spell_slots_remaining[0].to_string())
+                            .replace("{max}", &state.character.spell_slots_max[0].to_string())
+                            .replace("{level}", "1"),
+                    ]
                 }
                 _ => {
                     vec![narration::templates::CAST_NOT_IN_COMBAT.to_string()]
@@ -10461,6 +10495,34 @@ mod tests {
         // Slot unchanged on ritual path.
         assert_eq!(new_state.character.spell_slots_remaining, slots_before,
             "Ritual casting must not consume a spell slot");
+        assert_eq!(
+            new_state.character.class_features.concentration_spell,
+            Some("Detect Magic".to_string()),
+            "Concentration ritual spells should still start concentration"
+        );
+    }
+
+    #[test]
+    fn test_mage_armor_in_exploration_raises_ac_and_uses_slot() {
+        let mut state = create_test_wizard_state();
+        state.character.known_spells.push("Mage Armor".to_string());
+        state.character.class_features.prepared_spells.push("Mage Armor".to_string());
+        let ac_before = equipment::calculate_ac(&state.character, &state.world.items);
+        let slots_before = state.character.spell_slots_remaining.clone();
+        let state_json = serde_json::to_string(&state).unwrap();
+
+        let output = process_input(&state_json, "cast mage armor");
+        let text = output.text.join(" ");
+        assert!(text.to_lowercase().contains("base ac is now 13") || text.to_lowercase().contains("protective weave"),
+            "Expected mage armor narration. Got: {:?}", output.text);
+
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        let ac_after = equipment::calculate_ac(&new_state.character, &new_state.world.items);
+        assert!(ac_after > ac_before, "Mage Armor should raise AC. Before: {}, after: {}", ac_before, ac_after);
+        assert_eq!(new_state.character.spell_slots_remaining[0], slots_before[0] - 1,
+            "Mage Armor should consume one level-1 slot");
+        assert_eq!(new_state.character.class_features.mage_armor_until_minutes, Some(8 * 60),
+            "Mage Armor should persist for 8 in-world hours from cast time");
     }
 
     #[test]

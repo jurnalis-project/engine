@@ -117,6 +117,7 @@ pub const CAST_MAGE_HAND: &str = "A spectral, glowing hand appears beside you, r
 pub const CAST_LIGHT: &str = "You touch the nearest object and it sheds bright light in a 20-foot radius.";
 pub const CAST_GUIDANCE: &str = "You place a hand on your own shoulder. A subtle glow settles around you, ready to aid a check.";
 pub const CAST_MINOR_ILLUSION: &str = "You conjure a small illusion -- a flicker, a whisper, a shadow that isn't there.";
+pub const CAST_MAGE_ARMOR: &str = "A protective weave of force settles around you. Your base AC is now 13 + your Dexterity modifier while you remain unarmored.";
 
 // -- Ritual-cast templates --
 pub const CAST_NOT_A_RITUAL: &str = "{spell} doesn't have the Ritual tag — cast it normally.";
@@ -448,4 +449,3 @@ mod tests {
         assert!(lines.iter().any(|line| line.contains("movement, inventory, equipment, spells, system, combat")));
     }
 }
-
