@@ -7039,7 +7039,7 @@ mod tests {
         let output = process_input(&output.state_json, "1"); // Human
         let output = process_input(&output.state_json, "Wizard");
         let output = process_input(&output.state_json, "1 2 3 4 5 6"); // spellbook
-        let output = process_input(&output.state_json, "1"); // prepared spell
+        let output = process_input(&output.state_json, "1 2 3 4"); // prepared spells
         let output = process_input(&output.state_json, "12"); // Sage (index 12 in Background::all())
         let output = process_input(&output.state_json, "default"); // origin feat
         let output = process_input(&output.state_json, "2"); // +1/+1/+1 pattern
@@ -7226,7 +7226,7 @@ mod tests {
         let output = process_input(&output.state_json, "1"); // Human
         let output = process_input(&output.state_json, "Wizard");
         let output = process_input(&output.state_json, "1 2 3 4 5 6"); // spellbook
-        let output = process_input(&output.state_json, "1"); // prepared spell
+        let output = process_input(&output.state_json, "1 2 3 4"); // prepared spells
         let output = process_input(&output.state_json, "1"); // Background: Acolyte
         let output = process_input(&output.state_json, "default"); // origin feat
         let output = process_input(&output.state_json, "2"); // Ability pattern: +1/+1/+1
@@ -7262,7 +7262,7 @@ mod tests {
         let output = process_input(&output.state_json, "1"); // Human
         let output = process_input(&output.state_json, "Wizard");
         let output = process_input(&output.state_json, "1 2 3 4 5 6"); // spellbook
-        let output = process_input(&output.state_json, "1"); // prepared spell
+        let output = process_input(&output.state_json, "1 2 3 4"); // prepared spells
         let output = process_input(&output.state_json, "Sage");
         let output = process_input(&output.state_json, "default"); // origin feat
         let output = process_input(&output.state_json, "2"); // Ability pattern: +1/+1/+1
