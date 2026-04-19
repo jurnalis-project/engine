@@ -1178,6 +1178,9 @@ fn grant_background_equipment(state: &mut GameState) {
 
     let bg = state.character.background;
     let items_to_grant = bg.starting_equipment();
+    let class_granted_names: std::collections::HashSet<String> = state.character.inventory.iter()
+        .filter_map(|id| state.world.items.get(id).map(|item| item.name.clone()))
+        .collect();
 
     let mut next_id = state.world.items.keys().max().map_or(0, |&id| id + 1);
 
@@ -1221,9 +1224,12 @@ fn grant_background_equipment(state: &mut GameState) {
     };
 
     for &name in items_to_grant {
-        // Skip items already modelled elsewhere via class loadout to avoid dupes
-        // is unnecessary — background items are distinct flavour. We only skip
-        // items that do not resolve to an SRD weapon or armor entry yet.
+        if class_granted_names.contains(name) {
+            continue;
+        }
+
+        // Items that do not resolve to an SRD weapon or armor entry are
+        // skipped until those background item categories are modeled here.
         let created = create_weapon(name, next_id).or_else(|| create_armor(name, next_id));
         if let Some(item) = created {
             let id = item.id;
@@ -1694,195 +1700,8 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
                 &state.character.spell_slots_max,
             )
         }
-        Command::Equip(target_str) => {
-            // Check for "off hand" suffix
-            let words: Vec<&str> = target_str.split_whitespace().collect();
-            let (target_name, force_off_hand) = if words.len() >= 3
-                && words[words.len()-2] == "off" && words[words.len()-1] == "hand"
-            {
-                (words[..words.len()-2].join(" "), true)
-            } else {
-                (target_str.clone(), false)
-            };
-
-            if target_name.is_empty() {
-                return vec!["Equip what?".to_string()];
-            }
-
-            let owned_candidates = inventory_item_candidates(state);
-            let candidates: Vec<(usize, &str)> = owned_candidates.iter()
-                .map(|(id, name)| (*id, name.as_str()))
-                .collect();
-
-            match resolver::resolve_target(&target_name, &candidates) {
-                ResolveResult::Found(id) => {
-                    let item_id = id as u32;
-                    let item = match state.world.items.get(&item_id) {
-                        Some(item) => item.clone(),
-                        None => return vec![narration::templates::EQUIP_NOT_FOUND.replace("{name}", &target_name)],
-                    };
-
-                    match &item.item_type {
-                        state::ItemType::Weapon { properties, .. } => {
-                            let is_two_handed = properties & equipment::TWO_HANDED != 0;
-                            let is_light = properties & equipment::LIGHT != 0;
-
-                            // Reject non-LIGHT weapons for off-hand
-                            if force_off_hand && !is_light {
-                                return vec![format!("The {} is too unwieldy to wield in your off hand.", item.name)];
-                            }
-                            // Reject two-handed for off-hand
-                            if force_off_hand && is_two_handed {
-                                return vec![format!("The {} requires both hands.", item.name)];
-                            }
-
-                            let mut lines = Vec::new();
-
-                            if is_two_handed {
-                                // Auto-swap main hand first
-                                if let Some(old_id) = state.character.equipped.main_hand.take() {
-                                    if old_id != item_id {
-                                        let old_name = state.world.items.get(&old_id).map(|i| i.name.clone()).unwrap_or_default();
-                                        lines.push(narration::templates::EQUIP_SWAP_WEAPON
-                                            .replace("{old}", &old_name)
-                                            .replace("{new}", &item.name));
-                                    }
-                                }
-                                // Auto-clear off hand for two-handed weapons
-                                if let Some(oh_id) = state.character.equipped.off_hand.take() {
-                                    let oh_name = state.world.items.get(&oh_id).map(|i| i.name.clone()).unwrap_or_default();
-                                    lines.push(narration::templates::EQUIP_TWO_HAND_CLEAR
-                                        .replace("{offhand}", &oh_name)
-                                        .replace("{weapon}", &item.name));
-                                }
-                                state.character.equipped.main_hand = Some(item_id);
-                                if lines.is_empty() {
-                                    lines.push(narration::templates::EQUIP_WIELD.replace("{item}", &item.name));
-                                }
-                            } else if force_off_hand {
-                                if let Some(old_id) = state.character.equipped.off_hand.replace(item_id) {
-                                    if old_id != item_id {
-                                        let old_name = state.world.items.get(&old_id).map(|i| i.name.clone()).unwrap_or_default();
-                                        lines.push(narration::templates::EQUIP_SWAP_WEAPON
-                                            .replace("{old}", &old_name)
-                                            .replace("{new}", &item.name));
-                                    }
-                                }
-                                if lines.is_empty() {
-                                    lines.push(narration::templates::EQUIP_WIELD_OFF.replace("{item}", &item.name));
-                                }
-                            } else {
-                                if let Some(old_id) = state.character.equipped.main_hand.replace(item_id) {
-                                    if old_id != item_id {
-                                        let old_name = state.world.items.get(&old_id).map(|i| i.name.clone()).unwrap_or_default();
-                                        lines.push(narration::templates::EQUIP_SWAP_WEAPON
-                                            .replace("{old}", &old_name)
-                                            .replace("{new}", &item.name));
-                                    }
-                                }
-                                if lines.is_empty() {
-                                    lines.push(narration::templates::EQUIP_WIELD.replace("{item}", &item.name));
-                                }
-                            }
-
-                            lines
-                        }
-                        state::ItemType::Armor { category, .. } => {
-                            let mut lines = Vec::new();
-                            if *category == state::ArmorCategory::Shield {
-                                if let Some(old_id) = state.character.equipped.off_hand.replace(item_id) {
-                                    if old_id != item_id {
-                                        let old_name = state.world.items.get(&old_id).map(|i| i.name.clone()).unwrap_or_default();
-                                        lines.push(narration::templates::EQUIP_SWAP_WEAPON
-                                            .replace("{old}", &old_name)
-                                            .replace("{new}", &item.name));
-                                    }
-                                }
-                                if lines.is_empty() {
-                                    lines.push(narration::templates::EQUIP_SHIELD.replace("{item}", &item.name));
-                                }
-                            } else {
-                                if let Some(old_id) = state.character.equipped.body.replace(item_id) {
-                                    if old_id != item_id {
-                                        let old_name = state.world.items.get(&old_id).map(|i| i.name.clone()).unwrap_or_default();
-                                        lines.push(narration::templates::EQUIP_SWAP_ARMOR
-                                            .replace("{old}", &old_name)
-                                            .replace("{new}", &item.name));
-                                    }
-                                }
-                                if lines.is_empty() {
-                                    lines.push(narration::templates::EQUIP_WEAR.replace("{item}", &item.name));
-                                }
-                                update_armor_proficiency_state(state, *category, &mut lines);
-                            }
-                            lines
-                        }
-                        _ => vec![narration::templates::EQUIP_CANT.replace("{item}", &item.name)],
-                    }
-                }
-                ResolveResult::Ambiguous(matches) => {
-                    let suffix = if force_off_hand { "off hand" } else { "" };
-                    emit_disambiguation_with_suffix(state, "equip", suffix, &matches)
-                }
-                ResolveResult::NotFound => vec![narration::templates::EQUIP_NOT_FOUND.replace("{name}", &target_name)],
-            }
-        }
-        Command::Unequip(target_str) => {
-            // Build candidates from equipped items only
-            let mut equipped_candidates: Vec<(usize, String)> = Vec::new();
-            if let Some(mh) = state.character.equipped.main_hand {
-                if let Some(item) = state.world.items.get(&mh) {
-                    equipped_candidates.push((mh as usize, item.name.clone()));
-                }
-            }
-            if let Some(oh) = state.character.equipped.off_hand {
-                if let Some(item) = state.world.items.get(&oh) {
-                    equipped_candidates.push((oh as usize, item.name.clone()));
-                }
-            }
-            if let Some(body) = state.character.equipped.body {
-                if let Some(item) = state.world.items.get(&body) {
-                    equipped_candidates.push((body as usize, item.name.clone()));
-                }
-            }
-
-            let candidates: Vec<(usize, &str)> = equipped_candidates.iter()
-                .map(|(id, name)| (*id, name.as_str()))
-                .collect();
-
-            match resolver::resolve_target(&target_str, &candidates) {
-                ResolveResult::Found(id) => {
-                    let item_id = id as u32;
-                    let name = state.world.items.get(&item_id).map(|i| i.name.clone()).unwrap_or_else(|| target_str.clone());
-
-                    let is_weapon = matches!(
-                        state.world.items.get(&item_id).map(|i| &i.item_type),
-                        Some(state::ItemType::Weapon { .. })
-                    );
-
-                    // Remove from whichever slot it's in
-                    if state.character.equipped.main_hand == Some(item_id) {
-                        state.character.equipped.main_hand = None;
-                    }
-                    if state.character.equipped.off_hand == Some(item_id) {
-                        state.character.equipped.off_hand = None;
-                    }
-                    if state.character.equipped.body == Some(item_id) {
-                        state.character.equipped.body = None;
-                        // Body slot is now empty -> no nonproficient armor worn.
-                        state.character.wearing_nonproficient_armor = false;
-                    }
-
-                    if is_weapon {
-                        vec![narration::templates::UNEQUIP_WEAPON.replace("{item}", &name)]
-                    } else {
-                        vec![narration::templates::UNEQUIP_ARMOR.replace("{item}", &name)]
-                    }
-                }
-                ResolveResult::Ambiguous(matches) => emit_disambiguation(state, "unequip", &matches),
-                ResolveResult::NotFound => vec![narration::templates::UNEQUIP_NOT_EQUIPPED.replace("{name}", &target_str)],
-            }
-        }
+        Command::Equip(target_str) => handle_equip_command(state, &target_str),
+        Command::Unequip(target_str) => handle_unequip_command(state, &target_str),
         Command::Cast { spell, target: _, ritual } => {
             // Check if caster
             if state.character.known_spells.is_empty() {
@@ -5686,6 +5505,9 @@ fn handle_equip_command(state: &mut GameState, target_str: &str) -> Vec<String> 
                             result_lines.push(narration::templates::EQUIP_WIELD.replace("{item}", &item.name));
                         }
                     } else if force_off_hand {
+                        if state.character.equipped.main_hand == Some(item_id) {
+                            state.character.equipped.main_hand = None;
+                        }
                         if let Some(old_id) = state.character.equipped.off_hand.replace(item_id) {
                             if old_id != item_id {
                                 let old_name = state.world.items.get(&old_id).map(|i| i.name.clone()).unwrap_or_default();
@@ -5696,6 +5518,9 @@ fn handle_equip_command(state: &mut GameState, target_str: &str) -> Vec<String> 
                             result_lines.push(narration::templates::EQUIP_WIELD_OFF.replace("{item}", &item.name));
                         }
                     } else {
+                        if state.character.equipped.off_hand == Some(item_id) {
+                            state.character.equipped.off_hand = None;
+                        }
                         if let Some(old_id) = state.character.equipped.main_hand.replace(item_id) {
                             if old_id != item_id {
                                 let old_name = state.world.items.get(&old_id).map(|i| i.name.clone()).unwrap_or_default();
@@ -7213,6 +7038,8 @@ mod tests {
         let output = new_game(42, false);
         let output = process_input(&output.state_json, "1"); // Human
         let output = process_input(&output.state_json, "Wizard");
+        let output = process_input(&output.state_json, "1 2 3 4 5 6"); // spellbook
+        let output = process_input(&output.state_json, "1"); // prepared spell
         let output = process_input(&output.state_json, "12"); // Sage (index 12 in Background::all())
         let output = process_input(&output.state_json, "default"); // origin feat
         let output = process_input(&output.state_json, "2"); // +1/+1/+1 pattern
@@ -7398,6 +7225,8 @@ mod tests {
         let output = new_game(42, false);
         let output = process_input(&output.state_json, "1"); // Human
         let output = process_input(&output.state_json, "Wizard");
+        let output = process_input(&output.state_json, "1 2 3 4 5 6"); // spellbook
+        let output = process_input(&output.state_json, "1"); // prepared spell
         let output = process_input(&output.state_json, "1"); // Background: Acolyte
         let output = process_input(&output.state_json, "default"); // origin feat
         let output = process_input(&output.state_json, "2"); // Ability pattern: +1/+1/+1
@@ -7425,6 +7254,30 @@ mod tests {
         let dagger = state.character.inventory.iter()
             .find(|&&id| state.world.items[&id].name == "Dagger");
         assert!(dagger.is_some(), "Dagger should be in inventory");
+    }
+
+    #[test]
+    fn test_wizard_sage_starts_with_one_quarterstaff() {
+        let output = new_game(42, false);
+        let output = process_input(&output.state_json, "1"); // Human
+        let output = process_input(&output.state_json, "Wizard");
+        let output = process_input(&output.state_json, "1 2 3 4 5 6"); // spellbook
+        let output = process_input(&output.state_json, "1"); // prepared spell
+        let output = process_input(&output.state_json, "Sage");
+        let output = process_input(&output.state_json, "default"); // origin feat
+        let output = process_input(&output.state_json, "2"); // Ability pattern: +1/+1/+1
+        let output = process_input(&output.state_json, "1"); // Standard array
+        let output = process_input(&output.state_json, "15 14 13 12 10 8");
+        let output = process_input(&output.state_json, "1 2"); // 2 skills
+        let output = process_input(&output.state_json, "5"); // alignment: Neutral
+        let output = process_input(&output.state_json, "Merla");
+
+        let state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        let quarterstaff_count = state.character.inventory.iter()
+            .filter(|&&id| state.world.items[&id].name == "Quarterstaff")
+            .count();
+
+        assert_eq!(quarterstaff_count, 1, "Wizard + Sage should start with one Quarterstaff");
     }
 
     #[test]
@@ -7715,6 +7568,39 @@ mod tests {
         assert_eq!(new_state.character.equipped.main_hand, Some(id2), "Should swap to longsword");
         // Old weapon still in inventory
         assert!(new_state.character.inventory.contains(&id1));
+    }
+
+    #[test]
+    fn test_equip_off_hand_moves_weapon_out_of_main_hand() {
+        let mut state = create_test_exploration_state();
+        let dagger_id = state.world.items.keys().max().unwrap() + 1;
+        state.world.items.insert(dagger_id, state::Item {
+            id: dagger_id,
+            name: "Dagger".to_string(),
+            description: "A simple dagger.".to_string(),
+            item_type: state::ItemType::Weapon {
+                damage_dice: 1,
+                damage_die: 4,
+                damage_type: state::DamageType::Piercing,
+                properties: crate::equipment::FINESSE | crate::equipment::LIGHT,
+                category: state::WeaponCategory::Simple,
+                versatile_die: 0,
+                range_normal: 20,
+                range_long: 60,
+            },
+            location: None,
+            carried_by_player: true,
+            charges_remaining: None,
+        });
+        state.character.inventory.push(dagger_id);
+        state.character.equipped.main_hand = Some(dagger_id);
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "equip dagger off hand");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+
+        assert_eq!(new_state.character.equipped.main_hand, None);
+        assert_eq!(new_state.character.equipped.off_hand, Some(dagger_id));
     }
 
     #[test]
