@@ -31,7 +31,7 @@ fn create_state_for_class(class_name: &str) -> String {
     // Wizard needs interactive spellbook + prepared spell selection before Background.
     if class_name.to_lowercase() == "wizard" {
         output = process_input(&output.state_json, "1 2 3 4 5 6"); // pick 6 spellbook spells
-        output = process_input(&output.state_json, "1"); // pick 1 prepared spell (INT 10 → mod 0 → 1)
+        output = process_input(&output.state_json, "1 2 3 4"); // pick 4 prepared spells
     }
 
     // Background=1, Origin feat=default, Background ability pattern=2,

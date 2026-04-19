@@ -15,10 +15,9 @@ fn create_wizard_state_json() -> String {
     output = process_input(&output.state_json, "1");
     output = process_input(&output.state_json, "Wizard");
 
-    // Wizard interactive spell selection: pick 6 spellbook spells, then 1 prepared spell
-    // (default INT 10 → modifier 0 → prepared = max(1, 0+1) = 1)
+    // Wizard interactive spell selection: pick 6 spellbook spells, then 4 prepared spells.
     output = process_input(&output.state_json, "1 2 3 4 5 6"); // spellbook
-    output = process_input(&output.state_json, "1"); // prepared spell
+    output = process_input(&output.state_json, "1 2 3 4"); // prepared spells
 
     // Background, Origin feat, Background ability pattern,
     // Ability method, Assign scores, Choose skills, Alignment, Name
