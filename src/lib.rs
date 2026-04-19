@@ -12334,4 +12334,117 @@ mod tests {
             "Using non-potion consumable should consume main action"
         );
     }
+
+    // ============================================================
+    // Wizard Spell Selection (#99)
+    // ============================================================
+
+    fn wizard_after_class_selection() -> String {
+        let out = new_game(1, false);
+        let state_json = out.state_json;
+        let out = process_input(&state_json, "1");
+        let state_json = out.state_json;
+        let out = process_input(&state_json, "12");
+        out.state_json
+    }
+
+    #[test]
+    fn test_wizard_class_selection_transitions_to_spellbook_step() {
+        let state_json = wizard_after_class_selection();
+        let state: GameState = serde_json::from_str(&state_json).unwrap();
+        assert_eq!(
+            state.game_phase,
+            GamePhase::CharacterCreation(CreationStep::ChooseWizardSpellbook),
+            "After choosing Wizard, phase should be ChooseWizardSpellbook"
+        );
+    }
+
+    #[test]
+    fn test_wizard_spellbook_prompt_lists_level1_wizard_spells() {
+        let state_json = wizard_after_class_selection();
+        let out = process_input(&state_json, "");
+        let combined = out.text.join(" ").to_lowercase();
+        assert!(combined.contains("spellbook") || combined.contains("spell"), "Expected spell selection prompt, got: {:?}", out.text);
+        assert!(combined.contains("magic missile") || combined.contains("burning hands"), "Expected level-1 wizard spells listed, got: {:?}", out.text);
+    }
+
+    #[test]
+    fn test_wizard_spellbook_accepts_6_valid_selections() {
+        let state_json = wizard_after_class_selection();
+        let prompt_out = process_input(&state_json, "");
+        let out = process_input(&prompt_out.state_json, "1 2 3 4 5 6");
+        let state: GameState = serde_json::from_str(&out.state_json).unwrap();
+        assert_eq!(
+            state.game_phase,
+            GamePhase::CharacterCreation(CreationStep::ChooseWizardPreparedSpells),
+            "After picking 6 spellbook spells, should go to ChooseWizardPreparedSpells"
+        );
+        assert_eq!(state.character.known_spells.len(), 8,
+            "Wizard should have 8 known spells (2 cantrips + 6 chosen level-1 spells)");
+    }
+
+    #[test]
+    fn test_wizard_spellbook_rejects_wrong_count() {
+        let state_json = wizard_after_class_selection();
+        let prompt_out = process_input(&state_json, "");
+        let out = process_input(&prompt_out.state_json, "1 2 3");
+        let state: GameState = serde_json::from_str(&out.state_json).unwrap();
+        assert_eq!(
+            state.game_phase,
+            GamePhase::CharacterCreation(CreationStep::ChooseWizardSpellbook),
+            "Should stay in ChooseWizardSpellbook if wrong count given"
+        );
+        let combined = out.text.join(" ").to_lowercase();
+        assert!(combined.contains("6"), "Error should mention requiring 6 spells");
+    }
+
+    #[test]
+    fn test_wizard_prepared_spells_prompt_shows_spellbook() {
+        let state_json = wizard_after_class_selection();
+        let prompt_out = process_input(&state_json, "");
+        let after_book = process_input(&prompt_out.state_json, "1 2 3 4 5 6");
+        let combined = after_book.text.join(" ").to_lowercase();
+        assert!(combined.contains("prepared") || combined.contains("prepare"), "Should show prepare prompt, got: {:?}", after_book.text);
+    }
+
+    #[test]
+    fn test_wizard_prepared_spells_accepts_int_mod_plus_level_count() {
+        let state_json = wizard_after_class_selection();
+        let prompt_out = process_input(&state_json, "");
+        let after_book = process_input(&prompt_out.state_json, "1 2 3 4 5 6");
+        let out = process_input(&after_book.state_json, "1");
+        let state: GameState = serde_json::from_str(&out.state_json).unwrap();
+        assert!(
+            !matches!(state.game_phase, GamePhase::CharacterCreation(CreationStep::ChooseWizardPreparedSpells)),
+            "Should have left ChooseWizardPreparedSpells, got {:?}", state.game_phase
+        );
+    }
+
+    #[test]
+    fn test_non_wizard_class_skips_spell_selection() {
+        let out = new_game(1, false);
+        let state_json = out.state_json;
+        let out = process_input(&state_json, "1");
+        let state_json = out.state_json;
+        let out = process_input(&state_json, "5");
+        let state: GameState = serde_json::from_str(&out.state_json).unwrap();
+        assert_eq!(
+            state.game_phase,
+            GamePhase::CharacterCreation(CreationStep::ChooseBackground),
+            "Non-wizard class should skip to ChooseBackground directly"
+        );
+    }
+
+    #[test]
+    fn test_wizard_prepared_spells_populate_class_features() {
+        let state_json = wizard_after_class_selection();
+        let prompt_out = process_input(&state_json, "");
+        let after_book = process_input(&prompt_out.state_json, "1 2 3 4 5 6");
+        let after_prep = process_input(&after_book.state_json, "1");
+        let state: GameState = serde_json::from_str(&after_prep.state_json).unwrap();
+        assert_eq!(
+            state.character.class_features.prepared_spells.len(), 1,
+            "Wizard should have 1 prepared spell (INT mod 0 + level 1)"
+        );
+    }
 }

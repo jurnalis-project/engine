@@ -24,10 +24,19 @@ use jurnalis_engine::{
 fn create_state_for_class(class_name: &str) -> String {
     let mut output = new_game(42, false);
 
-    // Race=1 (Human), Class=<name>, Background=1, Origin feat=default,
-    // Background ability pattern=2, Ability method=1, Scores, Skills,
-    // Alignment=5, Name.
-    for input in ["1", class_name, "1", "default", "2", "1", "15 14 13 12 10 8", "1 2", "5", "Hero"] {
+    // Race=1 (Human), Class=<name>
+    output = process_input(&output.state_json, "1");
+    output = process_input(&output.state_json, class_name);
+
+    // Wizard needs interactive spellbook + prepared spell selection before Background.
+    if class_name.to_lowercase() == "wizard" {
+        output = process_input(&output.state_json, "1 2 3 4 5 6"); // pick 6 spellbook spells
+        output = process_input(&output.state_json, "1"); // pick 1 prepared spell (INT 10 → mod 0 → 1)
+    }
+
+    // Background=1, Origin feat=default, Background ability pattern=2,
+    // Ability method=1, Scores, Skills, Alignment=5, Name.
+    for input in ["1", "default", "2", "1", "15 14 13 12 10 8", "1 2", "5", "Hero"] {
         output = process_input(&output.state_json, input);
     }
     output.state_json

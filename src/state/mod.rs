@@ -447,6 +447,13 @@ pub enum CreationStep {
     /// abilities -> alignment -> details).
     ChooseAlignment,
     ChooseName,
+    /// Wizard-specific: choose 6 level-1 spells for the spellbook from the
+    /// full Wizard level-1 spell list. Inserted after ChooseClass when the
+    /// player picks Wizard. See docs/specs/wizard-spell-selection.md.
+    ChooseWizardSpellbook,
+    /// Wizard-specific: choose prepared spells (INT mod + level) from the
+    /// spellbook just assembled. Follows ChooseWizardSpellbook immediately.
+    ChooseWizardPreparedSpells,
 }
 
 pub fn save_game(state: &GameState) -> Result<String, serde_json::Error> {
