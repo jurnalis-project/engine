@@ -7213,6 +7213,8 @@ mod tests {
         let output = new_game(42, false);
         let output = process_input(&output.state_json, "1"); // Human
         let output = process_input(&output.state_json, "Wizard");
+        let output = process_input(&output.state_json, "1 2 3 4 5 6"); // spellbook
+        let output = process_input(&output.state_json, "1"); // prepared spells
         let output = process_input(&output.state_json, "12"); // Sage (index 12 in Background::all())
         let output = process_input(&output.state_json, "default"); // origin feat
         let output = process_input(&output.state_json, "2"); // +1/+1/+1 pattern
@@ -7398,6 +7400,8 @@ mod tests {
         let output = new_game(42, false);
         let output = process_input(&output.state_json, "1"); // Human
         let output = process_input(&output.state_json, "Wizard");
+        let output = process_input(&output.state_json, "1 2 3 4 5 6"); // spellbook
+        let output = process_input(&output.state_json, "1"); // prepared spells
         let output = process_input(&output.state_json, "1"); // Background: Acolyte
         let output = process_input(&output.state_json, "default"); // origin feat
         let output = process_input(&output.state_json, "2"); // Ability pattern: +1/+1/+1
@@ -7476,6 +7480,28 @@ mod tests {
         // Fighter with Chain Mail (AC 16, heavy) + Shield (+2) = AC 18
         let ac = equipment::calculate_ac(&state.character, &state.world.items);
         assert_eq!(ac, 18, "Fighter AC should be 18 (Chain Mail 16 + Shield 2)");
+    }
+
+    #[test]
+    fn test_barbarian_starting_ac_uses_unarmored_defense() {
+        let output = new_game(42, false);
+        let output = process_input(&output.state_json, "1"); // Human
+        let output = process_input(&output.state_json, "Barbarian");
+        let output = process_input(&output.state_json, "1"); // Background: Acolyte
+        let output = process_input(&output.state_json, "default"); // origin feat
+        let output = process_input(&output.state_json, "2"); // Ability pattern: +1/+1/+1
+        let output = process_input(&output.state_json, "1"); // Standard array
+        let output = process_input(&output.state_json, "15 14 13 12 10 8");
+        let output = process_input(&output.state_json, "1 2"); // 2 skills
+        let output = process_input(&output.state_json, "5"); // alignment: Neutral
+        let output = process_input(&output.state_json, "Conan");
+
+        let state: GameState = serde_json::from_str(&output.state_json).unwrap();
+
+        // Human Barbarian with standard array and +1/+1/+1 pattern ends with
+        // DEX 15 (+2), CON 14 (+2), no body armor, no shield => AC 14.
+        let ac = equipment::calculate_ac(&state.character, &state.world.items);
+        assert_eq!(ac, 14, "Barbarian AC should use Unarmored Defense (10 + DEX + CON)");
     }
 
     #[test]
@@ -7742,6 +7768,36 @@ mod tests {
         let state_json = serde_json::to_string(&state).unwrap();
         let output = process_input(&state_json, "character");
         assert!(output.text.iter().any(|t| t.contains("AC:")), "Character sheet should show AC. Got: {:?}", output.text);
+    }
+
+    #[test]
+    fn test_character_sheet_barbarian_shows_unarmored_defense_ac() {
+        let mut state = create_test_exploration_state();
+        state.character.class = Class::Barbarian;
+        state.character.equipped.body = None;
+        state.character.equipped.off_hand = None;
+        state.character.ability_scores.insert(Ability::Dexterity, 14);
+        state.character.ability_scores.insert(Ability::Constitution, 16);
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "character");
+        assert!(output.text.iter().any(|t| t == "AC: 15"),
+            "Character sheet should reflect Barbarian Unarmored Defense. Got: {:?}", output.text);
+    }
+
+    #[test]
+    fn test_combat_look_barbarian_shows_unarmored_defense_ac() {
+        let mut state = create_test_combat_state();
+        state.character.class = Class::Barbarian;
+        state.character.equipped.body = None;
+        state.character.equipped.off_hand = None;
+        state.character.ability_scores.insert(Ability::Dexterity, 14);
+        state.character.ability_scores.insert(Ability::Constitution, 16);
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "look");
+        assert!(output.text.iter().any(|t| t == "AC: 15"),
+            "Combat look should reflect Barbarian Unarmored Defense. Got: {:?}", output.text);
     }
 
     #[test]

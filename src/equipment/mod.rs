@@ -183,6 +183,12 @@ pub fn character_has_mastery(character: &Character, weapon_name: &str) -> bool {
 
 pub fn calculate_ac(character: &Character, items: &HashMap<ItemId, Item>) -> i32 {
     let dex_mod = character.ability_modifier(Ability::Dexterity);
+    let con_mod = character.ability_modifier(Ability::Constitution);
+    let unarmored_base = if matches!(character.class, crate::character::class::Class::Barbarian) {
+        10 + dex_mod + con_mod
+    } else {
+        10 + dex_mod
+    };
 
     // Body slot: mundane Armor or MagicArmor both contribute. MagicArmor adds
     // its `ac_bonus` on top of the base. `requires_attunement`-gated magic
@@ -210,10 +216,10 @@ pub fn calculate_ac(character: &Character, items: &HashMap<ItemId, Item>) -> i32
                     let bonus = if bonus_applies { *ac_bonus } else { 0 };
                     *base_ac as i32 + dex_contribution + bonus
                 }
-                _ => 10 + dex_mod,
+                _ => unarmored_base,
             }
         }
-        None => 10 + dex_mod,
+        None => unarmored_base,
     };
 
     let shield_bonus = match character.equipped.off_hand {
@@ -323,6 +329,58 @@ mod tests {
         items.insert(0, make_armor(0, "Chain Mail", ArmorCategory::Heavy, 16, Some(0)));
         c.equipped.body = Some(0);
         assert_eq!(calculate_ac(&c, &items), 16); // -2 DEX must not reduce AC
+    }
+
+    #[test]
+    fn test_barbarian_unarmored_defense_adds_con_modifier() {
+        // Hypothesis: Barbarian AC is wrong because calculate_ac falls back to
+        // the generic unarmored baseline (10 + DEX) instead of the class-specific
+        // Unarmored Defense formula (10 + DEX + CON) when no body armor is worn.
+        let mut scores = HashMap::new();
+        scores.insert(Ability::Strength, 10);
+        scores.insert(Ability::Dexterity, 14);
+        scores.insert(Ability::Constitution, 16);
+        scores.insert(Ability::Intelligence, 10);
+        scores.insert(Ability::Wisdom, 10);
+        scores.insert(Ability::Charisma, 10);
+        let c = create_character("Barb".to_string(), Race::Human, Class::Barbarian, scores, vec![]);
+        let items = HashMap::new();
+        // Human -> DEX 15 (+2), CON 17 (+3): 10 + 2 + 3 = 15
+        assert_eq!(calculate_ac(&c, &items), 15);
+    }
+
+    #[test]
+    fn test_barbarian_unarmored_defense_still_adds_shield() {
+        let mut scores = HashMap::new();
+        scores.insert(Ability::Strength, 10);
+        scores.insert(Ability::Dexterity, 14);
+        scores.insert(Ability::Constitution, 16);
+        scores.insert(Ability::Intelligence, 10);
+        scores.insert(Ability::Wisdom, 10);
+        scores.insert(Ability::Charisma, 10);
+        let mut c = create_character("Barb".to_string(), Race::Human, Class::Barbarian, scores, vec![]);
+        let mut items = HashMap::new();
+        items.insert(0, make_armor(0, "Shield", ArmorCategory::Shield, 2, None));
+        c.equipped.off_hand = Some(0);
+        // 10 + 2 DEX + 3 CON + 2 shield = 17
+        assert_eq!(calculate_ac(&c, &items), 17);
+    }
+
+    #[test]
+    fn test_barbarian_body_armor_disables_unarmored_defense() {
+        let mut scores = HashMap::new();
+        scores.insert(Ability::Strength, 10);
+        scores.insert(Ability::Dexterity, 14);
+        scores.insert(Ability::Constitution, 16);
+        scores.insert(Ability::Intelligence, 10);
+        scores.insert(Ability::Wisdom, 10);
+        scores.insert(Ability::Charisma, 10);
+        let mut c = create_character("Barb".to_string(), Race::Human, Class::Barbarian, scores, vec![]);
+        let mut items = HashMap::new();
+        items.insert(0, make_armor(0, "Hide", ArmorCategory::Medium, 12, Some(2)));
+        c.equipped.body = Some(0);
+        // Armor formula applies: 12 + min(2, 2) = 14, not 15.
+        assert_eq!(calculate_ac(&c, &items), 14);
     }
 
     #[test]
