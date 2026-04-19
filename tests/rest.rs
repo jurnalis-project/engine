@@ -21,8 +21,8 @@ use jurnalis_engine::{
     character::{class::Class, create_character, race::Race},
     combat::{CombatState, Combatant},
     new_game, process_input,
-    state::{GameState, GamePhase, ProgressState, SAVE_VERSION, WorldState},
-    types::{Ability, Skill},
+    state::{CombatStats, DamageType, Disposition, GameState, GamePhase, Npc, NpcAttack, NpcRole, ProgressState, SAVE_VERSION, WorldState},
+    types::{Ability, Cover, Skill},
 };
 
 // ---------- helpers ----------------------------------------------------------
@@ -117,7 +117,100 @@ fn fake_combat() -> CombatState {
     }
 }
 
+fn make_downed_combat_state() -> GameState {
+    let mut state = make_exploration_state(Class::Fighter);
+    state.character.current_hp = 0;
+
+    let npc_id = 7001;
+    state.world.npcs.insert(
+        npc_id,
+        Npc {
+            id: npc_id,
+            name: "Training Dummy".to_string(),
+            role: NpcRole::Guard,
+            disposition: Disposition::Hostile,
+            dialogue_tags: vec![],
+            location: state.current_location,
+            combat_stats: Some(CombatStats {
+                max_hp: 7,
+                current_hp: 7,
+                ac: 10,
+                speed: 30,
+                ability_scores: HashMap::new(),
+                attacks: vec![NpcAttack {
+                    name: "Stall".to_string(),
+                    hit_bonus: 0,
+                    damage_dice: 0,
+                    damage_die: 0,
+                    damage_bonus: 0,
+                    damage_type: DamageType::Bludgeoning,
+                    reach: 0,
+                    range_normal: 0,
+                    range_long: 0,
+                }],
+                proficiency_bonus: 2,
+                ..Default::default()
+            }),
+            conditions: vec![],
+        },
+    );
+
+    let mut distances = HashMap::new();
+    distances.insert(npc_id, 5);
+    state.active_combat = Some(CombatState {
+        initiative_order: vec![(Combatant::Player, 20), (Combatant::Npc(npc_id), 10)],
+        current_turn: 0,
+        round: 1,
+        distances,
+        player_movement_remaining: state.character.speed,
+        player_dodging: false,
+        player_disengaging: false,
+        action_used: false,
+        bonus_action_used: false,
+        reaction_used: false,
+        free_interaction_used: false,
+        npc_dodging: HashMap::new(),
+        npc_disengaging: HashMap::new(),
+        player_shield_ac_bonus: 0,
+        pending_reaction: None,
+        player_vex_target: None,
+        sap_targets: std::collections::HashSet::new(),
+        slow_targets: HashMap::new(),
+        cleave_used_this_turn: false,
+        nick_used_this_turn: false,
+        death_save_successes: 0,
+        death_save_failures: 0,
+        player_cover: Cover::None,
+        npc_cover: HashMap::new(),
+        npc_reactions_used: std::collections::HashSet::new(),
+    });
+
+    state
+}
+
 // ---------- short rest -------------------------------------------------------
+
+#[test]
+fn downed_player_input_advances_only_one_death_save_cycle() {
+    // Hypothesis: process_npc_turns auto-rolls another death save each time initiative
+    // returns to a dying player, so one input can fast-forward multiple rounds.
+    let state = make_downed_combat_state();
+
+    let out = process_input(&into_json(&state), "end turn");
+    let new_state = from_json(&out.state_json);
+    let combat = new_state.active_combat.as_ref().expect("combat should still be active");
+    let death_save_lines = out
+        .text
+        .iter()
+        .filter(|line| line.contains("Death saving throw:"))
+        .count();
+
+    assert_eq!(death_save_lines, 1, "single input should roll exactly one death save, got output: {:?}", out.text);
+    assert!(combat.is_player_turn(), "after one death-save turn and one NPC turn, control should return to the player");
+    assert_eq!(u16::from(combat.death_save_successes) + u16::from(combat.death_save_failures), 1,
+        "one input should change death-save counters by exactly one roll; combat state: successes={}, failures={}",
+        combat.death_save_successes, combat.death_save_failures);
+}
 
 #[test]
 fn short_rest_heals_fighter_via_hit_dice() {
@@ -731,4 +824,3 @@ fn paladin_level_one_short_rest_does_not_grant_channel_divinity() {
     let after = from_json(&out.state_json);
     assert_eq!(after.character.class_features.channel_divinity_remaining, 0);
 }
-
