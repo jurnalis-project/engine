@@ -188,6 +188,80 @@ fn make_downed_combat_state() -> GameState {
     state
 }
 
+fn make_downed_wizard_combat_state() -> GameState {
+    let mut state = make_exploration_state(Class::Wizard);
+    state.character.current_hp = 0;
+    state.character.known_spells = vec!["Shield".to_string()];
+    state.character.spell_slots_max = vec![1];
+    state.character.spell_slots_remaining = vec![1];
+
+    let npc_id = 7002;
+    state.world.npcs.insert(
+        npc_id,
+        Npc {
+            id: npc_id,
+            name: "Goblin Bruiser".to_string(),
+            role: NpcRole::Guard,
+            disposition: Disposition::Hostile,
+            dialogue_tags: vec![],
+            location: state.current_location,
+            combat_stats: Some(CombatStats {
+                max_hp: 7,
+                current_hp: 7,
+                ac: 10,
+                speed: 30,
+                ability_scores: HashMap::new(),
+                attacks: vec![NpcAttack {
+                    name: "Club".to_string(),
+                    hit_bonus: 4,
+                    damage_dice: 1,
+                    damage_die: 4,
+                    damage_bonus: 2,
+                    damage_type: DamageType::Bludgeoning,
+                    reach: 5,
+                    range_normal: 0,
+                    range_long: 0,
+                }],
+                proficiency_bonus: 2,
+                ..Default::default()
+            }),
+            conditions: vec![],
+        },
+    );
+
+    let mut distances = HashMap::new();
+    distances.insert(npc_id, 5);
+    state.active_combat = Some(CombatState {
+        initiative_order: vec![(Combatant::Player, 20), (Combatant::Npc(npc_id), 10)],
+        current_turn: 0,
+        round: 1,
+        distances,
+        player_movement_remaining: state.character.speed,
+        player_dodging: false,
+        player_disengaging: false,
+        action_used: false,
+        bonus_action_used: false,
+        reaction_used: false,
+        free_interaction_used: false,
+        npc_dodging: HashMap::new(),
+        npc_disengaging: HashMap::new(),
+        player_shield_ac_bonus: 0,
+        pending_reaction: None,
+        player_vex_target: None,
+        sap_targets: std::collections::HashSet::new(),
+        slow_targets: HashMap::new(),
+        cleave_used_this_turn: false,
+        nick_used_this_turn: false,
+        death_save_successes: 0,
+        death_save_failures: 0,
+        player_cover: Cover::None,
+        npc_cover: HashMap::new(),
+        npc_reactions_used: std::collections::HashSet::new(),
+    });
+
+    state
+}
+
 // ---------- short rest -------------------------------------------------------
 
 #[test]
@@ -210,6 +284,38 @@ fn downed_player_input_advances_only_one_death_save_cycle() {
     assert_eq!(u16::from(combat.death_save_successes) + u16::from(combat.death_save_failures), 1,
         "one input should change death-save counters by exactly one roll; combat state: successes={}, failures={}",
         combat.death_save_successes, combat.death_save_failures);
+}
+
+#[test]
+fn downed_player_does_not_get_normal_turn_prompt_while_still_dying() {
+    // Hypothesis: after resolving one death save and the enemy turn, handle_combat
+    // still appends the standard player prompt even though a 0 HP character remains unconscious.
+    let state = make_downed_combat_state();
+
+    let out = process_input(&into_json(&state), "end turn");
+    let new_state = from_json(&out.state_json);
+
+    assert_eq!(new_state.character.current_hp, 0, "fixture seed should keep the player at 0 HP for this cadence check");
+    assert!(
+        !out.text.iter().any(|line| line.contains("Your turn!")),
+        "dying players should not receive the normal action prompt: {:?}",
+        out.text
+    );
+}
+
+#[test]
+fn downed_player_cannot_cast_shield_reaction_while_unconscious() {
+    // Hypothesis: reaction gating only checks condition flags, so a 0 HP wizard can
+    // still receive Shield prompts during enemy turns because dying is tracked via HP.
+    let state = make_downed_wizard_combat_state();
+
+    let out = process_input(&into_json(&state), "end turn");
+
+    assert!(
+        !out.text.iter().any(|line| line.contains("Cast Shield") || line.contains("cast Shield")),
+        "unconscious players should not receive Shield reaction prompts: {:?}",
+        out.text
+    );
 }
 
 #[test]

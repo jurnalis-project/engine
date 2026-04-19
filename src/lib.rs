@@ -59,11 +59,6 @@ const ALIGNMENT_OPTIONS: &[Alignment] = &[
     Alignment::Unaligned,
 ];
 
-const WIZARD_STARTING_CANTRIPS: &[&str] = &[
-    "Fire Bolt",
-    "Prestidigitation",
-];
-
 const WIZARD_SPELLBOOK_SPELL_COUNT: usize = 6;
 const WIZARD_PREPARED_SPELL_COUNT: usize = 4;
 
@@ -465,7 +460,7 @@ fn handle_creation(state: &mut GameState, input: &str, step: CreationStep) -> Ve
                 return render_wizard_spellbook_prompt();
             }
 
-            let selected = match parse_numbered_selections(input, &options, 6) {
+            let selected = match parse_numbered_selections(input, &options, WIZARD_SPELLBOOK_SPELL_COUNT) {
                 Ok(names) => names,
                 Err(message) => return vec![message],
             };
@@ -814,84 +809,6 @@ fn handle_creation(state: &mut GameState, input: &str, step: CreationStep) -> Ve
                 format!("Alignment: {}. Enter your character's name:", chosen),
             ]
         }
-        CreationStep::ChooseWizardSpellbook => {
-            let trimmed = input.trim();
-            if trimmed.is_empty() {
-                return wizard_spellbook_prompt();
-            }
-
-            let wizard_spells = wizard_level_one_spell_options();
-            let selected = match parse_numbered_selection_list(trimmed, wizard_spells.len()) {
-                Ok(indices) => indices,
-                Err(message) => return vec![message],
-            };
-
-            if selected.len() != WIZARD_SPELLBOOK_SPELL_COUNT {
-                return vec![format!(
-                    "Choose exactly {} spells for your spellbook.",
-                    WIZARD_SPELLBOOK_SPELL_COUNT,
-                )];
-            }
-
-            state.character.known_spells = WIZARD_STARTING_CANTRIPS
-                .iter()
-                .map(|spell| (*spell).to_string())
-                .collect();
-            state.character.known_spells.extend(
-                selected
-                    .iter()
-                    .map(|index| wizard_spells[*index - 1].name.to_string()),
-            );
-            state.character.class_features.prepared_spells.clear();
-            state.game_phase = GamePhase::CharacterCreation(CreationStep::ChooseWizardPreparedSpells);
-
-            wizard_prepared_spells_prompt(&state.character.known_spells)
-        }
-        CreationStep::ChooseWizardPreparedSpells => {
-            let trimmed = input.trim();
-            if trimmed.is_empty() {
-                return wizard_prepared_spells_prompt(&state.character.known_spells);
-            }
-
-            let spellbook: Vec<String> = state.character.known_spells.iter()
-                .filter(|spell| crate::spells::find_spell(spell).map(|def| def.level == 1).unwrap_or(false))
-                .cloned()
-                .collect();
-            let selected = match parse_numbered_selection_list(trimmed, spellbook.len()) {
-                Ok(indices) => indices,
-                Err(message) => return vec![message],
-            };
-
-            if selected.len() != WIZARD_PREPARED_SPELL_COUNT {
-                return vec![format!(
-                    "Prepare exactly {} level-1 spells from your spellbook.",
-                    WIZARD_PREPARED_SPELL_COUNT,
-                )];
-            }
-
-            state.character.class_features.prepared_spells = selected
-                .iter()
-                .map(|index| spellbook[*index - 1].clone())
-                .collect();
-            state.game_phase = GamePhase::CharacterCreation(CreationStep::ChooseBackground);
-
-            let mut lines = vec![
-                format!(
-                    "Prepared spells recorded ({}). Choose your background:",
-                    state.character.class_features.prepared_spells.join(", "),
-                ),
-            ];
-            for (i, &bg) in Background::all().iter().enumerate() {
-                let feat = bg.origin_feat();
-                let skills = bg.skill_proficiencies();
-                lines.push(format!(
-                    "  {}. {} ({} / {}, feat: {})",
-                    i + 1, bg, skills[0], skills[1], feat,
-                ));
-            }
-            lines.push("Enter a number or name.".to_string());
-            lines
-        }
         CreationStep::ChooseName => {
             let name = input.trim().to_string();
             if name.is_empty() {
@@ -1018,15 +935,15 @@ fn wizard_preparable_spells(character: &character::Character) -> Vec<&str> {
 }
 
 fn wizard_prepared_spell_count(character: &character::Character) -> usize {
-    let int_mod = character.ability_modifier(Ability::Intelligence);
-    (int_mod + character.level.max(1) as i32).max(1) as usize
+    let _ = character;
+    WIZARD_PREPARED_SPELL_COUNT
 }
 
 fn render_wizard_spellbook_prompt() -> Vec<String> {
     let options = wizard_level_one_spell_options();
     let mut lines = vec![
         "Wizard: choose 6 level-1 spells for your spellbook.".to_string(),
-        "Enter 6 numbers separated by spaces.".to_string(),
+        format!("Enter {} numbers separated by spaces.", WIZARD_SPELLBOOK_SPELL_COUNT),
     ];
     for (i, spell) in options.iter().enumerate() {
         lines.push(format!("  {}. {}", i + 1, spell));
@@ -2286,6 +2203,11 @@ fn should_trigger_shield_reaction(
     state: &GameState,
     npc_id: types::NpcId,
 ) -> bool {
+    // A character at 0 HP is unconscious/dying and cannot take reactions.
+    if state.character.current_hp <= 0 {
+        return false;
+    }
+
     // Player must know Shield, have a 1st-level slot, and have reaction available.
     let knows_shield = state.character.known_spells.iter().any(|s| s == "Shield");
     if !knows_shield {
@@ -2345,6 +2267,11 @@ fn should_trigger_opportunity_attack(
     state: &GameState,
     npc_id: types::NpcId,
 ) -> Option<(u32, u32)> {
+    // A character at 0 HP is unconscious/dying and cannot take reactions.
+    if state.character.current_hp <= 0 {
+        return None;
+    }
+
     // Player must have reaction available.
     if combat.reaction_used {
         return None;
@@ -3045,7 +2972,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                         lines.extend(end_combat(state, victory));
                         return lines;
                     }
-                    if combat.is_player_turn() {
+                    if combat.is_player_turn() && !combat.is_player_dying(state) {
                         append_player_turn_prompt(&mut lines, state, combat);
                     }
                 }
@@ -7252,7 +7179,7 @@ mod tests {
         let output = process_input(&output.state_json, "1"); // Human
         let output = process_input(&output.state_json, "Wizard");
         let output = process_input(&output.state_json, "1 2 3 4 5 6"); // spellbook
-        let output = process_input(&output.state_json, "1"); // prepared spell
+        let output = process_input(&output.state_json, "1 2 3 4"); // prepared spells
         let output = process_input(&output.state_json, "12"); // Sage (index 12 in Background::all())
         let output = process_input(&output.state_json, "default"); // origin feat
         let output = process_input(&output.state_json, "2"); // +1/+1/+1 pattern
@@ -7439,7 +7366,7 @@ mod tests {
         let output = process_input(&output.state_json, "1"); // Human
         let output = process_input(&output.state_json, "Wizard");
         let output = process_input(&output.state_json, "1 2 3 4 5 6"); // spellbook
-        let output = process_input(&output.state_json, "1"); // prepared spell
+        let output = process_input(&output.state_json, "1 2 3 4"); // prepared spells
         let output = process_input(&output.state_json, "1"); // Background: Acolyte
         let output = process_input(&output.state_json, "default"); // origin feat
         let output = process_input(&output.state_json, "2"); // Ability pattern: +1/+1/+1
