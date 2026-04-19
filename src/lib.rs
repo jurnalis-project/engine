@@ -309,6 +309,104 @@ fn emit_disambiguation_with_suffix(
     resolver::format_disambiguation(matches)
 }
 
+fn choose_background_prompt(class: Class) -> Vec<String> {
+    let mut lines = vec![
+        format!("Class: {}. Choose your background:", class),
+    ];
+    for (i, &bg) in Background::all().iter().enumerate() {
+        let feat = bg.origin_feat();
+        let skills = bg.skill_proficiencies();
+        lines.push(format!(
+            "  {}. {} ({} / {}, feat: {})",
+            i + 1, bg, skills[0], skills[1], feat,
+        ));
+    }
+    lines.push("Enter a number or name.".to_string());
+    lines
+}
+
+fn parse_background_selection(input: &str) -> Option<Background> {
+    let input_lower = input.trim().to_lowercase();
+    let all_bgs = Background::all();
+    input.trim().parse::<usize>().ok()
+        .and_then(|n| if (1..=all_bgs.len()).contains(&n) { Some(all_bgs[n - 1]) } else { None })
+        .or_else(|| all_bgs.iter().copied().find(|bg| bg.to_string().to_lowercase() == input_lower))
+}
+
+fn wizard_level_one_spell_choices() -> Vec<String> {
+    spells::spells_for_class("wizard")
+        .into_iter()
+        .filter(|spell| spell.level == 1)
+        .map(|spell| spell.name.to_string())
+        .collect()
+}
+
+fn wizard_starting_cantrips() -> Vec<String> {
+    character::default_starting_spells(Class::Wizard)
+        .into_iter()
+        .filter(|spell_name| {
+            spells::find_spell(spell_name)
+                .map(|spell| spell.level == 0)
+                .unwrap_or(false)
+        })
+        .collect()
+}
+
+fn render_wizard_spellbook_prompt() -> Vec<String> {
+    let choices = wizard_level_one_spell_choices();
+    let mut lines = vec![
+        "Wizard selected. Choose 6 level-1 spells for your spellbook:".to_string(),
+    ];
+    for (i, spell) in choices.iter().enumerate() {
+        lines.push(format!("  {}. {}", i + 1, spell));
+    }
+    lines.push("Enter 6 numbers separated by spaces.".to_string());
+    lines
+}
+
+fn wizard_prepared_spell_limit(state: &GameState) -> usize {
+    (1 + state.character.ability_modifier(Ability::Intelligence).max(0)) as usize
+}
+
+fn apply_default_wizard_spell_setup(state: &mut GameState) {
+    let mut known_spells = wizard_starting_cantrips();
+    let level_one_choices = wizard_level_one_spell_choices();
+    known_spells.extend(level_one_choices.iter().take(6).cloned());
+    state.character.known_spells = known_spells;
+    state.character.class_features.prepared_spells = level_one_choices
+        .into_iter()
+        .take(wizard_prepared_spell_limit(state))
+        .collect();
+}
+
+fn render_wizard_prepared_spell_prompt(state: &GameState) -> Vec<String> {
+    let limit = wizard_prepared_spell_limit(state);
+    let spellbook: Vec<String> = state.character.known_spells.iter()
+        .filter(|spell_name| {
+            spells::find_spell(spell_name)
+                .map(|spell| spell.level == 1)
+                .unwrap_or(false)
+        })
+        .cloned()
+        .collect();
+    let mut lines = vec![
+        format!(
+            "Choose {} prepared spell{} from your spellbook:",
+            limit,
+            if limit == 1 { "" } else { "s" }
+        ),
+    ];
+    for (i, spell) in spellbook.iter().enumerate() {
+        lines.push(format!("  {}. {}", i + 1, spell));
+    }
+    lines.push(format!(
+        "Enter {} number{} separated by spaces.",
+        limit,
+        if limit == 1 { "" } else { "s" }
+    ));
+    lines
+}
+
 fn handle_creation(state: &mut GameState, input: &str, step: CreationStep) -> Vec<String> {
     let input = input.trim();
     match step {
@@ -437,6 +535,9 @@ fn handle_creation(state: &mut GameState, input: &str, step: CreationStep) -> Ve
             state.character.spell_slots_max = class.starting_spell_slots();
             state.character.spell_slots_remaining = state.character.spell_slots_max.clone();
             state.character.known_spells = character::default_starting_spells(class);
+            if class == Class::Wizard {
+                state.character.known_spells = wizard_starting_cantrips();
+            }
             // Initialize per-class feature state. CHA mod uses the current ability
             // scores (which may be unset at this point — defaults to 10 -> +0 mod
             // -> 1 inspiration min for Bard).
@@ -474,6 +575,100 @@ fn handle_creation(state: &mut GameState, input: &str, step: CreationStep) -> Ve
             }
             lines.push("Enter a number or name.".to_string());
             lines
+        }
+        CreationStep::ChooseWizardSpellbook => {
+            if input.is_empty() {
+                return render_wizard_spellbook_prompt();
+            }
+
+            if parse_background_selection(input).is_some() {
+                apply_default_wizard_spell_setup(state);
+                state.game_phase = GamePhase::CharacterCreation(CreationStep::ChooseBackground);
+                return handle_creation(state, input, CreationStep::ChooseBackground);
+            }
+
+            let choices = wizard_level_one_spell_choices();
+            let indices: Vec<usize> = input.split_whitespace()
+                .filter_map(|s| s.parse::<usize>().ok())
+                .collect();
+
+            if indices.len() != 6 {
+                return vec!["Choose exactly 6 spellbook spells by number.".to_string()];
+            }
+
+            let mut chosen = Vec::new();
+            let mut seen = std::collections::HashSet::new();
+            for idx in indices {
+                if idx < 1 || idx > choices.len() {
+                    return vec![format!("Invalid spell choice: {}. Pick from 1-{}.", idx, choices.len())];
+                }
+                if !seen.insert(idx) {
+                    return vec![format!("Duplicate spell choice: {}. Each spell must be different.", idx)];
+                }
+                chosen.push(choices[idx - 1].clone());
+            }
+
+            let mut known_spells = wizard_starting_cantrips();
+            known_spells.extend(chosen);
+            state.character.known_spells = known_spells;
+            state.game_phase = GamePhase::CharacterCreation(CreationStep::ChooseWizardPreparedSpells);
+            render_wizard_prepared_spell_prompt(state)
+        }
+        CreationStep::ChooseWizardPreparedSpells => {
+            if input.is_empty() {
+                return render_wizard_prepared_spell_prompt(state);
+            }
+
+            if parse_background_selection(input).is_some() {
+                state.character.class_features.prepared_spells = state.character.known_spells.iter()
+                    .filter(|spell_name| {
+                        spells::find_spell(spell_name)
+                            .map(|spell| spell.level == 1)
+                            .unwrap_or(false)
+                    })
+                    .take(wizard_prepared_spell_limit(state))
+                    .cloned()
+                    .collect();
+                state.game_phase = GamePhase::CharacterCreation(CreationStep::ChooseBackground);
+                return handle_creation(state, input, CreationStep::ChooseBackground);
+            }
+
+            let spellbook: Vec<String> = state.character.known_spells.iter()
+                .filter(|spell_name| {
+                    spells::find_spell(spell_name)
+                        .map(|spell| spell.level == 1)
+                        .unwrap_or(false)
+                })
+                .cloned()
+                .collect();
+            let limit = wizard_prepared_spell_limit(state);
+            let indices: Vec<usize> = input.split_whitespace()
+                .filter_map(|s| s.parse::<usize>().ok())
+                .collect();
+
+            if indices.len() != limit {
+                return vec![format!(
+                    "Choose exactly {} prepared spell{}.",
+                    limit,
+                    if limit == 1 { "" } else { "s" }
+                )];
+            }
+
+            let mut prepared = Vec::new();
+            let mut seen = std::collections::HashSet::new();
+            for idx in indices {
+                if idx < 1 || idx > spellbook.len() {
+                    return vec![format!("Invalid prepared-spell choice: {}. Pick from 1-{}.", idx, spellbook.len())];
+                }
+                if !seen.insert(idx) {
+                    return vec![format!("Duplicate prepared-spell choice: {}. Each spell must be different.", idx)];
+                }
+                prepared.push(spellbook[idx - 1].clone());
+            }
+
+            state.character.class_features.prepared_spells = prepared;
+            state.game_phase = GamePhase::CharacterCreation(CreationStep::ChooseBackground);
+            choose_background_prompt(state.character.class)
         }
         CreationStep::ChooseBackground => {
             let input_lower = input.to_lowercase();
@@ -2826,11 +3021,16 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                 lines.extend(npc_lines);
                 // Check combat end after NPC resumption.
                 if let Some(ref combat) = state.active_combat {
+                    if combat.pending_reaction.is_some() {
+                        return lines;
+                    }
                     if let Some(victory) = combat.check_end(state) {
                         lines.extend(end_combat(state, victory));
                         return lines;
                     }
-                    append_player_turn_prompt(&mut lines, state, combat);
+                    if combat.is_player_turn() {
+                        append_player_turn_prompt(&mut lines, state, combat);
+                    }
                 }
                 return lines;
             }
@@ -8539,6 +8739,95 @@ mod tests {
             "Expected decline narration, got: {:?}", output.text);
         assert!(combat.is_player_turn(),
             "After the NPC's attack resolves, control should return to the player");
+    }
+
+    /// Hypothesis: `handle_combat` appends the normal player-turn prompt after
+    /// resolving a reaction even when resumed NPC processing immediately queues
+    /// another pending reaction, so the output interleaves `Your turn!` with a
+    /// fresh reaction prompt and obscures the expected input.
+    #[test]
+    fn test_followup_reaction_prompt_does_not_interleave_with_player_turn_text() {
+        let mut state = wizard_combat_state();
+        let loc_id = state.current_location;
+        let second_npc_id = 101u32;
+        state.world.npcs.insert(second_npc_id, state::Npc {
+            id: second_npc_id,
+            name: "Second Goblin".to_string(),
+            role: state::NpcRole::Guard,
+            disposition: state::Disposition::Hostile,
+            dialogue_tags: vec![],
+            location: loc_id,
+            combat_stats: Some(state::CombatStats {
+                max_hp: 7,
+                current_hp: 7,
+                ac: 15,
+                speed: 30,
+                ability_scores: {
+                    let mut m = HashMap::new();
+                    m.insert(Ability::Strength, 8);
+                    m.insert(Ability::Dexterity, 14);
+                    m
+                },
+                attacks: vec![state::NpcAttack {
+                    name: "Scimitar".to_string(),
+                    hit_bonus: 100,
+                    damage_dice: 1,
+                    damage_die: 6,
+                    damage_bonus: 2,
+                    damage_type: state::DamageType::Slashing,
+                    reach: 5,
+                    range_normal: 0,
+                    range_long: 0,
+                }],
+                proficiency_bonus: 2,
+                cr: 0.25,
+                ..Default::default()
+            }),
+            conditions: Vec::new(),
+        });
+        if let Some(loc) = state.world.locations.get_mut(&loc_id) {
+            loc.npcs.push(second_npc_id);
+        }
+
+        if let Some(npc) = state.world.npcs.get_mut(&100) {
+            if let Some(cs) = npc.combat_stats.as_mut() {
+                cs.attacks[0].hit_bonus = 100;
+            }
+        }
+
+        if let Some(ref mut combat) = state.active_combat {
+            combat.distances.insert(100, 5);
+            combat.distances.insert(second_npc_id, 5);
+            combat.initiative_order = vec![
+                (combat::Combatant::Npc(100), 20),
+                (combat::Combatant::Npc(second_npc_id), 15),
+                (combat::Combatant::Player, 10),
+            ];
+            combat.current_turn = 0;
+            combat.reaction_used = false;
+            combat.pending_reaction = Some(combat::PendingReaction::Shield {
+                attacker_npc_id: 100,
+                incoming_damage: 5,
+                pre_roll_ac: 12,
+                resume_npc_index: 0,
+            });
+        }
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "no");
+
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        let combat = new_state.active_combat.as_ref().unwrap();
+        assert!(matches!(
+            combat.pending_reaction,
+            Some(combat::PendingReaction::Shield { attacker_npc_id, .. }) if attacker_npc_id == second_npc_id
+        ), "Expected a follow-up Shield prompt for the second NPC, got state {:?} with text {:?}", combat.pending_reaction, output.text);
+        assert!(output.text.iter().any(|t| t.contains("Second Goblin") && t.to_lowercase().contains("shield")),
+            "Expected the follow-up Shield prompt in output, got: {:?}", output.text);
+        assert!(!output.text.iter().any(|t| t.contains("Your turn!")),
+            "Follow-up reaction prompt must not be mixed with player-turn messaging. Got: {:?}", output.text);
+        assert!(!output.text.iter().any(|t| t.starts_with("[HP:")),
+            "Follow-up reaction prompt must not include the active-turn HP header. Got: {:?}", output.text);
     }
 
     /// Hypothesis: Shield is reaction-only per SRD 5.1. Typing `cast shield`
