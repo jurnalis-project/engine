@@ -13,6 +13,29 @@ pub mod state;
 pub mod types;
 pub mod world;
 
+// ============================================================================
+// Stable Adapter Facade
+// ============================================================================
+//
+// The following re-exports form the stable public interface for adapters
+// (Tauri bridge, CLI, future TUI). Adapters should prefer these root-level
+// imports over deep module paths like `jurnalis_engine::state::GameState`.
+//
+// Entry points:
+//   - `new_game(seed, ironman_mode)` - Initialize a new game session
+//   - `process_input(state_json, input)` - Process player input
+//   - `load_game(json)` - Parse saved state JSON into GameState
+//
+// Core types:
+//   - `GameOutput` - Engine response containing text and updated state
+//   - `GameState` - Full game state (serialized to JSON between calls)
+//   - `GamePhase` - Current phase of the game (creation, exploration, etc.)
+//   - `CreationStep` - Sub-phase within character creation
+//   - `PendingDisambiguation` - Context for resolving ambiguous commands
+
+pub use output::GameOutput;
+pub use state::{load_game, CreationStep, GamePhase, GameState, PendingDisambiguation};
+
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 use std::collections::{HashMap, HashSet};
@@ -23,10 +46,10 @@ use character::feat::{FeatCategory, FeatDef, FeatEffect};
 use character::{
     background::Background, class::Class, generate_random_scores, race::Race, STANDARD_ARRAY,
 };
-use output::{format_roll, GameOutput};
+use output::format_roll;
 use parser::resolver::{self, ResolveResult};
 use parser::Command;
-use state::{CreationStep, GamePhase, GameState, PendingDisambiguation, SAVE_VERSION};
+use state::SAVE_VERSION;
 use types::{Ability, Alignment, Skill};
 
 /// The 9 SRD origin feats, in the order shown on the ChooseOriginFeat menu.
