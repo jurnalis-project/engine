@@ -150,7 +150,9 @@ pub const EXHAUSTION_LETHAL_OTHER: &str = "{target} collapses, lifeless from exh
 pub const HELP_TEXT: &str = "\
 Commands:
   look [target]     - Examine surroundings or a specific thing
-                      (also: examine, inspect, see, search, l)
+                      (also: examine, inspect, see, l)
+  search [target]   - Search the room for discoveries or inspect a target
+                      (also: search for)
   go <direction>    - Move (or use n/s/e/w/u/d)
                       (also: walk, move, head)
   talk <npc>        - Talk to someone

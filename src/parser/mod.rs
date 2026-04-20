@@ -6,6 +6,7 @@ use crate::types::{Direction, Skill};
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
     Look(Option<String>),
+    Search(Option<String>),
     Go(Direction),
     Talk(String),
     Take(String),
@@ -136,6 +137,9 @@ pub fn parse(input: &str) -> Command {
             "look at" | "check out" => {
                 return if rest.is_empty() { Command::Look(None) } else { Command::Look(Some(rest)) };
             }
+            "search for" => {
+                return if rest.is_empty() { Command::Search(None) } else { Command::Search(Some(rest)) };
+            }
             "look around" => return Command::Look(None),
             "go to" => {
                 return parse_direction(&rest).map(Command::Go)
@@ -262,8 +266,11 @@ pub fn parse(input: &str) -> Command {
     let args = if words.len() > 1 { words[1..].join(" ") } else { String::new() };
 
     match verb {
-        "look" | "l" | "examine" | "inspect" | "see" | "search" => {
+        "look" | "l" | "examine" | "inspect" | "see" => {
             if args.is_empty() { Command::Look(None) } else { Command::Look(Some(args)) }
+        }
+        "search" => {
+            if args.is_empty() { Command::Search(None) } else { Command::Search(Some(args)) }
         }
         "where" | "surroundings" => Command::Look(None),
         "go" | "walk" | "move" | "head" => {
@@ -659,7 +666,13 @@ mod tests {
         assert_eq!(parse("examine chest"), Command::Look(Some("chest".to_string())));
         assert_eq!(parse("inspect door"), Command::Look(Some("door".to_string())));
         assert_eq!(parse("see sword"), Command::Look(Some("sword".to_string())));
-        assert_eq!(parse("search room"), Command::Look(Some("room".to_string())));
+    }
+
+    #[test]
+    fn test_search_variants() {
+        assert_eq!(parse("search"), Command::Search(None));
+        assert_eq!(parse("search room"), Command::Search(Some("room".to_string())));
+        assert_eq!(parse("search for trap"), Command::Search(Some("trap".to_string())));
     }
 
     #[test]

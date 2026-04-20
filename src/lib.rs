@@ -1256,6 +1256,153 @@ fn inventory_item_candidates(state: &GameState) -> Vec<(usize, String)> {
         .collect()
 }
 
+fn search_target_candidates(state: &GameState) -> Vec<(usize, String)> {
+    let mut candidates = npc_candidates(state);
+    candidates.extend(room_item_candidates(state));
+    candidates.extend(inventory_item_candidates(state));
+    candidates
+}
+
+fn handle_look_target(state: &mut GameState, target: &str) -> Vec<String> {
+    let mut owned_candidates = npc_candidates(state);
+    owned_candidates.extend(room_item_candidates(state));
+    owned_candidates.extend(inventory_item_candidates(state));
+
+    let candidates: Vec<(usize, &str)> = owned_candidates.iter()
+        .map(|(id, name)| (*id, name.as_str()))
+        .collect();
+
+    match resolver::resolve_target(target, &candidates) {
+        ResolveResult::Found(id) => {
+            if id & NPC_TAG != 0 {
+                let npc_id = (id & !NPC_TAG) as u32;
+                if let Some(npc) = state.world.npcs.get(&npc_id) {
+                    return npc.inspect();
+                }
+            } else {
+                let item_id = id as u32;
+                if let Some(item) = state.world.items.get(&item_id) {
+                    return vec![format!("{}: {}", item.name, item.description)];
+                }
+            }
+            vec![format!("You don't see any \"{}\" here.", target)]
+        }
+        ResolveResult::Ambiguous(matches) => emit_disambiguation(state, "look", &matches),
+        ResolveResult::NotFound => vec![format!("You don't see any \"{}\" here.", target)],
+    }
+}
+
+fn resolve_search_trigger(
+    state: &mut GameState,
+    rng: &mut StdRng,
+    trigger_id: u32,
+) -> Option<Vec<String>> {
+    let trigger = state.world.triggers.get(&trigger_id).cloned()?;
+    match trigger.trigger_type {
+        state::TriggerType::SkillCheck(skill) => {
+            let disadv = armor_disadvantage_for_ability(&state.character, skill.ability());
+            let result = rules::checks::skill_check(
+                rng,
+                skill,
+                &state.character.ability_scores,
+                &state.character.skill_proficiencies,
+                state.character.proficiency_bonus(),
+                trigger.dc,
+                false,
+                disadv,
+            );
+            let mut lines = vec![narration::narrate_skill_check(rng, &skill.to_string(), &result)];
+            if result.success {
+                lines.push(trigger.success_text);
+                if trigger.one_shot {
+                    state.world.triggered.insert(trigger_id);
+                }
+            } else {
+                lines.push(trigger.failure_text);
+            }
+            Some(lines)
+        }
+        state::TriggerType::PassivePerception => {
+            let score = state.character.ability_scores.get(&Ability::Wisdom).copied().unwrap_or(10);
+            let is_prof = state.character.is_proficient_in_skill(Skill::Perception);
+            let passive = rules::checks::passive_check(score, state.character.proficiency_bonus(), is_prof);
+            if passive >= trigger.dc {
+                if trigger.one_shot {
+                    state.world.triggered.insert(trigger_id);
+                }
+                Some(vec![
+                    format!("[Passive Perception {} vs DC {} - noticed!]", passive, trigger.dc),
+                    trigger.success_text,
+                ])
+            } else {
+                None
+            }
+        }
+        state::TriggerType::SavingThrow(_) => None,
+    }
+}
+
+fn handle_search(state: &mut GameState, rng: &mut StdRng, target: Option<String>) -> Vec<String> {
+    if let Some(target) = target {
+        let lower = target.to_lowercase();
+        if matches!(lower.as_str(), "room" | "area" | "surroundings") {
+            return handle_search(state, rng, None);
+        }
+
+        let owned_candidates = search_target_candidates(state);
+        let candidates: Vec<(usize, &str)> = owned_candidates.iter()
+            .map(|(id, name)| (*id, name.as_str()))
+            .collect();
+
+        match resolver::resolve_target(&target, &candidates) {
+            ResolveResult::Found(_) => return handle_look_target(state, &target),
+            ResolveResult::Ambiguous(matches) => return emit_disambiguation(state, "search", &matches),
+            ResolveResult::NotFound => {}
+        }
+    }
+
+    let loc = match state.world.locations.get(&state.current_location).cloned() {
+        Some(loc) => loc,
+        None => return vec!["You are nowhere.".to_string()],
+    };
+
+    let pending_trigger_ids: Vec<_> = loc.triggers.iter()
+        .filter(|id| !state.world.triggered.contains(id))
+        .copied()
+        .collect();
+
+    for trigger_id in pending_trigger_ids {
+        if let Some(lines) = resolve_search_trigger(state, rng, trigger_id) {
+            return lines;
+        }
+    }
+
+    let mut lines = vec!["You search carefully but uncover nothing new.".to_string()];
+
+    let hidden_item_names: Vec<_> = loc.items.iter()
+        .filter_map(|id| state.world.items.get(id))
+        .filter(|item| !item.carried_by_player)
+        .map(|item| item.name.clone())
+        .collect();
+    if !hidden_item_names.is_empty() {
+        lines.push(format!("Within reach: {}.", hidden_item_names.join(", ")));
+    }
+
+    let live_npc_names: Vec<_> = loc.npcs.iter()
+        .filter_map(|id| state.world.npcs.get(id))
+        .filter(|npc| match &npc.combat_stats {
+            Some(stats) => stats.current_hp > 0,
+            None => true,
+        })
+        .map(|npc| npc.name.clone())
+        .collect();
+    if !live_npc_names.is_empty() {
+        lines.push(format!("You notice signs of activity from {}.", live_npc_names.join(", ")));
+    }
+
+    lines
+}
+
 fn build_combat_npc_candidates(combat: &combat::CombatState, state: &GameState) -> Vec<(usize, String)> {
     combat.initiative_order.iter()
         .filter_map(|(c, _)| {
@@ -1309,33 +1456,7 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
     match command {
         Command::Look(target) => {
             if let Some(target) = target {
-                // Look at specific thing — search room NPCs, room items, and inventory items.
-                let mut owned_candidates = npc_candidates(state);
-                owned_candidates.extend(room_item_candidates(state));
-                owned_candidates.extend(inventory_item_candidates(state));
-
-                let candidates: Vec<(usize, &str)> = owned_candidates.iter()
-                    .map(|(id, name)| (*id, name.as_str()))
-                    .collect();
-
-                return match resolver::resolve_target(&target, &candidates) {
-                    ResolveResult::Found(id) => {
-                        if id & NPC_TAG != 0 {
-                            let npc_id = (id & !NPC_TAG) as u32;
-                            if let Some(npc) = state.world.npcs.get(&npc_id) {
-                                return npc.inspect();
-                            }
-                        } else {
-                            let item_id = id as u32;
-                            if let Some(item) = state.world.items.get(&item_id) {
-                                return vec![format!("{}: {}", item.name, item.description)];
-                            }
-                        }
-                        vec![format!("You don't see any \"{}\" here.", target)]
-                    }
-                    ResolveResult::Ambiguous(matches) => emit_disambiguation(state, "look", &matches),
-                    ResolveResult::NotFound => vec![format!("You don't see any \"{}\" here.", target)],
-                };
+                return handle_look_target(state, &target);
             } else {
                 let loc = state.world.locations.get(&state.current_location).cloned();
                 match loc {
@@ -1344,6 +1465,7 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
                 }
             }
         }
+        Command::Search(target) => handle_search(state, &mut rng, target),
         Command::Go(direction) => {
             let next = state.world.locations
                 .get(&state.current_location)
@@ -2717,6 +2839,9 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
             let result = combat::format_combat_status(state, &combat);
             state.active_combat = Some(combat);
             return result;
+        }
+        Command::Search(_) => {
+            return vec!["You're in combat! Use 'look' to assess the battlefield.".to_string()];
         }
         Command::Inventory => {
             if state.character.inventory.is_empty() {
@@ -7505,6 +7630,85 @@ mod tests {
         let all_text = output.text.join("\n");
         assert!(all_text.contains("Pack Tactics"),
             "Expected trait name in output. Got: {:?}", output.text);
+    }
+
+    #[test]
+    fn test_search_reveals_hidden_trigger_without_room_restatement() {
+        let mut state = create_test_exploration_state();
+        let trigger_id = 4321;
+        let loc_id = state.current_location;
+
+        state.world.locations.get_mut(&loc_id).unwrap().triggers = vec![trigger_id];
+        state.world.triggers.insert(trigger_id, state::Trigger {
+            id: trigger_id,
+            location: loc_id,
+            trigger_type: state::TriggerType::SkillCheck(Skill::Perception),
+            dc: 1,
+            success_text: "A careful search reveals a hidden compartment.".to_string(),
+            failure_text: "You search but find nothing of interest.".to_string(),
+            one_shot: true,
+            damage_on_failure: 0,
+        });
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "search");
+        let all_text = output.text.join("\n");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+
+        assert!(all_text.contains("hidden compartment"), "Got: {}", all_text);
+        assert!(!all_text.contains("You are in") && !all_text.contains("Before you lies"), "Search should not restate the room. Got: {}", all_text);
+        assert!(new_state.world.triggered.contains(&trigger_id), "Successful search should consume one-shot trigger");
+    }
+
+    #[test]
+    fn test_search_fallback_mentions_room_contents() {
+        let mut state = create_test_exploration_state();
+        let loc_id = state.current_location;
+        let item_id = 5432;
+        let item_name = "Test Relic".to_string();
+
+        state.world.locations.get_mut(&loc_id).unwrap().triggers.clear();
+        state.world.locations.get_mut(&loc_id).unwrap().items.push(item_id);
+        state.world.items.insert(item_id, state::Item {
+            id: item_id,
+            name: item_name.clone(),
+            description: "A small carved relic.".to_string(),
+            item_type: state::ItemType::Misc,
+            location: Some(loc_id),
+            carried_by_player: false,
+            charges_remaining: None,
+        });
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "search room");
+        let all_text = output.text.join("\n");
+
+        assert!(all_text.contains("uncover nothing new") || all_text.contains("Within reach:"), "Got: {}", all_text);
+        assert!(all_text.contains(&item_name), "Search fallback should surface current room item names. Got: {}", all_text);
+    }
+
+    #[test]
+    fn test_search_targeted_item_still_inspects_item() {
+        let mut state = create_test_exploration_state();
+        let loc_id = state.current_location;
+        let item_id = 6543;
+        let item_name = "Hidden Ledger".to_string();
+
+        state.world.locations.get_mut(&loc_id).unwrap().items.push(item_id);
+        state.world.items.insert(item_id, state::Item {
+            id: item_id,
+            name: item_name.clone(),
+            description: "A weathered ledger packed with cramped notes.".to_string(),
+            item_type: state::ItemType::Misc,
+            location: Some(loc_id),
+            carried_by_player: false,
+            charges_remaining: None,
+        });
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, &format!("search {}", item_name.to_lowercase()));
+
+        assert!(output.text.iter().any(|t| t.contains(&item_name)), "Got: {:?}", output.text);
     }
 
     #[test]
