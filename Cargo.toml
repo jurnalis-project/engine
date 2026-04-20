@@ -1,11 +1,11 @@
 [package]
 name = "jurnalis-engine"
-version = "0.38.4"
+version = "0.39.0"
 edition = "2021"
 
-[[bin]]
-name = "jurnalis-cli"
-path = "src/main.rs"
+[lib]
+name = "jurnalis_engine"
+path = "src/lib.rs"
 
 [features]
 dev = []
