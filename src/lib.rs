@@ -3318,7 +3318,11 @@ fn end_combat(state: &mut GameState, victory: bool) -> Vec<String> {
         // Award monster XP for every defeated foe in this combat.
         let monster_xp: u32 = dead_npc_crs.iter().map(|&cr| leveling::xp_for_cr(cr)).sum();
         let level_before = state.character.level;
-        lines.extend(leveling::award_xp(&mut state.character, monster_xp));
+        lines.extend(leveling::award_xp(
+            &mut state.character,
+            monster_xp,
+            Some("from combat"),
+        ));
         let levels_gained = state.character.level - level_before;
         apply_post_levelup_feat_bonuses(&mut state.character, levels_gained);
 
@@ -3381,6 +3385,7 @@ fn check_defeat_npc_objectives(state: &mut GameState) -> Vec<String> {
         lines.extend(leveling::award_xp(
             &mut state.character,
             leveling::OBJECTIVE_XP_REWARD * newly_completed,
+            Some("for completing the objective"),
         ));
         let levels_gained = state.character.level - level_before;
         apply_post_levelup_feat_bonuses(&mut state.character, levels_gained);
@@ -3413,6 +3418,7 @@ fn check_find_item_objectives(state: &mut GameState, item_id: u32) -> Vec<String
         lines.extend(leveling::award_xp(
             &mut state.character,
             leveling::OBJECTIVE_XP_REWARD * newly_completed,
+            Some("for completing the objective"),
         ));
         let levels_gained = state.character.level - level_before;
         apply_post_levelup_feat_bonuses(&mut state.character, levels_gained);
@@ -13719,7 +13725,7 @@ mod tests {
         state.character.general_feats = vec!["Tough".to_string()];
         let hp_before = state.character.max_hp;
         // Award enough XP to level up from 1 to 2.
-        let xp_lines = leveling::award_xp(&mut state.character, 300);
+        let xp_lines = leveling::award_xp(&mut state.character, 300, None);
         // apply_post_levelup_feat_bonuses to add Tough's +2 HP for the new level.
         apply_post_levelup_feat_bonuses(&mut state.character, 1);
         assert_eq!(state.character.level, 2);
@@ -13751,7 +13757,7 @@ mod tests {
         // No feats
         state.character.general_feats = vec![];
         let hp_before = state.character.max_hp;
-        leveling::award_xp(&mut state.character, 300);
+        leveling::award_xp(&mut state.character, 300, None);
         apply_post_levelup_feat_bonuses(&mut state.character, 1);
         assert_eq!(state.character.level, 2);
         let hp_gain = state.character.max_hp - hp_before;
@@ -13768,7 +13774,7 @@ mod tests {
         state.character.origin_feat = Some("Tough".to_string());
         state.character.general_feats = vec![];
         let hp_before = state.character.max_hp;
-        leveling::award_xp(&mut state.character, 300);
+        leveling::award_xp(&mut state.character, 300, None);
         apply_post_levelup_feat_bonuses(&mut state.character, 1);
         assert_eq!(state.character.level, 2);
         let hp_gain = state.character.max_hp - hp_before;
