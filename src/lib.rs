@@ -13,6 +13,12 @@ pub mod state;
 pub mod types;
 pub mod world;
 
+// Re-exports for adapter/bridge code. These form the stable public API surface
+// that external consumers (Tauri bridge, CLI, tests) should use instead of
+// reaching into submodule paths directly.
+pub use output::GameOutput;
+pub use state::{load_game, GamePhase};
+
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 use std::collections::{HashMap, HashSet};
@@ -23,10 +29,10 @@ use character::feat::{FeatCategory, FeatDef, FeatEffect};
 use character::{
     background::Background, class::Class, generate_random_scores, race::Race, STANDARD_ARRAY,
 };
-use output::{format_roll, GameOutput};
+use output::format_roll;
 use parser::resolver::{self, ResolveResult};
 use parser::Command;
-use state::{CreationStep, GamePhase, GameState, PendingDisambiguation, SAVE_VERSION};
+use state::{CreationStep, GameState, PendingDisambiguation, SAVE_VERSION};
 use types::{Ability, Alignment, Skill};
 
 /// The 9 SRD origin feats, in the order shown on the ChooseOriginFeat menu.
