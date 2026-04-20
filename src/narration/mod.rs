@@ -1,11 +1,15 @@
 pub mod templates;
 
+use crate::rules::checks::CheckResult;
+use crate::state::{GameState, Location};
 use rand::Rng;
 use std::collections::HashMap;
-use crate::state::{GameState, Location};
-use crate::rules::checks::CheckResult;
 
-pub fn narrate_enter_location(rng: &mut impl Rng, location: &Location, state: &GameState) -> Vec<String> {
+pub fn narrate_enter_location(
+    rng: &mut impl Rng,
+    location: &Location,
+    state: &GameState,
+) -> Vec<String> {
     let mut lines = Vec::new();
 
     // Location description
@@ -13,7 +17,7 @@ pub fn narrate_enter_location(rng: &mut impl Rng, location: &Location, state: &G
     lines.push(
         template
             .replace("{name}", &location.name)
-            .replace("{description}", &location.description)
+            .replace("{description}", &location.description),
     );
 
     // Exits
@@ -24,7 +28,9 @@ pub fn narrate_enter_location(rng: &mut impl Rng, location: &Location, state: &G
 
     // NPCs (exclude dead NPCs — those with combat_stats where current_hp <= 0)
     if !location.npcs.is_empty() {
-        let npc_names: Vec<String> = location.npcs.iter()
+        let npc_names: Vec<String> = location
+            .npcs
+            .iter()
             .filter_map(|id| state.world.npcs.get(id))
             .filter(|npc| match &npc.combat_stats {
                 Some(stats) => stats.current_hp > 0,
@@ -39,7 +45,9 @@ pub fn narrate_enter_location(rng: &mut impl Rng, location: &Location, state: &G
 
     // Items
     if !location.items.is_empty() {
-        let item_names: Vec<String> = location.items.iter()
+        let item_names: Vec<String> = location
+            .items
+            .iter()
             .filter_map(|id| state.world.items.get(id))
             .filter(|item| !item.carried_by_player)
             .map(|item| item.name.clone())
@@ -47,6 +55,15 @@ pub fn narrate_enter_location(rng: &mut impl Rng, location: &Location, state: &G
         if !item_names.is_empty() {
             lines.push(templates::ITEMS_PRESENT.replace("{items}", &item_names.join(", ")));
         }
+    }
+
+    if !location.room_features.is_empty() {
+        let feature_names: Vec<String> = location
+            .room_features
+            .iter()
+            .map(|feature| feature.name.clone())
+            .collect();
+        lines.push(format!("Notable features: {}.", feature_names.join(", ")));
     }
 
     lines
@@ -59,7 +76,7 @@ pub fn narrate_look(rng: &mut impl Rng, location: &Location, state: &GameState) 
     lines.push(
         template
             .replace("{name}", &location.name)
-            .replace("{description}", &location.description)
+            .replace("{description}", &location.description),
     );
 
     if !location.exits.is_empty() {
@@ -69,7 +86,9 @@ pub fn narrate_look(rng: &mut impl Rng, location: &Location, state: &GameState) 
 
     // NPCs (exclude dead NPCs — those with combat_stats where current_hp <= 0)
     if !location.npcs.is_empty() {
-        let npc_names: Vec<String> = location.npcs.iter()
+        let npc_names: Vec<String> = location
+            .npcs
+            .iter()
             .filter_map(|id| state.world.npcs.get(id))
             .filter(|npc| match &npc.combat_stats {
                 Some(stats) => stats.current_hp > 0,
@@ -83,7 +102,9 @@ pub fn narrate_look(rng: &mut impl Rng, location: &Location, state: &GameState) 
     }
 
     if !location.items.is_empty() {
-        let item_names: Vec<String> = location.items.iter()
+        let item_names: Vec<String> = location
+            .items
+            .iter()
             .filter_map(|id| state.world.items.get(id))
             .filter(|item| !item.carried_by_player)
             .map(|item| item.name.clone())
@@ -91,6 +112,15 @@ pub fn narrate_look(rng: &mut impl Rng, location: &Location, state: &GameState) 
         if !item_names.is_empty() {
             lines.push(templates::ITEMS_PRESENT.replace("{items}", &item_names.join(", ")));
         }
+    }
+
+    if !location.room_features.is_empty() {
+        let feature_names: Vec<String> = location
+            .room_features
+            .iter()
+            .map(|feature| feature.name.clone())
+            .collect();
+        lines.push(format!("Notable features: {}.", feature_names.join(", ")));
     }
 
     lines
@@ -111,14 +141,27 @@ pub fn narrate_skill_check(rng: &mut impl Rng, skill: &str, result: &CheckResult
         .replace("{dc}", &result.dc.to_string())
 }
 
-fn format_weapon_slot(items: &HashMap<crate::types::ItemId, crate::state::Item>, id: crate::types::ItemId) -> String {
+fn format_weapon_slot(
+    items: &HashMap<crate::types::ItemId, crate::state::Item>,
+    id: crate::types::ItemId,
+) -> String {
     match items.get(&id) {
         Some(item) => {
-            if let crate::state::ItemType::Weapon { damage_dice, damage_die, damage_type, versatile_die, .. } = &item.item_type {
+            if let crate::state::ItemType::Weapon {
+                damage_dice,
+                damage_die,
+                damage_type,
+                versatile_die,
+                ..
+            } = &item.item_type
+            {
                 if *damage_dice == 0 {
                     return item.name.clone(); // Net, etc.
                 }
-                let base = format!("{} ({}d{} {}", item.name, damage_dice, damage_die, damage_type);
+                let base = format!(
+                    "{} ({}d{} {}",
+                    item.name, damage_dice, damage_die, damage_type
+                );
                 if *versatile_die > 0 {
                     format!("{}, versatile 1d{})", base, versatile_die)
                 } else {
@@ -132,11 +175,23 @@ fn format_weapon_slot(items: &HashMap<crate::types::ItemId, crate::state::Item>,
     }
 }
 
-fn format_armor_slot(items: &HashMap<crate::types::ItemId, crate::state::Item>, id: crate::types::ItemId) -> String {
+fn format_armor_slot(
+    items: &HashMap<crate::types::ItemId, crate::state::Item>,
+    id: crate::types::ItemId,
+) -> String {
     match items.get(&id) {
         Some(item) => {
-            if let crate::state::ItemType::Armor { base_ac, stealth_disadvantage, .. } = &item.item_type {
-                let disadv = if *stealth_disadvantage { ", stealth disadvantage" } else { "" };
+            if let crate::state::ItemType::Armor {
+                base_ac,
+                stealth_disadvantage,
+                ..
+            } = &item.item_type
+            {
+                let disadv = if *stealth_disadvantage {
+                    ", stealth disadvantage"
+                } else {
+                    ""
+                };
                 format!("{} (AC {}{})", item.name, base_ac, disadv)
             } else {
                 item.name.clone()
@@ -146,17 +201,22 @@ fn format_armor_slot(items: &HashMap<crate::types::ItemId, crate::state::Item>, 
     }
 }
 
-fn format_equip_slot(items: &HashMap<crate::types::ItemId, crate::state::Item>, id: crate::types::ItemId) -> String {
+fn format_equip_slot(
+    items: &HashMap<crate::types::ItemId, crate::state::Item>,
+    id: crate::types::ItemId,
+) -> String {
     match items.get(&id) {
-        Some(item) => {
-            match &item.item_type {
-                crate::state::ItemType::Armor { category: crate::state::ArmorCategory::Shield, base_ac, .. } => {
-                    format!("{} (+{} AC)", item.name, base_ac)
-                }
-                crate::state::ItemType::Weapon { .. } => format_weapon_slot(items, id),
-                _ => item.name.clone(),
+        Some(item) => match &item.item_type {
+            crate::state::ItemType::Armor {
+                category: crate::state::ArmorCategory::Shield,
+                base_ac,
+                ..
+            } => {
+                format!("{} (+{} AC)", item.name, base_ac)
             }
-        }
+            crate::state::ItemType::Weapon { .. } => format_weapon_slot(items, id),
+            _ => item.name.clone(),
+        },
         None => "(empty)".to_string(),
     }
 }
@@ -272,8 +332,8 @@ pub fn narrate_exhaustion_gained(target: Option<&str>, new_level: u32, lethal: b
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::SeedableRng;
     use rand::rngs::StdRng;
+    use rand::SeedableRng;
 
     #[test]
     fn test_narrate_condition_applied_self() {

@@ -16,12 +16,12 @@ use std::collections::{HashMap, HashSet};
 
 use jurnalis_engine::{
     character::{class::Class, create_character, race::Race},
-    combat::{Combatant, CombatState},
+    combat::{CombatState, Combatant},
     new_game, process_input,
     state::{
-        CombatStats, DamageType, Disposition, GameState, GamePhase, Item, ItemType,
-        Location, LocationType, LightLevel, Npc, NpcAttack, NpcRole, ProgressState,
-        SAVE_VERSION, WeaponCategory, WorldState,
+        CombatStats, DamageType, Disposition, GamePhase, GameState, Item, ItemType, LightLevel,
+        Location, LocationType, Npc, NpcAttack, NpcRole, ProgressState, WeaponCategory, WorldState,
+        SAVE_VERSION,
     },
     types::{Ability, Skill},
 };
@@ -98,6 +98,7 @@ fn make_two_item_room_state() -> GameState {
         items: vec![1, 2],
         triggers: Vec::new(),
         light_level: LightLevel::Bright,
+        room_features: Vec::new(),
     };
 
     let mut items = HashMap::new();
@@ -131,7 +132,7 @@ fn make_two_item_room_state() -> GameState {
         pending_background_pattern: None,
         pending_subrace: None,
         pending_disambiguation: None,
-            pending_new_game_confirm: false,
+        pending_new_game_confirm: false,
     }
 }
 
@@ -204,7 +205,12 @@ fn numeric_selection_resolves_take_disambiguation() {
         .filter(|i| i.carried_by_player)
         .map(|i| i.id)
         .collect();
-    assert_eq!(carried.len(), 1, "exactly one item should be taken, got {:?}", carried);
+    assert_eq!(
+        carried.len(),
+        1,
+        "exactly one item should be taken, got {:?}",
+        carried
+    );
 }
 
 /// The second candidate in the list (index 2) resolves correctly.
@@ -215,8 +221,7 @@ fn numeric_selection_second_candidate() {
     let prompt = out.text.join("\n");
     // Determine the order the prompt lists candidates in, so the assertion
     // can be made regardless of HashMap iteration order.
-    let shortsword_first =
-        prompt.find("Shortsword").unwrap() < prompt.find("Shortbow").unwrap();
+    let shortsword_first = prompt.find("Shortsword").unwrap() < prompt.find("Shortbow").unwrap();
 
     let out2 = process_input(&out.state_json, "2");
     let new_state = from_json(&out2.state_json);
@@ -227,8 +232,15 @@ fn numeric_selection_second_candidate() {
         .find(|i| i.carried_by_player)
         .map(|i| i.name.clone())
         .expect("one item should have been picked up");
-    let expected = if shortsword_first { "Shortbow" } else { "Shortsword" };
-    assert_eq!(carried_name, expected, "entering '2' should pick the second listed candidate");
+    let expected = if shortsword_first {
+        "Shortbow"
+    } else {
+        "Shortsword"
+    };
+    assert_eq!(
+        carried_name, expected,
+        "entering '2' should pick the second listed candidate"
+    );
 }
 
 /// Non-numeric input after a disambiguation prompt clears the pending state
@@ -319,7 +331,10 @@ fn bare_numeric_without_pending_prompt_is_harmless() {
     let out = process_input(&into_json(&state), "1");
     let new_state = from_json(&out.state_json);
     let any_carried = new_state.world.items.values().any(|i| i.carried_by_player);
-    assert!(!any_carried, "bare '1' with no pending prompt must not take anything");
+    assert!(
+        !any_carried,
+        "bare '1' with no pending prompt must not take anything"
+    );
 }
 
 /// new_game should still work and the ChooseRace step's numeric selection
@@ -334,7 +349,11 @@ fn character_creation_numeric_selection_still_works() {
     match new_state.game_phase {
         GamePhase::CharacterCreation(step) => {
             use jurnalis_engine::state::CreationStep;
-            assert_eq!(step, CreationStep::ChooseClass, "race selection should advance to class step");
+            assert_eq!(
+                step,
+                CreationStep::ChooseClass,
+                "race selection should advance to class step"
+            );
         }
         other => panic!("expected CharacterCreation phase, got {:?}", other),
     }
@@ -448,6 +467,7 @@ fn make_combat_disambiguation_state() -> GameState {
         items: Vec::new(),
         triggers: Vec::new(),
         light_level: LightLevel::Bright,
+        room_features: Vec::new(),
     };
 
     let mut items = HashMap::new();
@@ -464,10 +484,7 @@ fn make_combat_disambiguation_state() -> GameState {
     let mut distances = HashMap::new();
     distances.insert(100, 25); // 25 ft away
     let combat = CombatState {
-        initiative_order: vec![
-            (Combatant::Player, 20),
-            (Combatant::Npc(100), 10),
-        ],
+        initiative_order: vec![(Combatant::Player, 20), (Combatant::Npc(100), 10)],
         current_turn: 0,
         round: 1,
         distances,
@@ -517,7 +534,7 @@ fn make_combat_disambiguation_state() -> GameState {
         last_long_rest_minutes: None,
         pending_background_pattern: None,
         pending_disambiguation: None,
-            pending_new_game_confirm: false,
+        pending_new_game_confirm: false,
         pending_subrace: None,
     };
     state.character.inventory = vec![1, 2];
@@ -574,7 +591,7 @@ fn combat_unequip_disambiguation_does_not_consume_action() {
     let mut state = make_combat_disambiguation_state();
     // Equip both items first so we can unequip.
     state.character.equipped.main_hand = Some(1); // Shortsword
-    state.character.equipped.off_hand = Some(2);  // Shortbow
+    state.character.equipped.off_hand = Some(2); // Shortbow
 
     let out = process_input(&into_json(&state), "unequip sh");
     let prompt = out.text.join("\n");
