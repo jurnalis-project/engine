@@ -119,6 +119,35 @@ pub fn new_game(seed: u64, ironman_mode: bool) -> GameOutput {
     GameOutput::new(text, state_json, true)
 }
 
+/// Dev-mode entry point: load an arbitrary pre-crafted GameState JSON, bypassing
+/// character creation and world generation. Useful for targeted playtesting of
+/// specific scenarios (combat encounters, post-rest states, late-game content).
+///
+/// Returns `GameOutput` with a DEV MODE banner on success, or DEV MODE ERROR on
+/// parse failure. Only compiled when the `dev` Cargo feature is active.
+#[cfg(feature = "dev")]
+pub fn new_game_from_state(state_json: &str) -> GameOutput {
+    match serde_json::from_str::<GameState>(state_json) {
+        Ok(state) => {
+            let validated_json = serde_json::to_string(&state).unwrap();
+            let text = vec![
+                "=== DEV MODE ===".to_string(),
+                "State loaded successfully.".to_string(),
+                format!("Character: {} (Level {} {})", state.character.name, state.character.level, state.character.class),
+                format!("Phase: {:?}", state.game_phase),
+            ];
+            GameOutput::new(text, validated_json, true)
+        }
+        Err(e) => {
+            let text = vec![
+                "=== DEV MODE ERROR ===".to_string(),
+                format!("Failed to parse state JSON: {}", e),
+            ];
+            GameOutput::new(text, String::new(), false)
+        }
+    }
+}
+
 pub fn process_input(state_json: &str, input: &str) -> GameOutput {
     let mut state: GameState = match serde_json::from_str(state_json) {
         Ok(s) => s,
@@ -16675,6 +16704,7 @@ mod tests {
             pending_background_pattern: None,
             pending_subrace: None,
             pending_disambiguation: None,
+            pending_new_game_confirm: false,
         };
 
         let json = serde_json::to_string_pretty(&state).unwrap();
@@ -16739,6 +16769,7 @@ mod tests {
             pending_background_pattern: None,
             pending_subrace: None,
             pending_disambiguation: None,
+            pending_new_game_confirm: false,
         };
 
         let rest_json = serde_json::to_string_pretty(&rest_state).unwrap();
