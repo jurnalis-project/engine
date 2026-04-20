@@ -38,7 +38,35 @@ pub use state::{load_game, CreationStep, GamePhase, GameState, PendingDisambigua
 
 use rand::rngs::StdRng;
 use rand::SeedableRng;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+
+// ============================================================================
+// Creation Options Query API
+// ============================================================================
+
+/// Identifies which character-creation field to query for available options.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CreationField {
+    Race,
+    Subrace,
+    Class,
+    Background,
+    OriginFeat,
+    BackgroundAbilityPattern,
+    AbilityMethod,
+    Skills,
+    Alignment,
+}
+
+/// A single selectable option within a character-creation field.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreationOption {
+    /// The value a TUI/CLI adapter would submit as input (e.g. "1", "human").
+    pub id: String,
+    /// Human-readable display text.
+    pub label: String,
+}
 
 #[cfg(test)]
 use character::create_character;
@@ -167,6 +195,138 @@ pub fn new_game_from_state(state_json: &str) -> GameOutput {
                 format!("Failed to parse state JSON: {}", e),
             ];
             GameOutput::new(text, String::new(), false)
+        }
+    }
+}
+
+/// Query available options for a character-creation field given the current
+/// game state. This function is read-only (no state mutation) and can be called
+/// at any point during `GamePhase::CharacterCreation`.
+///
+/// Returns an empty `Vec` if the state cannot be parsed or if the requested
+/// field cannot be answered given the current state (e.g. `Subrace` when the
+/// chosen race has no subraces).
+///
+/// For `CreationField::Skills`, the last element in the returned Vec is a
+/// metadata entry with `id: "_meta"` and `label: "required_count:<N>"`.
+pub fn creation_options(state_json: &str, field: CreationField) -> Vec<CreationOption> {
+    let state: GameState = match serde_json::from_str(state_json) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+
+    match field {
+        CreationField::Race => {
+            Race::all()
+                .iter()
+                .enumerate()
+                .map(|(i, race)| CreationOption {
+                    id: (i + 1).to_string(),
+                    label: race.to_string(),
+                })
+                .collect()
+        }
+        CreationField::Subrace => {
+            let race = state.character.race;
+            if !race.has_subraces() {
+                return Vec::new();
+            }
+            race.subrace_options()
+                .iter()
+                .enumerate()
+                .map(|(i, &opt)| CreationOption {
+                    id: (i + 1).to_string(),
+                    label: opt.to_string(),
+                })
+                .collect()
+        }
+        CreationField::Class => {
+            Class::all()
+                .iter()
+                .enumerate()
+                .map(|(i, class)| CreationOption {
+                    id: (i + 1).to_string(),
+                    label: class.to_string(),
+                })
+                .collect()
+        }
+        CreationField::Background => {
+            Background::all()
+                .iter()
+                .enumerate()
+                .map(|(i, bg)| CreationOption {
+                    id: (i + 1).to_string(),
+                    label: bg.to_string(),
+                })
+                .collect()
+        }
+        CreationField::OriginFeat => {
+            ORIGIN_FEAT_NAMES
+                .iter()
+                .enumerate()
+                .map(|(i, &name)| CreationOption {
+                    id: (i + 1).to_string(),
+                    label: name.to_string(),
+                })
+                .collect()
+        }
+        CreationField::BackgroundAbilityPattern => {
+            let bg = state.character.background;
+            let abilities = bg.ability_options();
+            vec![
+                CreationOption {
+                    id: "1".to_string(),
+                    label: format!("+2 to {}, +1 to {}", abilities[0], abilities[1]),
+                },
+                CreationOption {
+                    id: "2".to_string(),
+                    label: format!("+1/+1/+1 to {}, {}, {}", abilities[0], abilities[1], abilities[2]),
+                },
+            ]
+        }
+        CreationField::AbilityMethod => {
+            vec![
+                CreationOption {
+                    id: "1".to_string(),
+                    label: "Standard Array (15, 14, 13, 12, 10, 8)".to_string(),
+                },
+                CreationOption {
+                    id: "2".to_string(),
+                    label: "Random (4d6 drop lowest)".to_string(),
+                },
+                CreationOption {
+                    id: "3".to_string(),
+                    label: "Point Buy (27 points, scores 8-15)".to_string(),
+                },
+            ]
+        }
+        CreationField::Skills => {
+            let class = state.character.class;
+            let choices = class.skill_choices();
+            let count = class.skill_choice_count();
+            let mut options: Vec<CreationOption> = choices
+                .iter()
+                .enumerate()
+                .map(|(i, skill)| CreationOption {
+                    id: (i + 1).to_string(),
+                    label: skill.to_string(),
+                })
+                .collect();
+            options.push(CreationOption {
+                id: "_meta".to_string(),
+                label: format!("required_count:{}", count),
+            });
+            options
+        }
+        CreationField::Alignment => {
+            ALIGNMENT_OPTIONS
+                .iter()
+                .enumerate()
+                .map(|(i, alignment)| CreationOption {
+                    id: (i + 1).to_string(),
+                    label: alignment.to_string(),
+                })
+                .collect()
         }
     }
 }
