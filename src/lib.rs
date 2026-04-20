@@ -304,6 +304,53 @@ fn emit_disambiguation_with_suffix(
     resolver::format_disambiguation(matches)
 }
 
+fn format_unknown_command_message(input: &str, in_combat: bool) -> String {
+    let trimmed = input.trim();
+    let verb = trimmed
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_lowercase();
+    let hint = if in_combat {
+        combat_unknown_command_hint(&verb)
+    } else {
+        exploration_unknown_command_hint(&verb)
+    };
+
+    if in_combat {
+        format!("Unknown combat command: \"{}\". {}", trimmed, hint)
+    } else {
+        format!("I don't understand \"{}\". {}", trimmed, hint)
+    }
+}
+
+fn exploration_unknown_command_hint(verb: &str) -> &'static str {
+    match verb {
+        "jump" | "climb" | "crawl" | "run" | "sprint" => {
+            "Try `go <direction>`, `look`, `map`, or `help movement`."
+        }
+        "open" | "close" | "push" | "pull" | "press" | "unlock" => {
+            "Try `look <target>`, `use <item>`, `take <item>`, or `help interaction`."
+        }
+        "greet" | "persuade" | "question" => {
+            "Try `talk <name>`, `look`, or `help interaction`."
+        }
+        _ => "Try `look`, `go <direction>`, `talk <name>`, `inventory`, or `help`.",
+    }
+}
+
+fn combat_unknown_command_hint(verb: &str) -> &'static str {
+    match verb {
+        "jump" | "charge" | "rush" | "run" | "sprint" => {
+            "Try `approach <target>`, `retreat`, `dash`, or `help combat`."
+        }
+        "defend" | "block" | "brace" | "parry" => {
+            "Try `dodge`, `take cover`, `disengage`, or `help combat`."
+        }
+        _ => "Try `attack <target>`, `approach <target>`, `dodge`, `end turn`, or `help combat`.",
+    }
+}
+
 fn handle_creation(state: &mut GameState, input: &str, step: CreationStep) -> Vec<String> {
     let input = input.trim();
     match step {
@@ -1996,7 +2043,7 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
                 vec![]
             } else if s.to_lowercase() == input.trim().to_lowercase() {
                 // The parser echoed the raw user input — it's truly unrecognised.
-                vec![narration::templates::UNKNOWN_COMMAND.replace("{input}", &s)]
+                vec![format_unknown_command_message(&s, false)]
             } else {
                 // The parser generated a disambiguation hint — return it directly.
                 vec![s]
@@ -4747,7 +4794,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
             }
             if s.to_lowercase() == input.trim().to_lowercase() {
                 // Echo of raw user input — truly unrecognised.
-                return vec![format!("Unknown combat command: \"{}\". Type 'help' for commands.", s)];
+                return vec![format_unknown_command_message(&s, true)];
             }
             // Parser-generated hint — return directly without wrapping.
             return vec![s];
@@ -10123,6 +10170,43 @@ mod tests {
             "Unrecognised input should be wrapped in error template. Got: {}",
             text,
         );
+    }
+
+    #[test]
+    fn test_exploration_unknown_command_offers_contextual_movement_hint() {
+        let state = create_test_exploration_state();
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "jump");
+        let text = output.text.join("\n").to_lowercase();
+
+        assert!(text.contains("i don't understand \"jump\""), "Got: {}", text);
+        assert!(text.contains("go <direction>"), "Got: {}", text);
+        assert!(text.contains("help movement"), "Got: {}", text);
+    }
+
+    #[test]
+    fn test_exploration_unknown_command_offers_contextual_interaction_hint() {
+        let state = create_test_exploration_state();
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "open chest");
+        let text = output.text.join("\n").to_lowercase();
+
+        assert!(text.contains("i don't understand \"open chest\""), "Got: {}", text);
+        assert!(text.contains("look <target>"), "Got: {}", text);
+        assert!(text.contains("help interaction"), "Got: {}", text);
+    }
+
+    #[test]
+    fn test_combat_unknown_command_offers_contextual_hint() {
+        let mut state = create_test_combat_state();
+        force_player_turn(&mut state);
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "defend");
+        let text = output.text.join("\n").to_lowercase();
+
+        assert!(text.contains("unknown combat command: \"defend\""), "Got: {}", text);
+        assert!(text.contains("dodge"), "Got: {}", text);
+        assert!(text.contains("help combat"), "Got: {}", text);
     }
 
     #[test]
