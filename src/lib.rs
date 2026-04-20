@@ -340,9 +340,7 @@ fn exploration_unknown_command_hint(verb: &str) -> &'static str {
         "open" | "close" | "push" | "pull" | "press" | "unlock" => {
             "Try `look <target>`, `use <item>`, `take <item>`, or `help interaction`."
         }
-        "greet" | "persuade" | "question" => {
-            "Try `talk <name>`, `look`, or `help interaction`."
-        }
+        "greet" | "persuade" | "question" => "Try `talk <name>`, `look`, or `help interaction`.",
         _ => "Try `look`, `go <direction>`, `talk <name>`, `inventory`, or `help`.",
     }
 }
@@ -355,9 +353,7 @@ fn combat_unknown_command_hint(verb: &str) -> &'static str {
         "defend" | "block" | "brace" | "parry" => {
             "Try `dodge`, `take cover`, `disengage`, or `help combat`."
         }
-        _ => {
-            "Try `attack <target>`, `approach <target>`, `dodge`, `end turn`, or `help combat`."
-        }
+        _ => "Try `attack <target>`, `approach <target>`, `dodge`, `end turn`, or `help combat`.",
     }
 }
 
@@ -1697,7 +1693,11 @@ fn resolve_search_trigger(
                 false,
                 disadv,
             );
-            let mut lines = vec![narration::narrate_skill_check(rng, &skill.to_string(), &result)];
+            let mut lines = vec![narration::narrate_skill_check(
+                rng,
+                &skill.to_string(),
+                &result,
+            )];
             if result.success {
                 lines.push(trigger.success_text);
                 if trigger.one_shot {
@@ -1716,17 +1716,17 @@ fn resolve_search_trigger(
                 .copied()
                 .unwrap_or(10);
             let is_prof = state.character.is_proficient_in_skill(Skill::Perception);
-            let passive = rules::checks::passive_check(
-                score,
-                state.character.proficiency_bonus(),
-                is_prof,
-            );
+            let passive =
+                rules::checks::passive_check(score, state.character.proficiency_bonus(), is_prof);
             if passive >= trigger.dc {
                 if trigger.one_shot {
                     state.world.triggered.insert(trigger_id);
                 }
                 Some(vec![
-                    format!("[Passive Perception {} vs DC {} - noticed!]", passive, trigger.dc),
+                    format!(
+                        "[Passive Perception {} vs DC {} - noticed!]",
+                        passive, trigger.dc
+                    ),
                     trigger.success_text,
                 ])
             } else {
@@ -2113,7 +2113,9 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
                 ResolveResult::Found(id) => {
                     let npc_id = (id & !NPC_TAG) as u32;
                     if let Some(npc) = state.world.npcs.get(&npc_id) {
-                        npc.generate_dialogue(&mut rng)
+                        let location = state.world.locations.get(&state.current_location);
+                        let objective_hint = active_objective_dialogue_hint(state, npc_id);
+                        npc.generate_dialogue(location, objective_hint.as_deref(), &mut rng)
                     } else {
                         vec![narration::templates::NPC_NOT_FOUND.replace("{name}", &name)]
                     }
@@ -6536,6 +6538,37 @@ fn render_objective(state: &GameState) -> Vec<String> {
     }
 }
 
+fn active_objective_dialogue_hint(state: &GameState, npc_id: u32) -> Option<String> {
+    state
+        .progress
+        .objectives
+        .iter()
+        .zip(state.progress.objective_triggers.iter())
+        .find_map(|(objective, trigger)| {
+            if objective.completed {
+                return None;
+            }
+
+            match trigger {
+                state::ObjectiveType::DefeatNpc(target_id) if *target_id == npc_id => {
+                    Some(format!(
+                        "This one sounds tied to your current objective: {}.",
+                        objective.title
+                    ))
+                }
+                state::ObjectiveType::FindItem(item_id) => {
+                    state.world.items.get(item_id).map(|item| {
+                        format!(
+                            "They mention your current objective, {}: keep an eye out for {}.",
+                            objective.title, item.name
+                        )
+                    })
+                }
+                _ => None,
+            }
+        })
+}
+
 fn render_map(state: &GameState) -> Vec<String> {
     let mut ids: Vec<_> = state.discovered_locations.iter().copied().collect();
     ids.sort_unstable();
@@ -7773,7 +7806,12 @@ impl state::Npc {
         }
     }
 
-    pub fn generate_dialogue(&self, rng: &mut impl rand::Rng) -> Vec<String> {
+    pub fn generate_dialogue(
+        &self,
+        location: Option<&state::Location>,
+        objective_hint: Option<&str>,
+        rng: &mut impl rand::Rng,
+    ) -> Vec<String> {
         let greetings = match self.disposition {
             state::Disposition::Friendly => &[
                 "\"Well met, traveler!\"",
@@ -7793,18 +7831,73 @@ impl state::Npc {
         };
         let greeting = greetings[rng.gen_range(0..greetings.len())];
 
-        let flavor = match self.role {
-            state::NpcRole::Merchant => "\"I have wares, if you have coin.\"",
-            state::NpcRole::Guard => "\"Keep your hands where I can see them.\"",
-            state::NpcRole::Hermit => "\"The walls whisper secrets to those who listen...\"",
-            state::NpcRole::Adventurer => "\"I've heard rumors of treasure deeper within.\"",
+        let fallback_flavor = match self.role {
+            state::NpcRole::Merchant => "\"I have wares, if you have coin.\"".to_string(),
+            state::NpcRole::Guard => "\"Keep your hands where I can see them.\"".to_string(),
+            state::NpcRole::Hermit => {
+                "\"The walls whisper secrets to those who listen...\"".to_string()
+            }
+            state::NpcRole::Adventurer => {
+                "\"I've heard rumors of treasure deeper within.\"".to_string()
+            }
+        };
+
+        let flavor = match location {
+            Some(location) => {
+                let topic = self
+                    .dialogue_tags
+                    .get(rng.gen_range(0..self.dialogue_tags.len().max(1)))
+                    .map(String::as_str)
+                    .unwrap_or("rumors");
+                let feature = location
+                    .room_features
+                    .first()
+                    .map(|feature| format!("the {}", feature.name))
+                    .unwrap_or_else(|| location.name.clone());
+                let light = match location.light_level {
+                    state::LightLevel::Bright => "bright",
+                    state::LightLevel::Dim => "dim",
+                    state::LightLevel::Dark => "dark",
+                };
+                let place_kind = match location.location_type {
+                    state::LocationType::Room => "room",
+                    state::LocationType::Corridor => "corridor",
+                    state::LocationType::Cave => "cave",
+                    state::LocationType::Clearing => "clearing",
+                    state::LocationType::Ruins => "ruins",
+                };
+
+                match self.role {
+                    state::NpcRole::Merchant => format!(
+                        "\"Trade is thin in {}. Most folk passing {} ask about {} before wares.\"",
+                        location.name, feature, topic
+                    ),
+                    state::NpcRole::Guard => format!(
+                        "\"Stay sharp in {} around {}. In a {} {}, {} can turn ugly fast.\"",
+                        location.name, feature, light, place_kind, topic
+                    ),
+                    state::NpcRole::Hermit => format!(
+                        "\"{} has a memory of its own. In the {} of {}, even {} lingers.\"",
+                        location.name, feature, location.name, topic
+                    ),
+                    state::NpcRole::Adventurer => format!(
+                        "\"If there's {} near {}, I'd start with {} in this {} {}.\"",
+                        topic, location.name, feature, light, place_kind
+                    ),
+                }
+            }
+            None => fallback_flavor,
         };
 
         vec![
             format!("{} says:", self.name),
             greeting.to_string(),
-            flavor.to_string(),
+            flavor,
+            objective_hint.unwrap_or_default().to_string(),
         ]
+        .into_iter()
+        .filter(|line| !line.is_empty())
+        .collect()
     }
 }
 
@@ -9546,16 +9639,19 @@ mod tests {
         let loc_id = state.current_location;
 
         state.world.locations.get_mut(&loc_id).unwrap().triggers = vec![trigger_id];
-        state.world.triggers.insert(trigger_id, state::Trigger {
-            id: trigger_id,
-            location: loc_id,
-            trigger_type: state::TriggerType::SkillCheck(Skill::Perception),
-            dc: 1,
-            success_text: "A careful search reveals a hidden compartment.".to_string(),
-            failure_text: "You search but find nothing of interest.".to_string(),
-            one_shot: true,
-            damage_on_failure: 0,
-        });
+        state.world.triggers.insert(
+            trigger_id,
+            state::Trigger {
+                id: trigger_id,
+                location: loc_id,
+                trigger_type: state::TriggerType::SkillCheck(Skill::Perception),
+                dc: 1,
+                success_text: "A careful search reveals a hidden compartment.".to_string(),
+                failure_text: "You search but find nothing of interest.".to_string(),
+                one_shot: true,
+                damage_on_failure: 0,
+            },
+        );
 
         let state_json = serde_json::to_string(&state).unwrap();
         let output = process_input(&state_json, "search");
@@ -9563,8 +9659,15 @@ mod tests {
         let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
 
         assert!(all_text.contains("hidden compartment"), "Got: {}", all_text);
-        assert!(!all_text.contains("You are in") && !all_text.contains("Before you lies"), "Search should not restate the room. Got: {}", all_text);
-        assert!(new_state.world.triggered.contains(&trigger_id), "Successful search should consume one-shot trigger");
+        assert!(
+            !all_text.contains("You are in") && !all_text.contains("Before you lies"),
+            "Search should not restate the room. Got: {}",
+            all_text
+        );
+        assert!(
+            new_state.world.triggered.contains(&trigger_id),
+            "Successful search should consume one-shot trigger"
+        );
     }
 
     #[test]
@@ -9574,24 +9677,47 @@ mod tests {
         let item_id = 5432;
         let item_name = "Test Relic".to_string();
 
-        state.world.locations.get_mut(&loc_id).unwrap().triggers.clear();
-        state.world.locations.get_mut(&loc_id).unwrap().items.push(item_id);
-        state.world.items.insert(item_id, state::Item {
-            id: item_id,
-            name: item_name.clone(),
-            description: "A small carved relic.".to_string(),
-            item_type: state::ItemType::Misc,
-            location: Some(loc_id),
-            carried_by_player: false,
-            charges_remaining: None,
-        });
+        state
+            .world
+            .locations
+            .get_mut(&loc_id)
+            .unwrap()
+            .triggers
+            .clear();
+        state
+            .world
+            .locations
+            .get_mut(&loc_id)
+            .unwrap()
+            .items
+            .push(item_id);
+        state.world.items.insert(
+            item_id,
+            state::Item {
+                id: item_id,
+                name: item_name.clone(),
+                description: "A small carved relic.".to_string(),
+                item_type: state::ItemType::Misc,
+                location: Some(loc_id),
+                carried_by_player: false,
+                charges_remaining: None,
+            },
+        );
 
         let state_json = serde_json::to_string(&state).unwrap();
         let output = process_input(&state_json, "search room");
         let all_text = output.text.join("\n");
 
-        assert!(all_text.contains("uncover nothing new") || all_text.contains("Within reach:"), "Got: {}", all_text);
-        assert!(all_text.contains(&item_name), "Search fallback should surface current room item names. Got: {}", all_text);
+        assert!(
+            all_text.contains("uncover nothing new") || all_text.contains("Within reach:"),
+            "Got: {}",
+            all_text
+        );
+        assert!(
+            all_text.contains(&item_name),
+            "Search fallback should surface current room item names. Got: {}",
+            all_text
+        );
     }
 
     #[test]
@@ -9601,21 +9727,34 @@ mod tests {
         let item_id = 6543;
         let item_name = "Hidden Ledger".to_string();
 
-        state.world.locations.get_mut(&loc_id).unwrap().items.push(item_id);
-        state.world.items.insert(item_id, state::Item {
-            id: item_id,
-            name: item_name.clone(),
-            description: "A weathered ledger packed with cramped notes.".to_string(),
-            item_type: state::ItemType::Misc,
-            location: Some(loc_id),
-            carried_by_player: false,
-            charges_remaining: None,
-        });
+        state
+            .world
+            .locations
+            .get_mut(&loc_id)
+            .unwrap()
+            .items
+            .push(item_id);
+        state.world.items.insert(
+            item_id,
+            state::Item {
+                id: item_id,
+                name: item_name.clone(),
+                description: "A weathered ledger packed with cramped notes.".to_string(),
+                item_type: state::ItemType::Misc,
+                location: Some(loc_id),
+                carried_by_player: false,
+                charges_remaining: None,
+            },
+        );
 
         let state_json = serde_json::to_string(&state).unwrap();
         let output = process_input(&state_json, &format!("search {}", item_name.to_lowercase()));
 
-        assert!(output.text.iter().any(|t| t.contains(&item_name)), "Got: {:?}", output.text);
+        assert!(
+            output.text.iter().any(|t| t.contains(&item_name)),
+            "Got: {:?}",
+            output.text
+        );
     }
 
     #[test]
@@ -9772,6 +9911,206 @@ mod tests {
                 output.text
             );
         }
+    }
+
+    #[test]
+    fn test_talk_command_uses_current_room_context() {
+        let mut state = create_test_exploration_state();
+        let location = state
+            .world
+            .locations
+            .get_mut(&state.current_location)
+            .unwrap();
+        location.name = "Ancient Library".to_string();
+        location.location_type = state::LocationType::Ruins;
+        location.light_level = state::LightLevel::Dim;
+        location.room_features = vec![state::RoomFeature {
+            name: "bookshelf".to_string(),
+            description: "Warped shelves lean against the wall.".to_string(),
+        }];
+        let npc_id = 50_001;
+        location.npcs.push(npc_id);
+
+        state.world.npcs.insert(
+            npc_id,
+            state::Npc {
+                id: npc_id,
+                name: "Orin the Quiet".to_string(),
+                role: state::NpcRole::Guard,
+                disposition: state::Disposition::Neutral,
+                dialogue_tags: vec!["danger".to_string()],
+                location: state.current_location,
+                combat_stats: None,
+                conditions: vec![],
+            },
+        );
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "talk orin");
+        let joined = output.text.join("\n").to_lowercase();
+
+        assert!(joined.contains("ancient library"), "Got: {:?}", output.text);
+        assert!(joined.contains("bookshelf"), "Got: {:?}", output.text);
+        assert!(joined.contains("danger"), "Got: {:?}", output.text);
+    }
+
+    #[test]
+    fn test_generate_dialogue_uses_room_context() {
+        let npc = state::Npc {
+            id: 7,
+            name: "Orin the Quiet".to_string(),
+            role: state::NpcRole::Guard,
+            disposition: state::Disposition::Neutral,
+            dialogue_tags: vec!["danger".to_string()],
+            location: 0,
+            combat_stats: None,
+            conditions: vec![],
+        };
+        let location = state::Location {
+            id: 0,
+            name: "Ancient Library".to_string(),
+            description: "Dust hangs in the air.".to_string(),
+            location_type: state::LocationType::Ruins,
+            exits: HashMap::new(),
+            npcs: vec![npc.id],
+            items: vec![],
+            triggers: vec![],
+            light_level: state::LightLevel::Dim,
+            room_features: vec![state::RoomFeature {
+                name: "bookshelf".to_string(),
+                description: "Warped shelves lean against the wall.".to_string(),
+            }],
+        };
+
+        let mut rng = StdRng::seed_from_u64(7);
+        let lines = npc.generate_dialogue(Some(&location), None, &mut rng);
+        let joined = lines.join("\n").to_lowercase();
+
+        assert!(joined.contains("ancient library"), "Got: {:?}", lines);
+        assert!(joined.contains("bookshelf"), "Got: {:?}", lines);
+        assert!(joined.contains("danger"), "Got: {:?}", lines);
+    }
+
+    #[test]
+    fn test_generate_dialogue_without_location_uses_generic_fallback() {
+        let npc = state::Npc {
+            id: 8,
+            name: "Dara the Bold".to_string(),
+            role: state::NpcRole::Merchant,
+            disposition: state::Disposition::Friendly,
+            dialogue_tags: vec!["goods".to_string()],
+            location: 0,
+            combat_stats: None,
+            conditions: vec![],
+        };
+
+        let mut rng = StdRng::seed_from_u64(11);
+        let lines = npc.generate_dialogue(None, None, &mut rng);
+
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("I have wares, if you have coin.")),
+            "Got: {:?}",
+            lines
+        );
+    }
+
+    #[test]
+    fn test_generate_dialogue_surfaces_objective_context() {
+        let npc = state::Npc {
+            id: 9,
+            name: "Theron the Scarred".to_string(),
+            role: state::NpcRole::Guard,
+            disposition: state::Disposition::Hostile,
+            dialogue_tags: vec!["danger".to_string()],
+            location: 0,
+            combat_stats: None,
+            conditions: vec![],
+        };
+
+        let location = state::Location {
+            id: 0,
+            name: "Gatehouse".to_string(),
+            description: "Broken banners hang from the wall.".to_string(),
+            location_type: state::LocationType::Ruins,
+            exits: HashMap::new(),
+            npcs: vec![npc.id],
+            items: vec![],
+            triggers: vec![],
+            light_level: state::LightLevel::Dim,
+            room_features: vec![],
+        };
+
+        let mut rng = StdRng::seed_from_u64(13);
+        let lines = npc.generate_dialogue(
+            Some(&location),
+            Some("This one sounds tied to your current objective: Defeat Theron the Scarred."),
+            &mut rng,
+        );
+        let joined = lines.join("\n");
+
+        assert!(
+            joined.contains("Defeat Theron the Scarred"),
+            "Got: {:?}",
+            lines
+        );
+    }
+
+    #[test]
+    fn test_talk_surfaces_find_item_objective_context() {
+        let mut state = create_test_exploration_state();
+        let loc_id = state.current_location;
+        let npc_id = 777;
+        let item_id = 778;
+
+        state.world.npcs.insert(
+            npc_id,
+            state::Npc {
+                id: npc_id,
+                name: "Petra the Wise".to_string(),
+                role: state::NpcRole::Hermit,
+                disposition: state::Disposition::Friendly,
+                dialogue_tags: vec!["lore".to_string()],
+                location: loc_id,
+                combat_stats: None,
+                conditions: vec![],
+            },
+        );
+        state.world.items.insert(
+            item_id,
+            state::Item {
+                id: item_id,
+                name: "Ancient Gem".to_string(),
+                description: "A pale crystal with a hidden glow.".to_string(),
+                item_type: state::ItemType::Misc,
+                location: Some(loc_id),
+                carried_by_player: false,
+                charges_remaining: None,
+            },
+        );
+        state.world.locations.get_mut(&loc_id).unwrap().npcs = vec![npc_id];
+        state.progress.objectives.push(state::Objective {
+            id: "find_gem".to_string(),
+            title: "Recover the Ancient Gem".to_string(),
+            description: "Find the gem hidden somewhere in the complex.".to_string(),
+            completed: false,
+        });
+        state
+            .progress
+            .objective_triggers
+            .push(state::ObjectiveType::FindItem(item_id));
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "talk petra");
+        let joined = output.text.join("\n");
+
+        assert!(
+            joined.contains("Recover the Ancient Gem"),
+            "Got: {:?}",
+            output.text
+        );
+        assert!(joined.contains("Ancient Gem"), "Got: {:?}", output.text);
     }
 
     #[test]
