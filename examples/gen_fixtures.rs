@@ -5,7 +5,7 @@
 ///   fixtures/combat-fighter-vs-goblin.json
 ///   fixtures/post-short-rest.json
 use jurnalis_engine::{new_game, process_input};
-use jurnalis_engine::state::{GameState, GamePhase};
+use jurnalis_engine::state::GameState;
 
 fn advance_char_creation(state_json: &str) -> String {
     // Human Fighter Soldier character creation

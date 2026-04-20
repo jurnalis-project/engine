@@ -15902,7 +15902,6 @@ mod tests {
 
     #[test]
     fn test_rogue_gets_thieves_tools_proficiency() {
-        let mut rng = StdRng::seed_from_u64(1);
         let mut scores = HashMap::new();
         scores.insert(Ability::Strength, 10);
         scores.insert(Ability::Dexterity, 16);
@@ -15925,7 +15924,6 @@ mod tests {
             "Rogue should have Thieves' Tools proficiency, got: {:?}",
             rogue.tool_proficiencies
         );
-        let _ = rng; // suppress unused warning
     }
 
     #[test]
