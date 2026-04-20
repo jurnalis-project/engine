@@ -10914,7 +10914,15 @@ mod tests {
     fn test_attack_then_bonus_dash_allowed_on_same_turn() {
         // Attack consumes action; movement goes to zero; player can still
         // spend a bonus action (e.g. bonus dash) before ending the turn.
-        let mut state = create_test_combat_state();
+        // Rogue is used because bonus-action Dash requires Cunning Action (SRD 5.1).
+        let mut state = create_test_rogue_combat_state();
+        // Ensure goblin survives the attack so combat persists through bonus action.
+        if let Some(npc) = state.world.npcs.get_mut(&100) {
+            if let Some(ref mut stats) = npc.combat_stats {
+                stats.current_hp = 100;
+                stats.max_hp = 100;
+            }
+        }
         force_player_turn(&mut state);
         if let Some(ref mut combat) = state.active_combat {
             combat.distances.insert(100, 5);
