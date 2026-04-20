@@ -96,9 +96,7 @@ pub enum Command {
     /// Drink a consumable item (potion). In combat, costs a Bonus Action per
     /// 2024 SRD. Parsed from "drink <item>" or "quaff <item>".
     Drink(String),
-    // --- Scenery interaction verbs (feat/env-interaction-affordances) ---
-    // These parse environmental interaction attempts so the orchestrator can
-    // provide helpful feedback instead of falling through to unknown-command.
+    // --- Scenery interaction verbs ---
     /// Open a room feature (door, chest, etc.). Parsed from "open <target>".
     Open(String),
     /// Close a room feature. Parsed from "close <target>" or "shut <target>".
@@ -113,6 +111,11 @@ pub enum Command {
     Unlock(String),
     /// Force open a room feature. Parsed from "force <target>" or "break down <target>".
     Force(String),
+    // --- Trade commands ---
+    /// Buy an item from a merchant NPC. Argument is the item name.
+    Buy(String),
+    /// Sell an item to a merchant NPC. Argument is the item name from inventory.
+    Sell(String),
     Unknown(String),
 }
 
@@ -481,7 +484,7 @@ pub fn parse(input: &str) -> Command {
             }
         }
         "attunement" | "attunements" => Command::ListAttunements,
-        // ---- Scenery interaction verbs (feat/env-interaction-affordances) ----
+        // ---- Scenery interaction verbs ----
         "open" => {
             if args.is_empty() {
                 Command::Unknown("Open what?".to_string())
@@ -524,6 +527,21 @@ pub fn parse(input: &str) -> Command {
                 Command::Unknown("Force open what?".to_string())
             } else {
                 Command::Force(args)
+            }
+        }
+        // ---- Trade commands ----
+        "buy" | "purchase" => {
+            if args.is_empty() {
+                Command::Unknown("Buy what?".to_string())
+            } else {
+                Command::Buy(args)
+            }
+        }
+        "sell" => {
+            if args.is_empty() {
+                Command::Unknown("Sell what?".to_string())
+            } else {
+                Command::Sell(args)
             }
         }
         _ => Command::Unknown(input.to_string()),
@@ -1277,7 +1295,7 @@ mod tests {
         }
     }
 
-    // ---- Grappling commands (feat/grappling-mechanics) ----
+    // ---- Grappling commands ----
 
     #[test]
     fn test_grapple_command() {
@@ -1313,9 +1331,6 @@ mod tests {
 
     #[test]
     fn test_bare_attack_is_disambiguation_hint() {
-        // Bug #92: bare "attack" should produce a hint that doesn't get swallowed
-        // by the UNKNOWN_COMMAND wrapper in lib.rs. The message content is
-        // tested here; the wrapper behaviour is tested at the lib.rs integration level.
         match parse("attack") {
             Command::Unknown(s) => assert!(s.contains("what"), "Got: {}", s),
             other => panic!("Expected Unknown, got {:?}", other),
@@ -1324,8 +1339,6 @@ mod tests {
 
     #[test]
     fn test_bare_rest_produces_hint_not_echoed_input() {
-        // Bug #92: The hint "Short rest or long rest? Try 'short rest' or 'long rest'."
-        // must NOT be the literal user input "rest". Verify the message is the hint text.
         match parse("rest") {
             Command::Unknown(s) => {
                 assert_ne!(s, "rest", "bare 'rest' hint should NOT echo user input");
@@ -1339,7 +1352,7 @@ mod tests {
         }
     }
 
-    // ---- Scenery interaction verbs (feat/env-interaction-affordances) ----
+    // ---- Scenery interaction verbs ----
 
     #[test]
     fn test_open_command() {
@@ -1356,23 +1369,42 @@ mod tests {
         }
     }
 
+    // ---- Trade commands ----
+
+    #[test]
+    fn test_buy_command() {
+        assert_eq!(parse("buy torch"), Command::Buy("torch".to_string()));
+        assert_eq!(parse("buy longsword"), Command::Buy("longsword".to_string()));
+        assert_eq!(parse("buy chain mail"), Command::Buy("chain mail".to_string()));
+    }
+
+    #[test]
+    fn test_buy_alias_purchase() {
+        assert_eq!(parse("purchase dagger"), Command::Buy("dagger".to_string()));
+    }
+
+    #[test]
+    fn test_buy_bare_verb_error() {
+        match parse("buy") {
+            Command::Unknown(s) => assert!(s.to_lowercase().contains("what"), "Got: {}", s),
+            other => panic!("Expected Unknown, got {:?}", other),
+        }
+    }
+
     #[test]
     fn test_shut_command() {
-        // "close" is reserved for combat (approach). Use "shut" for closing.
         assert_eq!(parse("shut door"), Command::Close("door".to_string()));
         assert_eq!(parse("shut chest"), Command::Close("chest".to_string()));
     }
 
     #[test]
     fn test_push_routes_to_scenery_not_shove() {
-        // "push" is scenery interaction; "shove" is combat
         assert_eq!(parse("push door"), Command::Push("door".to_string()));
         assert_eq!(parse("push lever"), Command::Push("lever".to_string()));
     }
 
     #[test]
     fn test_shove_still_works_for_combat() {
-        // "shove" remains the combat command
         assert_eq!(parse("shove goblin"), Command::Shove("goblin".to_string()));
     }
 
@@ -1419,5 +1451,25 @@ mod tests {
             Command::Unknown(s) => assert!(s.to_lowercase().contains("what"), "Got: {}", s),
             other => panic!("Expected Unknown for bare 'force', got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_sell_command() {
+        assert_eq!(parse("sell torch"), Command::Sell("torch".to_string()));
+        assert_eq!(parse("sell longsword"), Command::Sell("longsword".to_string()));
+    }
+
+    #[test]
+    fn test_sell_bare_verb_error() {
+        match parse("sell") {
+            Command::Unknown(s) => assert!(s.to_lowercase().contains("what"), "Got: {}", s),
+            other => panic!("Expected Unknown, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_buy_case_insensitive() {
+        assert_eq!(parse("BUY TORCH"), Command::Buy("torch".to_string()));
+        assert_eq!(parse("Purchase Dagger"), Command::Buy("dagger".to_string()));
     }
 }

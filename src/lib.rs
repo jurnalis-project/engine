@@ -1364,6 +1364,9 @@ fn apply_background_effects(state: &mut GameState) {
     if !state.character.traits.contains(&feat_trait) {
         state.character.traits.push(feat_trait);
     }
+
+    // 6. Starting gold (feat/merchant-trade-support)
+    state.character.gold_cp = bg.starting_gold_cp();
 }
 
 /// Grant the starting equipment package of the character's background.
@@ -2849,6 +2852,8 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
         Command::Unattune(target) => handle_unattune_command(state, &target),
         Command::ListAttunements => handle_list_attunements(state),
         Command::UseTool { tool, target } => handle_use_tool_command(state, &tool, &target),
+        Command::Buy(item_name) => handle_buy_command(state, &item_name, &mut rng),
+        Command::Sell(item_name) => handle_sell_command(state, &item_name),
         Command::Unknown(s) => {
             if s.is_empty() {
                 vec![]
@@ -7992,6 +7997,303 @@ fn handle_use_tool_command(state: &mut GameState, tool_name: &str, target: &str)
     lines
 }
 
+/// Format a price in copper pieces as a human-readable string (gp/sp/cp).
+fn format_price(cp: u32) -> String {
+    let gp = cp / 100;
+    let sp = (cp % 100) / 10;
+    let remaining_cp = cp % 10;
+    let mut parts = Vec::new();
+    if gp > 0 { parts.push(format!("{} gp", gp)); }
+    if sp > 0 { parts.push(format!("{} sp", sp)); }
+    if remaining_cp > 0 || parts.is_empty() { parts.push(format!("{} cp", remaining_cp)); }
+    parts.join(", ")
+}
+
+/// Find a merchant NPC in the player's current location.
+fn find_merchant_in_room(state: &GameState) -> Option<&state::Npc> {
+    let current_loc = state.world.locations.get(&state.current_location)?;
+    for &npc_id in &current_loc.npcs {
+        if let Some(npc) = state.world.npcs.get(&npc_id) {
+            if npc.role == state::NpcRole::Merchant {
+                return Some(npc);
+            }
+        }
+    }
+    None
+}
+
+/// Lookup table of SRD wares available for purchase. Returns (name, cost_cp).
+fn get_purchasable_wares() -> Vec<(&'static str, u32)> {
+    let mut wares = Vec::new();
+    // Add weapons
+    for w in equipment::SRD_WEAPONS.iter() {
+        wares.push((w.name, w.cost_cp));
+    }
+    // Add armor
+    for a in equipment::SRD_ARMOR.iter() {
+        wares.push((a.name, a.cost_cp));
+    }
+    // Add consumables with fixed prices
+    wares.push(("Torch", 1)); // 1 cp
+    wares.push(("Rations", 50)); // 5 sp = 50 cp (per day)
+    wares.push(("Healing Potion", 5000)); // 50 gp per SRD
+    wares
+}
+
+/// Handle the Buy command: purchase an item from a merchant NPC.
+fn handle_buy_command(
+    state: &mut GameState,
+    item_name: &str,
+    _rng: &mut impl rand::Rng,
+) -> Vec<String> {
+    // Check for merchant in room
+    let merchant = match find_merchant_in_room(state) {
+        Some(m) => m.clone(),
+        None => return vec!["There's no merchant here to buy from.".to_string()],
+    };
+
+    // Get available wares
+    let wares = get_purchasable_wares();
+    let lower_name = item_name.to_lowercase();
+
+    // Fuzzy match: exact > prefix > substring (case-insensitive)
+    let exact = wares.iter().find(|(n, _)| n.to_lowercase() == lower_name);
+    let prefix = wares.iter().find(|(n, _)| n.to_lowercase().starts_with(&lower_name));
+    let substring = wares.iter().find(|(n, _)| n.to_lowercase().contains(&lower_name));
+
+    let (ware_name, cost_cp) = match exact.or(prefix).or(substring) {
+        Some((name, cost)) => (*name, *cost),
+        None => return vec![format!(
+            "{} says: \"I don't have any '{}' for sale.\"",
+            merchant.name, item_name
+        )],
+    };
+
+    // Check player has enough gold
+    if state.character.gold_cp < cost_cp {
+        let price_str = format_price(cost_cp);
+        let have_str = format_price(state.character.gold_cp);
+        return vec![format!(
+            "{} says: \"That {} costs {}. You only have {}.\"",
+            merchant.name, ware_name, price_str, have_str
+        )];
+    }
+
+    // Deduct gold
+    state.character.gold_cp -= cost_cp;
+
+    // Create the item and add to inventory
+    let new_id = state.world.items.keys().max().map_or(0, |&m| m + 1);
+    let item = create_purchased_item(new_id, ware_name, state.current_location);
+    state.world.items.insert(new_id, item);
+    state.character.inventory.push(new_id);
+
+    let price_str = format_price(cost_cp);
+    let remaining_str = format_price(state.character.gold_cp);
+    vec![
+        format!(
+            "{} sells you a {} for {}.",
+            merchant.name, ware_name, price_str
+        ),
+        format!("You now have {}.", remaining_str),
+    ]
+}
+
+/// Create an Item instance for a purchased ware.
+fn create_purchased_item(id: u32, name: &str, _location: u32) -> state::Item {
+    // Check weapons first
+    if let Some(w) = equipment::SRD_WEAPONS.iter().find(|w| w.name == name) {
+        return state::Item {
+            id,
+            name: w.name.to_string(),
+            description: format!("A {}.", w.name.to_lowercase()),
+            item_type: state::ItemType::Weapon {
+                damage_dice: w.damage_dice,
+                damage_die: w.damage_die,
+                damage_type: w.damage_type,
+                properties: w.properties,
+                category: w.category,
+                versatile_die: w.versatile_die,
+                range_normal: w.range_normal,
+                range_long: w.range_long,
+            },
+            location: None,
+            carried_by_player: true,
+            charges_remaining: None,
+        };
+    }
+    // Check armor
+    if let Some(a) = equipment::SRD_ARMOR.iter().find(|a| a.name == name) {
+        return state::Item {
+            id,
+            name: a.name.to_string(),
+            description: format!("A set of {} armor.", a.name.to_lowercase()),
+            item_type: state::ItemType::Armor {
+                category: a.category,
+                base_ac: a.base_ac,
+                max_dex_bonus: a.max_dex_bonus,
+                str_requirement: a.str_requirement,
+                stealth_disadvantage: a.stealth_disadvantage,
+            },
+            location: None,
+            carried_by_player: true,
+            charges_remaining: None,
+        };
+    }
+    // Consumables
+    match name {
+        "Torch" => state::Item {
+            id,
+            name: "Torch".to_string(),
+            description: "A wooden torch soaked in pitch. Provides light.".to_string(),
+            item_type: state::ItemType::Consumable { effect: "light".to_string() },
+            location: None,
+            carried_by_player: true,
+            charges_remaining: None,
+        },
+        "Rations" => state::Item {
+            id,
+            name: "Rations".to_string(),
+            description: "A day's worth of dried food.".to_string(),
+            item_type: state::ItemType::Consumable { effect: "nourish".to_string() },
+            location: None,
+            carried_by_player: true,
+            charges_remaining: None,
+        },
+        "Healing Potion" => state::Item {
+            id,
+            name: "Healing Potion".to_string(),
+            description: "A small vial of red liquid that restores vitality.".to_string(),
+            item_type: state::ItemType::Consumable { effect: "heal_1d8".to_string() },
+            location: None,
+            carried_by_player: true,
+            charges_remaining: None,
+        },
+        _ => state::Item {
+            id,
+            name: name.to_string(),
+            description: format!("A {}.", name.to_lowercase()),
+            item_type: state::ItemType::Misc,
+            location: None,
+            carried_by_player: true,
+            charges_remaining: None,
+        },
+    }
+}
+
+/// Get the sell price for an item (50% of SRD cost, rounded down).
+fn get_sell_price(item: &state::Item) -> Option<u32> {
+    match &item.item_type {
+        state::ItemType::Weapon { .. } => {
+            // Find matching SRD weapon by name
+            equipment::SRD_WEAPONS.iter()
+                .find(|w| w.name == item.name)
+                .map(|w| w.cost_cp / 2)
+        }
+        state::ItemType::Armor { .. } => {
+            equipment::SRD_ARMOR.iter()
+                .find(|a| a.name == item.name)
+                .map(|a| a.cost_cp / 2)
+        }
+        state::ItemType::Consumable { effect, .. } => {
+            // Match consumables by effect
+            match effect.as_str() {
+                "light" => Some(0), // Torch: 1cp / 2 = 0
+                "nourish" => Some(25), // Rations: 50cp / 2 = 25
+                "heal_1d8" => Some(2500), // Healing Potion: 5000cp / 2 = 2500
+                _ => Some(0),
+            }
+        }
+        state::ItemType::Misc => Some(0), // Misc items have no value
+        _ => None, // Magic items, etc. not sellable in MVP
+    }
+}
+
+/// Handle the Sell command: sell an item to a merchant NPC.
+fn handle_sell_command(state: &mut GameState, item_name: &str) -> Vec<String> {
+    // Check for merchant in room
+    let merchant = match find_merchant_in_room(state) {
+        Some(m) => m.clone(),
+        None => return vec!["There's no merchant here to sell to.".to_string()],
+    };
+
+    // Build candidates from inventory
+    let owned_candidates: Vec<(usize, String)> = state.character.inventory.iter()
+        .filter_map(|&id| {
+            state.world.items.get(&id).map(|item| (id as usize, item.name.clone()))
+        })
+        .collect();
+    let candidates: Vec<(usize, &str)> = owned_candidates.iter()
+        .map(|(id, name)| (*id, name.as_str()))
+        .collect();
+
+    match parser::resolver::resolve_target(item_name, &candidates) {
+        parser::resolver::ResolveResult::Found(id) => {
+            let item_id = id as u32;
+            let item = match state.world.items.get(&item_id) {
+                Some(i) => i.clone(),
+                None => return vec![format!("You don't have any '{}'.", item_name)],
+            };
+
+            // Check if item is equipped - can't sell equipped items
+            if state.character.equipped.main_hand == Some(item_id)
+                || state.character.equipped.off_hand == Some(item_id)
+                || state.character.equipped.body == Some(item_id)
+            {
+                return vec![format!(
+                    "You need to unequip {} before you can sell it.",
+                    item.name
+                )];
+            }
+
+            // Get sell price
+            let sell_price = match get_sell_price(&item) {
+                Some(p) => p,
+                None => return vec![format!(
+                    "{} says: \"I'm not interested in buying that {}.\"",
+                    merchant.name, item.name
+                )],
+            };
+
+            if sell_price == 0 {
+                return vec![format!(
+                    "{} says: \"That {} isn't worth anything to me.\"",
+                    merchant.name, item.name
+                )];
+            }
+
+            // Remove from inventory
+            state.character.inventory.retain(|&id| id != item_id);
+            // Remove from world items
+            state.world.items.remove(&item_id);
+            // Add gold
+            state.character.gold_cp += sell_price;
+
+            let price_str = format_price(sell_price);
+            let total_str = format_price(state.character.gold_cp);
+            vec![
+                format!(
+                    "{} buys your {} for {}.",
+                    merchant.name, item.name, price_str
+                ),
+                format!("You now have {}.", total_str),
+            ]
+        }
+        parser::resolver::ResolveResult::Ambiguous(matches) => {
+            let names: Vec<&str> = matches.iter()
+                .map(|(_, name)| name.as_str())
+                .collect();
+            vec![format!(
+                "Which item do you want to sell? ({})",
+                names.join(", ")
+            )]
+        }
+        parser::resolver::ResolveResult::NotFound => {
+            vec![format!("You don't have any '{}'.", item_name)]
+        }
+    }
+}
+
 // Helper methods on NPC for narration
 impl state::Npc {
     pub fn role_description(&self) -> &'static str {
@@ -8094,15 +8396,21 @@ impl state::Npc {
             None => fallback_flavor,
         };
 
-        vec![
+        let mut lines: Vec<String> = vec![
             format!("{} says:", self.name),
             greeting.to_string(),
-            flavor,
+            flavor.to_string(),
             objective_hint.unwrap_or_default().to_string(),
         ]
         .into_iter()
         .filter(|line| !line.is_empty())
-        .collect()
+        .collect();
+
+        if self.role == state::NpcRole::Merchant {
+            lines.push("(You can 'buy <item>' or 'sell <item>' here.)".to_string());
+        }
+
+        lines
     }
 }
 
