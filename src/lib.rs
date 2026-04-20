@@ -6267,7 +6267,28 @@ fn resolve_use_item(
                 }
                 Some(state::ItemType::Consumable { ref effect }) => {
                     let result = match effect.as_str() {
+                        "heal_srd_potion" => {
+                            // SRD 5.1 Potion of Healing: 2d4 + 2 HP.
+                            let rolls = rules::dice::roll_dice(rng, 2, 4);
+                            let roll_total: i32 = rolls.iter().sum::<i32>() + 2;
+                            let old_hp = state.character.current_hp;
+                            state.character.current_hp = (state.character.current_hp + roll_total).min(state.character.max_hp);
+                            let healed = state.character.current_hp - old_hp;
+                            if healed > 0 {
+                                vec![narration::templates::USE_HEAL
+                                    .replace("{item}", &name)
+                                    .replace("{roll}", &healed.to_string())
+                                    .replace("{current}", &state.character.current_hp.to_string())
+                                    .replace("{max}", &state.character.max_hp.to_string())]
+                            } else {
+                                vec![narration::templates::USE_HEAL_FULL
+                                    .replace("{item}", &name)
+                                    .replace("{current}", &state.character.current_hp.to_string())
+                                    .replace("{max}", &state.character.max_hp.to_string())]
+                            }
+                        }
                         "heal_1d8" => {
+                            // Legacy effect code for testing (1d8 healing).
                             let rolls = rules::dice::roll_dice(rng, 1, 8);
                             let roll_total: i32 = rolls.iter().sum();
                             let old_hp = state.character.current_hp;
@@ -12576,6 +12597,38 @@ mod tests {
             new_state.character.current_hp <= new_state.character.max_hp,
             "HP should not exceed max_hp"
         );
+    }
+
+    #[test]
+    fn test_srd_potion_of_healing_heals_2d4_plus_2() {
+        // SRD 5.1 Potion of Healing: 2d4 + 2 HP healing.
+        // Test across multiple seeds to verify the range (min 4, max 10).
+        let mut min_heal = i32::MAX;
+        let mut max_heal = i32::MIN;
+
+        for seed in 0..50 {
+            let mut state = create_test_exploration_state();
+            state.rng_seed = seed;
+            state.character.current_hp = 1; // Start low so heal is never capped
+
+            give_consumable_to_player(&mut state, "Healing Potion", "A potion.", "heal_srd_potion");
+            let old_hp = state.character.current_hp;
+
+            let state_json = serde_json::to_string(&state).unwrap();
+            let output = process_input(&state_json, "use healing potion");
+
+            let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+            let healed = new_state.character.current_hp - old_hp;
+
+            if healed > 0 {
+                min_heal = min_heal.min(healed);
+                max_heal = max_heal.max(healed);
+            }
+        }
+
+        // 2d4 + 2 ranges from 4 (1+1+2) to 10 (4+4+2)
+        assert!(min_heal >= 4, "Min heal should be at least 4 (2d4+2 minimum), got {}", min_heal);
+        assert!(max_heal <= 10, "Max heal should be at most 10 (2d4+2 maximum), got {}", max_heal);
     }
 
     #[test]
