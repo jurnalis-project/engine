@@ -665,6 +665,8 @@ pub struct AttackResult {
     pub hit: bool,
     pub natural_20: bool,
     pub natural_1: bool,
+    pub attack_roll_first: i32,
+    pub attack_roll_second: Option<i32>,
     pub attack_roll: i32,
     pub total_attack: i32,
     pub target_ac: i32,
@@ -677,6 +679,26 @@ pub struct AttackResult {
     /// Rogue Sneak Attack eligibility (which requires advantage, or an
     /// ally adjacent to the target).
     pub attacker_had_advantage: bool,
+}
+
+pub fn format_attack_roll_details(result: &AttackResult, modifier: i32) -> String {
+    match result.attack_roll_second {
+        Some(other_roll) if result.disadvantage => format!(
+            "{} / {} -> {} ({})",
+            result.attack_roll_first,
+            other_roll,
+            result.attack_roll,
+            format_roll(result.attack_roll, modifier, result.total_attack),
+        ),
+        Some(other_roll) if result.attacker_had_advantage => format!(
+            "{} / {} -> {} ({})",
+            result.attack_roll_first,
+            other_roll,
+            result.attack_roll,
+            format_roll(result.attack_roll, modifier, result.total_attack),
+        ),
+        _ => format_roll(result.attack_roll, modifier, result.total_attack),
+    }
 }
 
 /// Determine if the player's weapon attack is ranged based on target distance and weapon.
@@ -896,6 +918,8 @@ pub fn resolve_player_attack(
         hit,
         natural_20,
         natural_1,
+        attack_roll_first: roll1,
+        attack_roll_second: if disadvantage || attacker_has_advantage { Some(roll2) } else { None },
         attack_roll,
         total_attack,
         target_ac: effective_ac,
@@ -997,6 +1021,8 @@ pub fn resolve_npc_attack(
         hit,
         natural_20,
         natural_1,
+        attack_roll_first: roll1,
+        attack_roll_second: if use_disadvantage || use_advantage { Some(roll2) } else { None },
         attack_roll,
         total_attack,
         target_ac: effective_player_ac,
@@ -1086,8 +1112,6 @@ fn resolve_npc_attack_action(
         let player_ac = crate::equipment::calculate_ac(&state.character, &state.world.items);
         let player_dodging = combat.player_dodging;
         let result = resolve_npc_attack(rng, &attack, player_ac, player_dodging, distance, npc_conditions, player_conditions, iter_disadv, &combat.player_cover);
-        let disadv = if result.disadvantage { " (with disadvantage)" } else { "" };
-
         if result.hit {
             let was_dying = state.character.current_hp <= 0;
             state.character.current_hp -= result.damage;
@@ -1095,10 +1119,10 @@ fn resolve_npc_attack_action(
                 lines.push(format!("{} {} {} -- CRITICAL HIT! {} {} damage!",
                     npc_name, verb, result.weapon_name, result.damage, result.damage_type));
             } else {
-                lines.push(format!("{} {} {} ({} vs AC {}){} -- hit for {} {} damage.",
+                lines.push(format!("{} {} {} ({} vs AC {}) -- hit for {} {} damage.",
                     npc_name, verb, result.weapon_name,
-                    format_roll(result.attack_roll, attack.hit_bonus, result.total_attack),
-                    player_ac, disadv,
+                    format_attack_roll_details(&result, attack.hit_bonus),
+                    player_ac,
                     result.damage, result.damage_type));
             }
             // Damage-while-dying: if the player was already at 0 HP when
@@ -1112,10 +1136,10 @@ fn resolve_npc_attack_action(
         } else if result.natural_1 {
             lines.push(format!("{} {} {} -- natural 1, miss!", npc_name, verb, result.weapon_name));
         } else {
-            lines.push(format!("{} {} {} ({} vs AC {}){} -- miss.",
+            lines.push(format!("{} {} {} ({} vs AC {}) -- miss.",
                 npc_name, verb, result.weapon_name,
-                format_roll(result.attack_roll, attack.hit_bonus, result.total_attack),
-                player_ac, disadv));
+                format_attack_roll_details(&result, attack.hit_bonus),
+                player_ac));
         }
     }
     lines
@@ -3534,10 +3558,8 @@ mod tests {
         );
     }
 
-    // Hypothesis (Bug 3): Dodge disadvantage is not surfaced in attack output because
-    // resolve_npc_turn format strings show only the resulting d20 roll with no label
-    // indicating two dice were rolled. Fix: append "(with disadvantage)" when
-    // result.disadvantage is true.
+    // Dodge disadvantage should surface both raw d20 rolls inline so the
+    // player can see which lower die was chosen.
     #[test]
     fn test_dodge_disadvantage_shown_in_npc_attack_text() {
         let state = test_state_with_goblin();
@@ -3560,13 +3582,13 @@ mod tests {
             if all.contains("CRITICAL HIT") || all.contains("natural 1") {
                 continue;
             }
-            if all.contains("(with disadvantage)") {
+            if all.contains(" -> ") && all.contains(" vs AC ") {
                 found_disadvantage_text = true;
                 break;
             }
         }
         assert!(found_disadvantage_text,
-            "NPC attack output should contain '(with disadvantage)' when player is dodging");
+            "NPC attack output should show both d20 rolls and the chosen die when player is dodging");
     }
 
     #[test]
@@ -3585,9 +3607,33 @@ mod tests {
             let mut test_combat = combat.clone();
             let lines = resolve_npc_turn(&mut test_rng, 0, &mut test_state, &mut test_combat);
             let all = lines.join("\n");
-            assert!(!all.contains("(with disadvantage)"),
-                "Should not show disadvantage text when player is not dodging. Got: {}", all);
+            assert!(!all.contains(" -> "),
+                "Should not show dual-roll attack text when player is not dodging. Got: {}", all);
         }
+    }
+
+    #[test]
+    fn test_format_attack_roll_details_shows_both_disadvantage_d20s() {
+        let result = AttackResult {
+            hit: false,
+            natural_20: false,
+            natural_1: false,
+            attack_roll_first: 17,
+            attack_roll_second: Some(4),
+            attack_roll: 4,
+            total_attack: 7,
+            target_ac: 15,
+            damage: 0,
+            damage_type: DamageType::Slashing,
+            weapon_name: "Longsword".to_string(),
+            disadvantage: true,
+            attacker_had_advantage: false,
+        };
+
+        assert_eq!(
+            format_attack_roll_details(&result, 3),
+            "17 / 4 -> 4 (4+3=7)"
+        );
     }
 
     // ---- Action Economy tests ----
@@ -4071,6 +4117,8 @@ mod tests {
             hit,
             natural_20: false,
             natural_1: false,
+            attack_roll_first: if hit { 15 } else { 5 },
+            attack_roll_second: None,
             attack_roll: if hit { 15 } else { 5 },
             total_attack: if hit { 20 } else { 8 },
             target_ac: 13,

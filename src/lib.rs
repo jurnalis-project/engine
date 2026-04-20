@@ -312,6 +312,55 @@ fn emit_disambiguation_with_suffix(
     resolver::format_disambiguation(matches)
 }
 
+fn format_unknown_command_message(input: &str, in_combat: bool) -> String {
+    let trimmed = input.trim();
+    let verb = trimmed
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_lowercase();
+    let hint = if in_combat {
+        combat_unknown_command_hint(&verb)
+    } else {
+        exploration_unknown_command_hint(&verb)
+    };
+
+    if in_combat {
+        format!("Unknown combat command: \"{}\". {}", trimmed, hint)
+    } else {
+        format!("I don't understand \"{}\". {}", trimmed, hint)
+    }
+}
+
+fn exploration_unknown_command_hint(verb: &str) -> &'static str {
+    match verb {
+        "jump" | "climb" | "crawl" | "run" | "sprint" => {
+            "Try `go <direction>`, `look`, `map`, or `help movement`."
+        }
+        "open" | "close" | "push" | "pull" | "press" | "unlock" => {
+            "Try `look <target>`, `use <item>`, `take <item>`, or `help interaction`."
+        }
+        "greet" | "persuade" | "question" => {
+            "Try `talk <name>`, `look`, or `help interaction`."
+        }
+        _ => "Try `look`, `go <direction>`, `talk <name>`, `inventory`, or `help`.",
+    }
+}
+
+fn combat_unknown_command_hint(verb: &str) -> &'static str {
+    match verb {
+        "jump" | "charge" | "rush" | "run" | "sprint" => {
+            "Try `approach <target>`, `retreat`, `dash`, or `help combat`."
+        }
+        "defend" | "block" | "brace" | "parry" => {
+            "Try `dodge`, `take cover`, `disengage`, or `help combat`."
+        }
+        _ => {
+            "Try `attack <target>`, `approach <target>`, `dodge`, `end turn`, or `help combat`."
+        }
+    }
+}
+
 fn handle_creation(state: &mut GameState, input: &str, step: CreationStep) -> Vec<String> {
     let input = input.trim();
     match step {
@@ -2534,7 +2583,7 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
                 vec![]
             } else if s.to_lowercase() == input.trim().to_lowercase() {
                 // The parser echoed the raw user input — it's truly unrecognised.
-                vec![narration::templates::UNKNOWN_COMMAND.replace("{input}", &s)]
+                vec![format_unknown_command_message(&s, false)]
             } else {
                 // The parser generated a disambiguation hint — return it directly.
                 vec![s]
@@ -2986,12 +3035,6 @@ fn resolve_single_npc_attack(
     } else {
         "fires"
     };
-    let disadv = if result.disadvantage {
-        " (with disadvantage)"
-    } else {
-        ""
-    };
-
     if result.hit {
         state.character.current_hp -= result.damage;
         if result.natural_20 {
@@ -3001,13 +3044,12 @@ fn resolve_single_npc_attack(
             ));
         } else {
             lines.push(format!(
-                "{} {} {} ({} vs AC {}){} -- hit for {} {} damage.",
+                "{} {} {} ({} vs AC {}) -- hit for {} {} damage.",
                 npc_name,
                 verb,
                 result.weapon_name,
-                format_roll(result.attack_roll, attack.hit_bonus, result.total_attack),
+                combat::format_attack_roll_details(&result, attack.hit_bonus),
                 player_ac,
-                disadv,
                 result.damage,
                 result.damage_type
             ));
@@ -3022,13 +3064,12 @@ fn resolve_single_npc_attack(
         ));
     } else {
         lines.push(format!(
-            "{} {} {} ({} vs AC {}){} -- miss.",
+            "{} {} {} ({} vs AC {}) -- miss.",
             npc_name,
             verb,
             result.weapon_name,
-            format_roll(result.attack_roll, attack.hit_bonus, result.total_attack),
-            player_ac,
-            disadv
+            combat::format_attack_roll_details(&result, attack.hit_bonus),
+            player_ac
         ));
     }
     lines
@@ -3792,10 +3833,9 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                             lines.push(format!(
                                 "You punch {} ({} vs AC {}) -- hit for {} {} damage.",
                                 npc_name,
-                                format_roll(
-                                    result.attack_roll,
+                                combat::format_attack_roll_details(
+                                    &result,
                                     result.total_attack - result.attack_roll,
-                                    result.total_attack
                                 ),
                                 target_ac,
                                 result.damage,
@@ -3806,10 +3846,9 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                                 "You attack {} with {} ({} vs AC {}) -- hit for {} {} damage.",
                                 npc_name,
                                 result.weapon_name,
-                                format_roll(
-                                    result.attack_roll,
+                                combat::format_attack_roll_details(
+                                    &result,
                                     result.total_attack - result.attack_roll,
-                                    result.total_attack
                                 ),
                                 target_ac,
                                 result.damage,
@@ -3841,16 +3880,12 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                             "You attack {} with {} ({} vs AC {}) -- miss.",
                             npc_name,
                             result.weapon_name,
-                            format_roll(
-                                result.attack_roll,
+                            combat::format_attack_roll_details(
+                                &result,
                                 result.total_attack - result.attack_roll,
-                                result.total_attack
                             ),
                             target_ac
                         ));
-                    }
-                    if result.disadvantage {
-                        lines.push("(Rolled with disadvantage)".to_string());
                     }
 
                     // Apply damage (honoring stat-block resistances/immunities)
@@ -5898,10 +5933,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
             }
             if s.to_lowercase() == input.trim().to_lowercase() {
                 // Echo of raw user input — truly unrecognised.
-                return vec![format!(
-                    "Unknown combat command: \"{}\". Type 'help' for commands.",
-                    s
-                )];
+                return vec![format_unknown_command_message(&s, true)];
             }
             // Parser-generated hint — return directly without wrapping.
             return vec![s];
@@ -10267,8 +10299,8 @@ mod tests {
             output
                 .text
                 .iter()
-                .any(|t| t.to_lowercase().contains("disadvantage")),
-            "Expected disadvantage text for ranged attack in melee. Got: {:?}",
+                .any(|t| t.contains(" -> ") && t.contains("vs AC")),
+            "Expected dual-roll disadvantage details for ranged attack in melee. Got: {:?}",
             output.text
         );
     }
@@ -10421,8 +10453,8 @@ mod tests {
         let output = process_input(&state_json, "attack test goblin");
 
         assert!(
-            output.text.iter().any(|t| t.to_lowercase().contains("disadvantage")),
-            "Ranged attack while another hostile is within 5ft should apply disadvantage. Got: {:?}",
+            output.text.iter().any(|t| t.contains(" -> ") && t.contains("vs AC")),
+            "Ranged attack while another hostile is within 5ft should show dual-roll disadvantage text. Got: {:?}",
             output.text
         );
     }
@@ -13980,6 +14012,8 @@ mod tests {
             hit: false,
             natural_20: false,
             natural_1: false,
+            attack_roll_first: 10,
+            attack_roll_second: None,
             attack_roll: 10,
             total_attack: 14,
             target_ac: 15,
@@ -14002,6 +14036,8 @@ mod tests {
             hit: true,
             natural_20: false,
             natural_1: false,
+            attack_roll_first: 15,
+            attack_roll_second: None,
             attack_roll: 15,
             total_attack: 20,
             target_ac: 15,
@@ -14023,6 +14059,8 @@ mod tests {
             hit: false,
             natural_20: false,
             natural_1: true,
+            attack_roll_first: 1,
+            attack_roll_second: None,
             attack_roll: 1,
             total_attack: 5,
             target_ac: 15,
@@ -14047,6 +14085,8 @@ mod tests {
             hit: true,
             natural_20: true,
             natural_1: false,
+            attack_roll_first: 20,
+            attack_roll_second: None,
             attack_roll: 20,
             total_attack: 25,
             target_ac: 30, // still hits because nat20
