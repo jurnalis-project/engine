@@ -337,10 +337,9 @@ fn exploration_unknown_command_hint(verb: &str) -> &'static str {
         "jump" | "climb" | "crawl" | "run" | "sprint" => {
             "Try `go <direction>`, `look`, `map`, or `help movement`."
         }
-        "open" | "close" | "push" | "pull" | "press" | "unlock" => {
-            "Try `look <target>`, `use <item>`, `take <item>`, or `help interaction`."
+        "greet" | "persuade" | "question" => {
+            "Try `talk <name>`, `look`, or `help interaction`."
         }
-        "greet" | "persuade" | "question" => "Try `talk <name>`, `look`, or `help interaction`.",
         _ => "Try `look`, `go <direction>`, `talk <name>`, `inventory`, or `help`.",
     }
 }
@@ -1674,6 +1673,107 @@ fn handle_look_target(state: &mut GameState, target: &str) -> Vec<String> {
     }
 }
 
+/// Handle scenery interaction verbs (open, close, push, pull, press, unlock,
+/// force, attack) by resolving the target and providing appropriate feedback.
+///
+/// If the target matches a room feature, returns a message explaining that
+/// the feature is decorative scenery and cannot be mechanically interacted with.
+/// If the target doesn't match anything visible, returns a "not found" message.
+/// For ambiguous matches, emits a disambiguation prompt.
+fn handle_scenery_interaction(state: &mut GameState, target: &str, verb: &str) -> Vec<String> {
+    // Build candidate list: room features, NPCs, items
+    let mut owned_candidates = room_feature_candidates(state);
+    owned_candidates.extend(npc_candidates(state));
+    owned_candidates.extend(room_item_candidates(state));
+
+    let candidates: Vec<(usize, &str)> = owned_candidates
+        .iter()
+        .map(|(id, name)| (*id, name.as_str()))
+        .collect();
+
+    match resolver::resolve_target(target, &candidates) {
+        ResolveResult::Found(id) => {
+            if id & ROOM_FEATURE_TAG != 0 {
+                // Target is a room feature
+                let feature_index = id & !ROOM_FEATURE_TAG;
+                if let Some(loc) = state.world.locations.get(&state.current_location) {
+                    if let Some(feature) = loc.room_features.get(feature_index) {
+                        // Provide scenery-specific feedback based on the verb
+                        let feature_name = &feature.name;
+                        return match verb {
+                            "attack" => vec![format!(
+                                "The {} is part of the scenery. You cannot attack it.",
+                                feature_name
+                            )],
+                            "open" | "close" => vec![format!(
+                                "The {} doesn't appear to {} that way.",
+                                feature_name, verb
+                            )],
+                            "unlock" => vec![format!(
+                                "The {} doesn't have a lock you can interact with.",
+                                feature_name
+                            )],
+                            "force" => vec![format!(
+                                "The {} is firmly fixed in place. You cannot force it.",
+                                feature_name
+                            )],
+                            "push" | "pull" | "press" => vec![format!(
+                                "You {} the {}, but nothing happens.",
+                                verb, feature_name
+                            )],
+                            _ => vec![format!(
+                                "The {} is decorative scenery — you cannot {} it.",
+                                feature_name, verb
+                            )],
+                        };
+                    }
+                }
+            } else if id & NPC_TAG != 0 {
+                // Target is an NPC
+                let npc_id = (id & !NPC_TAG) as u32;
+                if let Some(npc) = state.world.npcs.get(&npc_id) {
+                    return match verb {
+                        "attack" => vec![format!(
+                            "{} is not hostile. Start a conversation with `talk {}` instead.",
+                            npc.name, npc.name.to_lowercase()
+                        )],
+                        "open" | "close" | "unlock" | "force" => vec![format!(
+                            "You cannot {} {}.",
+                            verb, npc.name
+                        )],
+                        _ => vec![format!(
+                            "{} looks at you quizzically.",
+                            npc.name
+                        )],
+                    };
+                }
+            } else {
+                // Target is an item
+                let item_id = id as u32;
+                if let Some(item) = state.world.items.get(&item_id) {
+                    return match verb {
+                        "attack" => vec![format!(
+                            "The {} is an item, not an enemy. Try `take {}` to pick it up.",
+                            item.name, item.name.to_lowercase()
+                        )],
+                        "open" => vec![format!(
+                            "You cannot open the {}. Try `examine {}` to inspect it.",
+                            item.name, item.name.to_lowercase()
+                        )],
+                        _ => vec![format!(
+                            "You cannot {} the {}. Try `use {}` or `take {}` instead.",
+                            verb, item.name, item.name.to_lowercase(), item.name.to_lowercase()
+                        )],
+                    };
+                }
+            }
+            vec![format!("You don't see any \"{}\" here.", target)]
+        }
+        ResolveResult::Ambiguous(matches) => emit_disambiguation(state, verb, &matches),
+        ResolveResult::NotFound => vec![format!("You don't see any \"{}\" here.", target)],
+    }
+}
+
 fn resolve_search_trigger(
     state: &mut GameState,
     rng: &mut StdRng,
@@ -2598,8 +2698,37 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
                 }
             }
         }
-        Command::Attack(_)
-        | Command::Approach(_)
+        // ---- Scenery interaction verbs (feat/env-interaction-affordances) ----
+        // These provide helpful feedback when players try to interact with room
+        // features in ways the engine doesn't support mechanically.
+        Command::Open(target) => handle_scenery_interaction(state, &target, "open"),
+        Command::Close(target) => handle_scenery_interaction(state, &target, "close"),
+        Command::Push(target) => handle_scenery_interaction(state, &target, "push"),
+        Command::Pull(target) => handle_scenery_interaction(state, &target, "pull"),
+        Command::Press(target) => handle_scenery_interaction(state, &target, "press"),
+        Command::Unlock(target) => handle_scenery_interaction(state, &target, "unlock"),
+        Command::Force(target) => handle_scenery_interaction(state, &target, "force"),
+        Command::Attack(target) => {
+            // In exploration mode, provide contextual feedback for attack attempts.
+            // - Room features: "scenery" rejection
+            // - NPCs: "not hostile" message with talk suggestion
+            // - Items: suggest take/use instead
+            // - Unknown target: "not in combat" generic error
+            let mut owned_candidates = room_feature_candidates(state);
+            owned_candidates.extend(npc_candidates(state));
+            owned_candidates.extend(room_item_candidates(state));
+            let candidates: Vec<(usize, &str)> = owned_candidates
+                .iter()
+                .map(|(id, name)| (*id, name.as_str()))
+                .collect();
+            if let ResolveResult::Found(_) = resolver::resolve_target(&target, &candidates) {
+                // Target is something visible; delegate to scenery handler
+                return handle_scenery_interaction(state, &target, "attack");
+            }
+            // Target not found among visible entities; fall through to generic error
+            vec!["You're not in combat.".to_string()]
+        }
+        Command::Approach(_)
         | Command::Retreat
         | Command::Dodge
         | Command::Disengage
@@ -9706,6 +9835,197 @@ mod tests {
         assert_eq!(output.text[0], "Which do you mean?");
         assert!(output.text.iter().any(|line| line.contains("stone door")));
         assert!(output.text.iter().any(|line| line.contains("wooden door")));
+    }
+
+    // ---- Scenery interaction verbs (feat/env-interaction-affordances) ----
+
+    #[test]
+    fn test_open_room_feature_returns_scenery_feedback() {
+        let mut state = create_test_exploration_state();
+        let loc = state
+            .world
+            .locations
+            .get_mut(&state.current_location)
+            .unwrap();
+        loc.room_features = vec![state::RoomFeature {
+            name: "door".to_string(),
+            description: "Age-darkened wood and iron bands.".to_string(),
+        }];
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "open door");
+        let all_text = output.text.join("\n");
+
+        assert!(
+            all_text.contains("door") && all_text.to_lowercase().contains("open"),
+            "Expected scenery feedback about opening door. Got: {}",
+            all_text
+        );
+        // Should not say "You're not in combat"
+        assert!(
+            !all_text.contains("not in combat"),
+            "Should not return combat error. Got: {}",
+            all_text
+        );
+    }
+
+    #[test]
+    fn test_attack_room_feature_returns_scenery_rejection() {
+        let mut state = create_test_exploration_state();
+        let loc = state
+            .world
+            .locations
+            .get_mut(&state.current_location)
+            .unwrap();
+        loc.room_features = vec![state::RoomFeature {
+            name: "door".to_string(),
+            description: "Age-darkened wood and iron bands.".to_string(),
+        }];
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "attack door");
+        let all_text = output.text.join("\n");
+
+        assert!(
+            all_text.contains("scenery") && all_text.contains("door"),
+            "Expected scenery rejection for attacking door. Got: {}",
+            all_text
+        );
+        // Should not say "You're not in combat"
+        assert!(
+            !all_text.contains("not in combat"),
+            "Should not return combat error. Got: {}",
+            all_text
+        );
+    }
+
+    #[test]
+    fn test_attack_non_feature_target_returns_combat_error() {
+        let mut state = create_test_exploration_state();
+        // No room features that match "goblin"
+        let loc = state
+            .world
+            .locations
+            .get_mut(&state.current_location)
+            .unwrap();
+        loc.room_features.clear();
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "attack goblin");
+        let all_text = output.text.join("\n");
+
+        // When not targeting a room feature, should return the normal error
+        assert!(
+            all_text.contains("not in combat"),
+            "Expected 'not in combat' for non-scenery attack. Got: {}",
+            all_text
+        );
+    }
+
+    #[test]
+    fn test_push_room_feature_returns_feedback() {
+        let mut state = create_test_exploration_state();
+        let loc = state
+            .world
+            .locations
+            .get_mut(&state.current_location)
+            .unwrap();
+        loc.room_features = vec![state::RoomFeature {
+            name: "lever".to_string(),
+            description: "A rusted iron lever protrudes from the wall.".to_string(),
+        }];
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "push lever");
+        let all_text = output.text.join("\n");
+
+        assert!(
+            all_text.contains("push") && all_text.contains("lever"),
+            "Expected feedback about pushing lever. Got: {}",
+            all_text
+        );
+    }
+
+    #[test]
+    fn test_force_room_feature_returns_feedback() {
+        let mut state = create_test_exploration_state();
+        let loc = state
+            .world
+            .locations
+            .get_mut(&state.current_location)
+            .unwrap();
+        loc.room_features = vec![state::RoomFeature {
+            name: "door".to_string(),
+            description: "A heavy iron door.".to_string(),
+        }];
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "force door");
+        let all_text = output.text.join("\n");
+
+        assert!(
+            all_text.contains("door") && (all_text.contains("firmly") || all_text.contains("force")),
+            "Expected feedback about forcing door. Got: {}",
+            all_text
+        );
+    }
+
+    #[test]
+    fn test_scenery_verb_on_missing_target_returns_not_found() {
+        let mut state = create_test_exploration_state();
+        let loc = state
+            .world
+            .locations
+            .get_mut(&state.current_location)
+            .unwrap();
+        loc.room_features.clear();
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "open chest");
+        let all_text = output.text.join("\n");
+
+        assert!(
+            all_text.contains("don't see") || all_text.to_lowercase().contains("chest"),
+            "Expected 'don't see' or target name in response. Got: {}",
+            all_text
+        );
+    }
+
+    #[test]
+    fn test_scenery_verb_on_npc_returns_appropriate_feedback() {
+        let mut state = create_test_exploration_state();
+        let npc_id = 999;
+        state.world.npcs.insert(
+            npc_id,
+            state::Npc {
+                id: npc_id,
+                name: "Marcus".to_string(),
+                role: state::NpcRole::Guard,
+                disposition: state::Disposition::Neutral,
+                dialogue_tags: vec![],
+                location: state.current_location,
+                combat_stats: None,
+                conditions: vec![],
+            },
+        );
+        state
+            .world
+            .locations
+            .get_mut(&state.current_location)
+            .unwrap()
+            .npcs
+            .push(npc_id);
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "attack marcus");
+        let all_text = output.text.join("\n");
+
+        // Should mention the NPC and suggest talking instead
+        assert!(
+            all_text.contains("Marcus") && (all_text.contains("hostile") || all_text.contains("talk")),
+            "Expected NPC-specific feedback. Got: {}",
+            all_text
+        );
     }
 
     #[test]
