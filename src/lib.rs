@@ -3492,11 +3492,50 @@ fn append_player_turn_prompt(
         status(combat.free_interaction_used),
     ));
     lines.extend(combat::format_enemy_summary(state, combat));
-    lines.push(
-        "Commands: attack <target>, approach <target>, retreat, dodge, disengage, dash, end turn"
-            .to_string(),
-    );
+
+    // Build the commands prompt, conditionally including spell hints for casters
+    let has_spells = !state.character.known_spells.is_empty();
+    let has_slots_or_cantrips = has_spells; // cantrips are always usable
+
+    if has_slots_or_cantrips {
+        lines.push(
+            "Commands: attack <target>, approach <target>, retreat, cast <spell> [at <target>], dodge, dash, end turn"
+                .to_string(),
+        );
+        // Build a concise spell slot status line
+        let slot_summary = format_spell_slot_summary(&state.character.spell_slots_remaining, &state.character.spell_slots_max);
+        lines.push(format!(
+            "Spells: {} | Use 'spells' for full list.",
+            slot_summary
+        ));
+    } else {
+        lines.push(
+            "Commands: attack <target>, approach <target>, retreat, dodge, disengage, dash, end turn"
+                .to_string(),
+        );
+    }
     lines.push("Bonus actions: bonus dash, offhand attack <target>. Reactions: respond yes/no when prompted.".to_string());
+}
+
+/// Format a concise spell slot summary for the combat prompt.
+/// Example: "2/2 L1 slots" or "1/2 L1, 0/1 L2" or "cantrips only"
+fn format_spell_slot_summary(remaining: &[i32], max: &[i32]) -> String {
+    if max.is_empty() || max.iter().all(|&m| m == 0) {
+        return "cantrips only".to_string();
+    }
+
+    let mut parts: Vec<String> = Vec::new();
+    for (i, (rem, mx)) in remaining.iter().zip(max.iter()).enumerate() {
+        if *mx > 0 {
+            parts.push(format!("{}/{} L{}", rem, mx, i + 1));
+        }
+    }
+
+    if parts.is_empty() {
+        "cantrips only".to_string()
+    } else {
+        parts.join(", ")
+    }
 }
 
 fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
@@ -11152,6 +11191,121 @@ mod tests {
         assert!(
             joined.contains("reaction") || joined.contains("yes/no"),
             "Combat help should mention reactions, got: {:?}",
+            output.text
+        );
+    }
+
+    #[test]
+    fn test_combat_help_mentions_spells() {
+        // Issue #182: Combat help should mention spellcasting commands.
+        let state = create_test_combat_state();
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "help combat");
+
+        let joined = output.text.join("\n").to_lowercase();
+        assert!(
+            joined.contains("cast"),
+            "Combat help should mention 'cast' command, got: {:?}",
+            output.text
+        );
+        assert!(
+            joined.contains("spells"),
+            "Combat help should mention 'spells' command, got: {:?}",
+            output.text
+        );
+    }
+
+    // ---- Caster Combat UX (issue #182) ----
+
+    #[test]
+    fn test_wizard_combat_prompt_shows_spell_commands() {
+        // Issue #182: Wizard combat prompt should mention spell commands.
+        let mut state = create_test_combat_state();
+        // Replace character with wizard
+        let wizard = make_wizard_for_shield();
+        state.character.class = wizard.class;
+        state.character.known_spells = wizard.known_spells;
+        state.character.spell_slots_max = wizard.spell_slots_max.clone();
+        state.character.spell_slots_remaining = wizard.spell_slots_max;
+        state.character.ability_scores = wizard.ability_scores;
+
+        force_player_turn(&mut state);
+
+        // Trigger turn prompt via an action that doesn't end turn
+        if let Some(ref mut combat) = state.active_combat {
+            combat.distances.insert(100, 30);
+        }
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "approach test goblin");
+
+        let joined = output.text.join("\n").to_lowercase();
+        assert!(
+            joined.contains("cast"),
+            "Wizard combat prompt should mention 'cast', got: {:?}",
+            output.text
+        );
+    }
+
+    #[test]
+    fn test_wizard_combat_prompt_shows_spell_slots() {
+        // Issue #182: Wizard combat prompt should show spell slot status.
+        let mut state = create_test_combat_state();
+        // Replace character with wizard
+        let wizard = make_wizard_for_shield();
+        state.character.class = wizard.class;
+        state.character.known_spells = wizard.known_spells;
+        state.character.spell_slots_max = wizard.spell_slots_max.clone();
+        state.character.spell_slots_remaining = wizard.spell_slots_max;
+        state.character.ability_scores = wizard.ability_scores;
+
+        force_player_turn(&mut state);
+
+        // Trigger turn prompt via an action that doesn't end turn
+        if let Some(ref mut combat) = state.active_combat {
+            combat.distances.insert(100, 30);
+        }
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "approach test goblin");
+
+        let joined = output.text.join("\n").to_lowercase();
+        assert!(
+            joined.contains("spells") || joined.contains("slots") || joined.contains("l1"),
+            "Wizard combat prompt should show spell slot status, got: {:?}",
+            output.text
+        );
+    }
+
+    #[test]
+    fn test_fighter_combat_prompt_does_not_show_spell_commands() {
+        // Issue #182: Non-caster prompt should remain concise (no spell hints).
+        let state = create_test_combat_state(); // Fighter by default
+
+        let mut state_with_turn = state;
+        force_player_turn(&mut state_with_turn);
+
+        // Trigger turn prompt via an action that doesn't end turn
+        if let Some(ref mut combat) = state_with_turn.active_combat {
+            combat.distances.insert(100, 30);
+        }
+        let state_json = serde_json::to_string(&state_with_turn).unwrap();
+        let output = process_input(&state_json, "approach test goblin");
+
+        // Find the Commands line
+        let commands_line = output.text.iter().find(|line| line.contains("Commands:"));
+        if let Some(line) = commands_line {
+            // The fighter's Commands line should NOT mention cast
+            assert!(
+                !line.to_lowercase().contains("cast"),
+                "Fighter combat Commands line should not mention 'cast', got: {}",
+                line
+            );
+        }
+
+        // Fighter should not see a "Spells:" line
+        let spells_line = output.text.iter().find(|line| line.starts_with("Spells:"));
+        assert!(
+            spells_line.is_none(),
+            "Fighter combat prompt should not have 'Spells:' line, got: {:?}",
             output.text
         );
     }

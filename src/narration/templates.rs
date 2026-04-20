@@ -308,8 +308,8 @@ fn overview_help(phase: HelpPhase) -> Vec<String> {
             "Commands overview (combat):".to_string(),
             format!("Topics: {}.", phase.valid_topics().join(", ")),
             "Type 'help <topic>' for focused guidance.".to_string(),
-            "Quick start: attack <target>, approach <target>, retreat, dodge, dash, end turn.".to_string(),
-            "Utility commands still available: look, inventory, character, equip, unequip, help, objective, map.".to_string(),
+            "Quick start: attack <target>, approach <target>, retreat, dodge, dash, cast <spell>, end turn.".to_string(),
+            "Utility commands still available: look, inventory, character, spells, equip, unequip, help, objective, map.".to_string(),
         ],
     }
 }
@@ -376,6 +376,7 @@ fn topic_help(topic: &str, phase: HelpPhase) -> Vec<String> {
             "Combat starts automatically when hostile NPCs are present.".to_string(),
             "When combat starts, these commands unlock: attack, approach, retreat, dodge, disengage, dash, end turn.".to_string(),
             "Use 'help actions' for action/bonus/reaction guidance and signature options like rage, grapple, and shove.".to_string(),
+            "Spellcasters can also use: cast <spell> [at <target>], spells (to view available spells/slots).".to_string(),
             "Use 'help combat' again during battle for in-combat details.".to_string(),
         ],
         ("combat", HelpPhase::Combat) => vec![
@@ -385,6 +386,8 @@ fn topic_help(topic: &str, phase: HelpPhase) -> Vec<String> {
             "  retreat - Move away from all enemies.".to_string(),
             "  grapple <target> / shove <target> / shove prone <target> - Strength-based melee control options.".to_string(),
             "  dodge / disengage / dash / rage - Tactical actions for your turn.".to_string(),
+            "  cast <spell> [at <target>] - Cast a spell (if you have spells).".to_string(),
+            "  spells - View your prepared spells and remaining slots.".to_string(),
             "  end turn - End your turn and advance initiative.".to_string(),
             "  Bonus actions (one per turn):".to_string(),
             "    bonus dash / dash as bonus - Dash using your bonus action instead.".to_string(),
