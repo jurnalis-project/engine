@@ -125,6 +125,35 @@ pub fn new_game(seed: u64, ironman_mode: bool) -> GameOutput {
     GameOutput::new(text, state_json, true)
 }
 
+/// Dev-mode entry point: load an arbitrary pre-crafted GameState JSON, bypassing
+/// character creation and world generation. Useful for targeted playtesting of
+/// specific scenarios (combat encounters, post-rest states, late-game content).
+///
+/// Returns `GameOutput` with a DEV MODE banner on success, or DEV MODE ERROR on
+/// parse failure. Only compiled when the `dev` Cargo feature is active.
+#[cfg(feature = "dev")]
+pub fn new_game_from_state(state_json: &str) -> GameOutput {
+    match serde_json::from_str::<GameState>(state_json) {
+        Ok(state) => {
+            let validated_json = serde_json::to_string(&state).unwrap();
+            let text = vec![
+                "=== DEV MODE ===".to_string(),
+                "State loaded successfully.".to_string(),
+                format!("Character: {} (Level {} {})", state.character.name, state.character.level, state.character.class),
+                format!("Phase: {:?}", state.game_phase),
+            ];
+            GameOutput::new(text, validated_json, true)
+        }
+        Err(e) => {
+            let text = vec![
+                "=== DEV MODE ERROR ===".to_string(),
+                format!("Failed to parse state JSON: {}", e),
+            ];
+            GameOutput::new(text, String::new(), false)
+        }
+    }
+}
+
 pub fn process_input(state_json: &str, input: &str) -> GameOutput {
     let mut state: GameState = match serde_json::from_str(state_json) {
         Ok(s) => s,
@@ -343,9 +372,6 @@ fn exploration_unknown_command_hint(verb: &str) -> &'static str {
         "jump" | "climb" | "crawl" | "run" | "sprint" => {
             "Try `go <direction>`, `look`, `map`, or `help movement`."
         }
-        "open" | "close" | "push" | "pull" | "press" | "unlock" => {
-            "Try `look <target>`, `use <item>`, `take <item>`, or `help interaction`."
-        }
         "greet" | "persuade" | "question" => {
             "Try `talk <name>`, `look`, or `help interaction`."
         }
@@ -361,9 +387,7 @@ fn combat_unknown_command_hint(verb: &str) -> &'static str {
         "defend" | "block" | "brace" | "parry" => {
             "Try `dodge`, `take cover`, `disengage`, or `help combat`."
         }
-        _ => {
-            "Try `attack <target>`, `approach <target>`, `dodge`, `end turn`, or `help combat`."
-        }
+        _ => "Try `attack <target>`, `approach <target>`, `dodge`, `end turn`, or `help combat`.",
     }
 }
 
@@ -1375,6 +1399,9 @@ fn apply_background_effects(state: &mut GameState) {
     if !state.character.traits.contains(&feat_trait) {
         state.character.traits.push(feat_trait);
     }
+
+    // 6. Starting gold (feat/merchant-trade-support)
+    state.character.gold_cp = bg.starting_gold_cp();
 }
 
 /// Grant the starting equipment package of the character's background.
@@ -1684,6 +1711,107 @@ fn handle_look_target(state: &mut GameState, target: &str) -> Vec<String> {
     }
 }
 
+/// Handle scenery interaction verbs (open, close, push, pull, press, unlock,
+/// force, attack) by resolving the target and providing appropriate feedback.
+///
+/// If the target matches a room feature, returns a message explaining that
+/// the feature is decorative scenery and cannot be mechanically interacted with.
+/// If the target doesn't match anything visible, returns a "not found" message.
+/// For ambiguous matches, emits a disambiguation prompt.
+fn handle_scenery_interaction(state: &mut GameState, target: &str, verb: &str) -> Vec<String> {
+    // Build candidate list: room features, NPCs, items
+    let mut owned_candidates = room_feature_candidates(state);
+    owned_candidates.extend(npc_candidates(state));
+    owned_candidates.extend(room_item_candidates(state));
+
+    let candidates: Vec<(usize, &str)> = owned_candidates
+        .iter()
+        .map(|(id, name)| (*id, name.as_str()))
+        .collect();
+
+    match resolver::resolve_target(target, &candidates) {
+        ResolveResult::Found(id) => {
+            if id & ROOM_FEATURE_TAG != 0 {
+                // Target is a room feature
+                let feature_index = id & !ROOM_FEATURE_TAG;
+                if let Some(loc) = state.world.locations.get(&state.current_location) {
+                    if let Some(feature) = loc.room_features.get(feature_index) {
+                        // Provide scenery-specific feedback based on the verb
+                        let feature_name = &feature.name;
+                        return match verb {
+                            "attack" => vec![format!(
+                                "The {} is part of the scenery. You cannot attack it.",
+                                feature_name
+                            )],
+                            "open" | "close" => vec![format!(
+                                "The {} doesn't appear to {} that way.",
+                                feature_name, verb
+                            )],
+                            "unlock" => vec![format!(
+                                "The {} doesn't have a lock you can interact with.",
+                                feature_name
+                            )],
+                            "force" => vec![format!(
+                                "The {} is firmly fixed in place. You cannot force it.",
+                                feature_name
+                            )],
+                            "push" | "pull" | "press" => vec![format!(
+                                "You {} the {}, but nothing happens.",
+                                verb, feature_name
+                            )],
+                            _ => vec![format!(
+                                "The {} is decorative scenery — you cannot {} it.",
+                                feature_name, verb
+                            )],
+                        };
+                    }
+                }
+            } else if id & NPC_TAG != 0 {
+                // Target is an NPC
+                let npc_id = (id & !NPC_TAG) as u32;
+                if let Some(npc) = state.world.npcs.get(&npc_id) {
+                    return match verb {
+                        "attack" => vec![format!(
+                            "{} is not hostile. Start a conversation with `talk {}` instead.",
+                            npc.name, npc.name.to_lowercase()
+                        )],
+                        "open" | "close" | "unlock" | "force" => vec![format!(
+                            "You cannot {} {}.",
+                            verb, npc.name
+                        )],
+                        _ => vec![format!(
+                            "{} looks at you quizzically.",
+                            npc.name
+                        )],
+                    };
+                }
+            } else {
+                // Target is an item
+                let item_id = id as u32;
+                if let Some(item) = state.world.items.get(&item_id) {
+                    return match verb {
+                        "attack" => vec![format!(
+                            "The {} is an item, not an enemy. Try `take {}` to pick it up.",
+                            item.name, item.name.to_lowercase()
+                        )],
+                        "open" => vec![format!(
+                            "You cannot open the {}. Try `examine {}` to inspect it.",
+                            item.name, item.name.to_lowercase()
+                        )],
+                        _ => vec![format!(
+                            "You cannot {} the {}. Try `use {}` or `take {}` instead.",
+                            verb, item.name, item.name.to_lowercase(), item.name.to_lowercase()
+                        )],
+                    };
+                }
+            }
+            vec![format!("You don't see any \"{}\" here.", target)]
+        }
+        ResolveResult::Ambiguous(matches) => emit_disambiguation(state, verb, &matches),
+        ResolveResult::NotFound => vec![format!("You don't see any \"{}\" here.", target)],
+    }
+}
+
 fn resolve_search_trigger(
     state: &mut GameState,
     rng: &mut StdRng,
@@ -1703,7 +1831,11 @@ fn resolve_search_trigger(
                 false,
                 disadv,
             );
-            let mut lines = vec![narration::narrate_skill_check(rng, &skill.to_string(), &result)];
+            let mut lines = vec![narration::narrate_skill_check(
+                rng,
+                &skill.to_string(),
+                &result,
+            )];
             if result.success {
                 lines.push(trigger.success_text);
                 if trigger.one_shot {
@@ -1722,17 +1854,17 @@ fn resolve_search_trigger(
                 .copied()
                 .unwrap_or(10);
             let is_prof = state.character.is_proficient_in_skill(Skill::Perception);
-            let passive = rules::checks::passive_check(
-                score,
-                state.character.proficiency_bonus(),
-                is_prof,
-            );
+            let passive =
+                rules::checks::passive_check(score, state.character.proficiency_bonus(), is_prof);
             if passive >= trigger.dc {
                 if trigger.one_shot {
                     state.world.triggered.insert(trigger_id);
                 }
                 Some(vec![
-                    format!("[Passive Perception {} vs DC {} - noticed!]", passive, trigger.dc),
+                    format!(
+                        "[Passive Perception {} vs DC {} - noticed!]",
+                        passive, trigger.dc
+                    ),
                     trigger.success_text,
                 ])
             } else {
@@ -2119,7 +2251,9 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
                 ResolveResult::Found(id) => {
                     let npc_id = (id & !NPC_TAG) as u32;
                     if let Some(npc) = state.world.npcs.get(&npc_id) {
-                        npc.generate_dialogue(&mut rng)
+                        let location = state.world.locations.get(&state.current_location);
+                        let objective_hint = active_objective_dialogue_hint(state, npc_id);
+                        npc.generate_dialogue(location, objective_hint.as_deref(), &mut rng)
                     } else {
                         vec![narration::templates::NPC_NOT_FOUND.replace("{name}", &name)]
                     }
@@ -2602,8 +2736,37 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
                 }
             }
         }
-        Command::Attack(_)
-        | Command::Approach(_)
+        // ---- Scenery interaction verbs (feat/env-interaction-affordances) ----
+        // These provide helpful feedback when players try to interact with room
+        // features in ways the engine doesn't support mechanically.
+        Command::Open(target) => handle_scenery_interaction(state, &target, "open"),
+        Command::Close(target) => handle_scenery_interaction(state, &target, "close"),
+        Command::Push(target) => handle_scenery_interaction(state, &target, "push"),
+        Command::Pull(target) => handle_scenery_interaction(state, &target, "pull"),
+        Command::Press(target) => handle_scenery_interaction(state, &target, "press"),
+        Command::Unlock(target) => handle_scenery_interaction(state, &target, "unlock"),
+        Command::Force(target) => handle_scenery_interaction(state, &target, "force"),
+        Command::Attack(target) => {
+            // In exploration mode, provide contextual feedback for attack attempts.
+            // - Room features: "scenery" rejection
+            // - NPCs: "not hostile" message with talk suggestion
+            // - Items: suggest take/use instead
+            // - Unknown target: "not in combat" generic error
+            let mut owned_candidates = room_feature_candidates(state);
+            owned_candidates.extend(npc_candidates(state));
+            owned_candidates.extend(room_item_candidates(state));
+            let candidates: Vec<(usize, &str)> = owned_candidates
+                .iter()
+                .map(|(id, name)| (*id, name.as_str()))
+                .collect();
+            if let ResolveResult::Found(_) = resolver::resolve_target(&target, &candidates) {
+                // Target is something visible; delegate to scenery handler
+                return handle_scenery_interaction(state, &target, "attack");
+            }
+            // Target not found among visible entities; fall through to generic error
+            vec!["You're not in combat.".to_string()]
+        }
+        Command::Approach(_)
         | Command::Retreat
         | Command::Dodge
         | Command::Disengage
@@ -2724,6 +2887,8 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
         Command::Unattune(target) => handle_unattune_command(state, &target),
         Command::ListAttunements => handle_list_attunements(state),
         Command::UseTool { tool, target } => handle_use_tool_command(state, &tool, &target),
+        Command::Buy(item_name) => handle_buy_command(state, &item_name, &mut rng),
+        Command::Sell(item_name) => handle_sell_command(state, &item_name),
         Command::Unknown(s) => {
             if s.is_empty() {
                 vec![]
@@ -3322,7 +3487,11 @@ fn end_combat(state: &mut GameState, victory: bool) -> Vec<String> {
         // Award monster XP for every defeated foe in this combat.
         let monster_xp: u32 = dead_npc_crs.iter().map(|&cr| leveling::xp_for_cr(cr)).sum();
         let level_before = state.character.level;
-        lines.extend(leveling::award_xp(&mut state.character, monster_xp));
+        lines.extend(leveling::award_xp(
+            &mut state.character,
+            monster_xp,
+            Some("from combat"),
+        ));
         let levels_gained = state.character.level - level_before;
         apply_post_levelup_feat_bonuses(&mut state.character, levels_gained);
 
@@ -3385,6 +3554,7 @@ fn check_defeat_npc_objectives(state: &mut GameState) -> Vec<String> {
         lines.extend(leveling::award_xp(
             &mut state.character,
             leveling::OBJECTIVE_XP_REWARD * newly_completed,
+            Some("for completing the objective"),
         ));
         let levels_gained = state.character.level - level_before;
         apply_post_levelup_feat_bonuses(&mut state.character, levels_gained);
@@ -3417,6 +3587,7 @@ fn check_find_item_objectives(state: &mut GameState, item_id: u32) -> Vec<String
         lines.extend(leveling::award_xp(
             &mut state.character,
             leveling::OBJECTIVE_XP_REWARD * newly_completed,
+            Some("for completing the objective"),
         ));
         let levels_gained = state.character.level - level_before;
         apply_post_levelup_feat_bonuses(&mut state.character, levels_gained);
@@ -3490,11 +3661,50 @@ fn append_player_turn_prompt(
         status(combat.free_interaction_used),
     ));
     lines.extend(combat::format_enemy_summary(state, combat));
-    lines.push(
-        "Commands: attack <target>, approach <target>, retreat, dodge, disengage, dash, end turn"
-            .to_string(),
-    );
+
+    // Build the commands prompt, conditionally including spell hints for casters
+    let has_spells = !state.character.known_spells.is_empty();
+    let has_slots_or_cantrips = has_spells; // cantrips are always usable
+
+    if has_slots_or_cantrips {
+        lines.push(
+            "Commands: attack <target>, approach <target>, retreat, cast <spell> [at <target>], dodge, dash, end turn"
+                .to_string(),
+        );
+        // Build a concise spell slot status line
+        let slot_summary = format_spell_slot_summary(&state.character.spell_slots_remaining, &state.character.spell_slots_max);
+        lines.push(format!(
+            "Spells: {} | Use 'spells' for full list.",
+            slot_summary
+        ));
+    } else {
+        lines.push(
+            "Commands: attack <target>, approach <target>, retreat, dodge, disengage, dash, end turn"
+                .to_string(),
+        );
+    }
     lines.push("Bonus actions: bonus dash, offhand attack <target>. Reactions: respond yes/no when prompted.".to_string());
+}
+
+/// Format a concise spell slot summary for the combat prompt.
+/// Example: "2/2 L1 slots" or "1/2 L1, 0/1 L2" or "cantrips only"
+fn format_spell_slot_summary(remaining: &[i32], max: &[i32]) -> String {
+    if max.is_empty() || max.iter().all(|&m| m == 0) {
+        return "cantrips only".to_string();
+    }
+
+    let mut parts: Vec<String> = Vec::new();
+    for (i, (rem, mx)) in remaining.iter().zip(max.iter()).enumerate() {
+        if *mx > 0 {
+            parts.push(format!("{}/{} L{}", rem, mx, i + 1));
+        }
+    }
+
+    if parts.is_empty() {
+        "cantrips only".to_string()
+    } else {
+        parts.join(", ")
+    }
 }
 
 fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
@@ -4167,6 +4377,16 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
             );
         }
         Command::BonusDash => {
+            // SRD 5.1: bonus-action Dash is Rogue Cunning Action only.
+            // Other classes do not have this ability.
+            if state.character.class != character::class::Class::Rogue {
+                state.active_combat = Some(combat);
+                return vec![
+                    "You don't have a class feature that grants bonus-action Dash. \
+                     (This is a Rogue Cunning Action.)"
+                        .to_string(),
+                ];
+            }
             if combat.bonus_action_used {
                 state.active_combat = Some(combat);
                 return vec!["You've already used your bonus action this turn.".to_string()];
@@ -4174,7 +4394,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
             combat.player_movement_remaining += state.character.speed;
             combat.bonus_action_used = true;
             lines.push(format!(
-                "You dash as a bonus action. Movement this turn: {} ft.",
+                "You use Cunning Action to dash as a bonus action. Movement this turn: {} ft.",
                 combat.player_movement_remaining
             ));
         }
@@ -6216,7 +6436,28 @@ fn resolve_use_item(
                 }
                 Some(state::ItemType::Consumable { ref effect }) => {
                     let result = match effect.as_str() {
+                        "heal_srd_potion" => {
+                            // SRD 5.1 Potion of Healing: 2d4 + 2 HP.
+                            let rolls = rules::dice::roll_dice(rng, 2, 4);
+                            let roll_total: i32 = rolls.iter().sum::<i32>() + 2;
+                            let old_hp = state.character.current_hp;
+                            state.character.current_hp = (state.character.current_hp + roll_total).min(state.character.max_hp);
+                            let healed = state.character.current_hp - old_hp;
+                            if healed > 0 {
+                                vec![narration::templates::USE_HEAL
+                                    .replace("{item}", &name)
+                                    .replace("{roll}", &healed.to_string())
+                                    .replace("{current}", &state.character.current_hp.to_string())
+                                    .replace("{max}", &state.character.max_hp.to_string())]
+                            } else {
+                                vec![narration::templates::USE_HEAL_FULL
+                                    .replace("{item}", &name)
+                                    .replace("{current}", &state.character.current_hp.to_string())
+                                    .replace("{max}", &state.character.max_hp.to_string())]
+                            }
+                        }
                         "heal_1d8" => {
+                            // Legacy effect code for testing (1d8 healing).
                             let rolls = rules::dice::roll_dice(rng, 1, 8);
                             let roll_total: i32 = rolls.iter().sum();
                             let old_hp = state.character.current_hp;
@@ -6540,6 +6781,37 @@ fn render_objective(state: &GameState) -> Vec<String> {
             "Tip: Enter rooms with hostile NPCs to trigger combat.".to_string(),
         ]
     }
+}
+
+fn active_objective_dialogue_hint(state: &GameState, npc_id: u32) -> Option<String> {
+    state
+        .progress
+        .objectives
+        .iter()
+        .zip(state.progress.objective_triggers.iter())
+        .find_map(|(objective, trigger)| {
+            if objective.completed {
+                return None;
+            }
+
+            match trigger {
+                state::ObjectiveType::DefeatNpc(target_id) if *target_id == npc_id => {
+                    Some(format!(
+                        "This one sounds tied to your current objective: {}.",
+                        objective.title
+                    ))
+                }
+                state::ObjectiveType::FindItem(item_id) => {
+                    state.world.items.get(item_id).map(|item| {
+                        format!(
+                            "They mention your current objective, {}: keep an eye out for {}.",
+                            objective.title, item.name
+                        )
+                    })
+                }
+                _ => None,
+            }
+        })
 }
 
 fn render_map(state: &GameState) -> Vec<String> {
@@ -7760,6 +8032,303 @@ fn handle_use_tool_command(state: &mut GameState, tool_name: &str, target: &str)
     lines
 }
 
+/// Format a price in copper pieces as a human-readable string (gp/sp/cp).
+fn format_price(cp: u32) -> String {
+    let gp = cp / 100;
+    let sp = (cp % 100) / 10;
+    let remaining_cp = cp % 10;
+    let mut parts = Vec::new();
+    if gp > 0 { parts.push(format!("{} gp", gp)); }
+    if sp > 0 { parts.push(format!("{} sp", sp)); }
+    if remaining_cp > 0 || parts.is_empty() { parts.push(format!("{} cp", remaining_cp)); }
+    parts.join(", ")
+}
+
+/// Find a merchant NPC in the player's current location.
+fn find_merchant_in_room(state: &GameState) -> Option<&state::Npc> {
+    let current_loc = state.world.locations.get(&state.current_location)?;
+    for &npc_id in &current_loc.npcs {
+        if let Some(npc) = state.world.npcs.get(&npc_id) {
+            if npc.role == state::NpcRole::Merchant {
+                return Some(npc);
+            }
+        }
+    }
+    None
+}
+
+/// Lookup table of SRD wares available for purchase. Returns (name, cost_cp).
+fn get_purchasable_wares() -> Vec<(&'static str, u32)> {
+    let mut wares = Vec::new();
+    // Add weapons
+    for w in equipment::SRD_WEAPONS.iter() {
+        wares.push((w.name, w.cost_cp));
+    }
+    // Add armor
+    for a in equipment::SRD_ARMOR.iter() {
+        wares.push((a.name, a.cost_cp));
+    }
+    // Add consumables with fixed prices
+    wares.push(("Torch", 1)); // 1 cp
+    wares.push(("Rations", 50)); // 5 sp = 50 cp (per day)
+    wares.push(("Healing Potion", 5000)); // 50 gp per SRD
+    wares
+}
+
+/// Handle the Buy command: purchase an item from a merchant NPC.
+fn handle_buy_command(
+    state: &mut GameState,
+    item_name: &str,
+    _rng: &mut impl rand::Rng,
+) -> Vec<String> {
+    // Check for merchant in room
+    let merchant = match find_merchant_in_room(state) {
+        Some(m) => m.clone(),
+        None => return vec!["There's no merchant here to buy from.".to_string()],
+    };
+
+    // Get available wares
+    let wares = get_purchasable_wares();
+    let lower_name = item_name.to_lowercase();
+
+    // Fuzzy match: exact > prefix > substring (case-insensitive)
+    let exact = wares.iter().find(|(n, _)| n.to_lowercase() == lower_name);
+    let prefix = wares.iter().find(|(n, _)| n.to_lowercase().starts_with(&lower_name));
+    let substring = wares.iter().find(|(n, _)| n.to_lowercase().contains(&lower_name));
+
+    let (ware_name, cost_cp) = match exact.or(prefix).or(substring) {
+        Some((name, cost)) => (*name, *cost),
+        None => return vec![format!(
+            "{} says: \"I don't have any '{}' for sale.\"",
+            merchant.name, item_name
+        )],
+    };
+
+    // Check player has enough gold
+    if state.character.gold_cp < cost_cp {
+        let price_str = format_price(cost_cp);
+        let have_str = format_price(state.character.gold_cp);
+        return vec![format!(
+            "{} says: \"That {} costs {}. You only have {}.\"",
+            merchant.name, ware_name, price_str, have_str
+        )];
+    }
+
+    // Deduct gold
+    state.character.gold_cp -= cost_cp;
+
+    // Create the item and add to inventory
+    let new_id = state.world.items.keys().max().map_or(0, |&m| m + 1);
+    let item = create_purchased_item(new_id, ware_name, state.current_location);
+    state.world.items.insert(new_id, item);
+    state.character.inventory.push(new_id);
+
+    let price_str = format_price(cost_cp);
+    let remaining_str = format_price(state.character.gold_cp);
+    vec![
+        format!(
+            "{} sells you a {} for {}.",
+            merchant.name, ware_name, price_str
+        ),
+        format!("You now have {}.", remaining_str),
+    ]
+}
+
+/// Create an Item instance for a purchased ware.
+fn create_purchased_item(id: u32, name: &str, _location: u32) -> state::Item {
+    // Check weapons first
+    if let Some(w) = equipment::SRD_WEAPONS.iter().find(|w| w.name == name) {
+        return state::Item {
+            id,
+            name: w.name.to_string(),
+            description: format!("A {}.", w.name.to_lowercase()),
+            item_type: state::ItemType::Weapon {
+                damage_dice: w.damage_dice,
+                damage_die: w.damage_die,
+                damage_type: w.damage_type,
+                properties: w.properties,
+                category: w.category,
+                versatile_die: w.versatile_die,
+                range_normal: w.range_normal,
+                range_long: w.range_long,
+            },
+            location: None,
+            carried_by_player: true,
+            charges_remaining: None,
+        };
+    }
+    // Check armor
+    if let Some(a) = equipment::SRD_ARMOR.iter().find(|a| a.name == name) {
+        return state::Item {
+            id,
+            name: a.name.to_string(),
+            description: format!("A set of {} armor.", a.name.to_lowercase()),
+            item_type: state::ItemType::Armor {
+                category: a.category,
+                base_ac: a.base_ac,
+                max_dex_bonus: a.max_dex_bonus,
+                str_requirement: a.str_requirement,
+                stealth_disadvantage: a.stealth_disadvantage,
+            },
+            location: None,
+            carried_by_player: true,
+            charges_remaining: None,
+        };
+    }
+    // Consumables
+    match name {
+        "Torch" => state::Item {
+            id,
+            name: "Torch".to_string(),
+            description: "A wooden torch soaked in pitch. Provides light.".to_string(),
+            item_type: state::ItemType::Consumable { effect: "light".to_string() },
+            location: None,
+            carried_by_player: true,
+            charges_remaining: None,
+        },
+        "Rations" => state::Item {
+            id,
+            name: "Rations".to_string(),
+            description: "A day's worth of dried food.".to_string(),
+            item_type: state::ItemType::Consumable { effect: "nourish".to_string() },
+            location: None,
+            carried_by_player: true,
+            charges_remaining: None,
+        },
+        "Healing Potion" => state::Item {
+            id,
+            name: "Healing Potion".to_string(),
+            description: "A small vial of red liquid that restores vitality.".to_string(),
+            item_type: state::ItemType::Consumable { effect: "heal_1d8".to_string() },
+            location: None,
+            carried_by_player: true,
+            charges_remaining: None,
+        },
+        _ => state::Item {
+            id,
+            name: name.to_string(),
+            description: format!("A {}.", name.to_lowercase()),
+            item_type: state::ItemType::Misc,
+            location: None,
+            carried_by_player: true,
+            charges_remaining: None,
+        },
+    }
+}
+
+/// Get the sell price for an item (50% of SRD cost, rounded down).
+fn get_sell_price(item: &state::Item) -> Option<u32> {
+    match &item.item_type {
+        state::ItemType::Weapon { .. } => {
+            // Find matching SRD weapon by name
+            equipment::SRD_WEAPONS.iter()
+                .find(|w| w.name == item.name)
+                .map(|w| w.cost_cp / 2)
+        }
+        state::ItemType::Armor { .. } => {
+            equipment::SRD_ARMOR.iter()
+                .find(|a| a.name == item.name)
+                .map(|a| a.cost_cp / 2)
+        }
+        state::ItemType::Consumable { effect, .. } => {
+            // Match consumables by effect
+            match effect.as_str() {
+                "light" => Some(0), // Torch: 1cp / 2 = 0
+                "nourish" => Some(25), // Rations: 50cp / 2 = 25
+                "heal_1d8" => Some(2500), // Healing Potion: 5000cp / 2 = 2500
+                _ => Some(0),
+            }
+        }
+        state::ItemType::Misc => Some(0), // Misc items have no value
+        _ => None, // Magic items, etc. not sellable in MVP
+    }
+}
+
+/// Handle the Sell command: sell an item to a merchant NPC.
+fn handle_sell_command(state: &mut GameState, item_name: &str) -> Vec<String> {
+    // Check for merchant in room
+    let merchant = match find_merchant_in_room(state) {
+        Some(m) => m.clone(),
+        None => return vec!["There's no merchant here to sell to.".to_string()],
+    };
+
+    // Build candidates from inventory
+    let owned_candidates: Vec<(usize, String)> = state.character.inventory.iter()
+        .filter_map(|&id| {
+            state.world.items.get(&id).map(|item| (id as usize, item.name.clone()))
+        })
+        .collect();
+    let candidates: Vec<(usize, &str)> = owned_candidates.iter()
+        .map(|(id, name)| (*id, name.as_str()))
+        .collect();
+
+    match parser::resolver::resolve_target(item_name, &candidates) {
+        parser::resolver::ResolveResult::Found(id) => {
+            let item_id = id as u32;
+            let item = match state.world.items.get(&item_id) {
+                Some(i) => i.clone(),
+                None => return vec![format!("You don't have any '{}'.", item_name)],
+            };
+
+            // Check if item is equipped - can't sell equipped items
+            if state.character.equipped.main_hand == Some(item_id)
+                || state.character.equipped.off_hand == Some(item_id)
+                || state.character.equipped.body == Some(item_id)
+            {
+                return vec![format!(
+                    "You need to unequip {} before you can sell it.",
+                    item.name
+                )];
+            }
+
+            // Get sell price
+            let sell_price = match get_sell_price(&item) {
+                Some(p) => p,
+                None => return vec![format!(
+                    "{} says: \"I'm not interested in buying that {}.\"",
+                    merchant.name, item.name
+                )],
+            };
+
+            if sell_price == 0 {
+                return vec![format!(
+                    "{} says: \"That {} isn't worth anything to me.\"",
+                    merchant.name, item.name
+                )];
+            }
+
+            // Remove from inventory
+            state.character.inventory.retain(|&id| id != item_id);
+            // Remove from world items
+            state.world.items.remove(&item_id);
+            // Add gold
+            state.character.gold_cp += sell_price;
+
+            let price_str = format_price(sell_price);
+            let total_str = format_price(state.character.gold_cp);
+            vec![
+                format!(
+                    "{} buys your {} for {}.",
+                    merchant.name, item.name, price_str
+                ),
+                format!("You now have {}.", total_str),
+            ]
+        }
+        parser::resolver::ResolveResult::Ambiguous(matches) => {
+            let names: Vec<&str> = matches.iter()
+                .map(|(_, name)| name.as_str())
+                .collect();
+            vec![format!(
+                "Which item do you want to sell? ({})",
+                names.join(", ")
+            )]
+        }
+        parser::resolver::ResolveResult::NotFound => {
+            vec![format!("You don't have any '{}'.", item_name)]
+        }
+    }
+}
+
 // Helper methods on NPC for narration
 impl state::Npc {
     pub fn role_description(&self) -> &'static str {
@@ -7779,7 +8348,12 @@ impl state::Npc {
         }
     }
 
-    pub fn generate_dialogue(&self, rng: &mut impl rand::Rng) -> Vec<String> {
+    pub fn generate_dialogue(
+        &self,
+        location: Option<&state::Location>,
+        objective_hint: Option<&str>,
+        rng: &mut impl rand::Rng,
+    ) -> Vec<String> {
         let greetings = match self.disposition {
             state::Disposition::Friendly => &[
                 "\"Well met, traveler!\"",
@@ -7799,18 +8373,79 @@ impl state::Npc {
         };
         let greeting = greetings[rng.gen_range(0..greetings.len())];
 
-        let flavor = match self.role {
-            state::NpcRole::Merchant => "\"I have wares, if you have coin.\"",
-            state::NpcRole::Guard => "\"Keep your hands where I can see them.\"",
-            state::NpcRole::Hermit => "\"The walls whisper secrets to those who listen...\"",
-            state::NpcRole::Adventurer => "\"I've heard rumors of treasure deeper within.\"",
+        let fallback_flavor = match self.role {
+            state::NpcRole::Merchant => "\"I have wares, if you have coin.\"".to_string(),
+            state::NpcRole::Guard => "\"Keep your hands where I can see them.\"".to_string(),
+            state::NpcRole::Hermit => {
+                "\"The walls whisper secrets to those who listen...\"".to_string()
+            }
+            state::NpcRole::Adventurer => {
+                "\"I've heard rumors of treasure deeper within.\"".to_string()
+            }
         };
 
-        vec![
+        let flavor = match location {
+            Some(location) => {
+                let topic = self
+                    .dialogue_tags
+                    .get(rng.gen_range(0..self.dialogue_tags.len().max(1)))
+                    .map(String::as_str)
+                    .unwrap_or("rumors");
+                let feature = location
+                    .room_features
+                    .first()
+                    .map(|feature| format!("the {}", feature.name))
+                    .unwrap_or_else(|| location.name.clone());
+                let light = match location.light_level {
+                    state::LightLevel::Bright => "bright",
+                    state::LightLevel::Dim => "dim",
+                    state::LightLevel::Dark => "dark",
+                };
+                let place_kind = match location.location_type {
+                    state::LocationType::Room => "room",
+                    state::LocationType::Corridor => "corridor",
+                    state::LocationType::Cave => "cave",
+                    state::LocationType::Clearing => "clearing",
+                    state::LocationType::Ruins => "ruins",
+                };
+
+                match self.role {
+                    state::NpcRole::Merchant => format!(
+                        "\"Trade is thin in {}. Most folk passing {} ask about {} before wares.\"",
+                        location.name, feature, topic
+                    ),
+                    state::NpcRole::Guard => format!(
+                        "\"Stay sharp in {} around {}. In a {} {}, {} can turn ugly fast.\"",
+                        location.name, feature, light, place_kind, topic
+                    ),
+                    state::NpcRole::Hermit => format!(
+                        "\"{} has a memory of its own. In the {} of {}, even {} lingers.\"",
+                        location.name, feature, location.name, topic
+                    ),
+                    state::NpcRole::Adventurer => format!(
+                        "\"If there's {} near {}, I'd start with {} in this {} {}.\"",
+                        topic, location.name, feature, light, place_kind
+                    ),
+                }
+            }
+            None => fallback_flavor,
+        };
+
+        let mut lines: Vec<String> = vec![
             format!("{} says:", self.name),
             greeting.to_string(),
             flavor.to_string(),
+            objective_hint.unwrap_or_default().to_string(),
         ]
+        .into_iter()
+        .filter(|line| !line.is_empty())
+        .collect();
+
+        if self.role == state::NpcRole::Merchant {
+            lines.push("(You can 'buy <item>' or 'sell <item>' here.)".to_string());
+        }
+
+        lines
     }
 }
 
@@ -9545,6 +10180,197 @@ mod tests {
         assert!(output.text.iter().any(|line| line.contains("wooden door")));
     }
 
+    // ---- Scenery interaction verbs (feat/env-interaction-affordances) ----
+
+    #[test]
+    fn test_open_room_feature_returns_scenery_feedback() {
+        let mut state = create_test_exploration_state();
+        let loc = state
+            .world
+            .locations
+            .get_mut(&state.current_location)
+            .unwrap();
+        loc.room_features = vec![state::RoomFeature {
+            name: "door".to_string(),
+            description: "Age-darkened wood and iron bands.".to_string(),
+        }];
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "open door");
+        let all_text = output.text.join("\n");
+
+        assert!(
+            all_text.contains("door") && all_text.to_lowercase().contains("open"),
+            "Expected scenery feedback about opening door. Got: {}",
+            all_text
+        );
+        // Should not say "You're not in combat"
+        assert!(
+            !all_text.contains("not in combat"),
+            "Should not return combat error. Got: {}",
+            all_text
+        );
+    }
+
+    #[test]
+    fn test_attack_room_feature_returns_scenery_rejection() {
+        let mut state = create_test_exploration_state();
+        let loc = state
+            .world
+            .locations
+            .get_mut(&state.current_location)
+            .unwrap();
+        loc.room_features = vec![state::RoomFeature {
+            name: "door".to_string(),
+            description: "Age-darkened wood and iron bands.".to_string(),
+        }];
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "attack door");
+        let all_text = output.text.join("\n");
+
+        assert!(
+            all_text.contains("scenery") && all_text.contains("door"),
+            "Expected scenery rejection for attacking door. Got: {}",
+            all_text
+        );
+        // Should not say "You're not in combat"
+        assert!(
+            !all_text.contains("not in combat"),
+            "Should not return combat error. Got: {}",
+            all_text
+        );
+    }
+
+    #[test]
+    fn test_attack_non_feature_target_returns_combat_error() {
+        let mut state = create_test_exploration_state();
+        // No room features that match "goblin"
+        let loc = state
+            .world
+            .locations
+            .get_mut(&state.current_location)
+            .unwrap();
+        loc.room_features.clear();
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "attack goblin");
+        let all_text = output.text.join("\n");
+
+        // When not targeting a room feature, should return the normal error
+        assert!(
+            all_text.contains("not in combat"),
+            "Expected 'not in combat' for non-scenery attack. Got: {}",
+            all_text
+        );
+    }
+
+    #[test]
+    fn test_push_room_feature_returns_feedback() {
+        let mut state = create_test_exploration_state();
+        let loc = state
+            .world
+            .locations
+            .get_mut(&state.current_location)
+            .unwrap();
+        loc.room_features = vec![state::RoomFeature {
+            name: "lever".to_string(),
+            description: "A rusted iron lever protrudes from the wall.".to_string(),
+        }];
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "push lever");
+        let all_text = output.text.join("\n");
+
+        assert!(
+            all_text.contains("push") && all_text.contains("lever"),
+            "Expected feedback about pushing lever. Got: {}",
+            all_text
+        );
+    }
+
+    #[test]
+    fn test_force_room_feature_returns_feedback() {
+        let mut state = create_test_exploration_state();
+        let loc = state
+            .world
+            .locations
+            .get_mut(&state.current_location)
+            .unwrap();
+        loc.room_features = vec![state::RoomFeature {
+            name: "door".to_string(),
+            description: "A heavy iron door.".to_string(),
+        }];
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "force door");
+        let all_text = output.text.join("\n");
+
+        assert!(
+            all_text.contains("door") && (all_text.contains("firmly") || all_text.contains("force")),
+            "Expected feedback about forcing door. Got: {}",
+            all_text
+        );
+    }
+
+    #[test]
+    fn test_scenery_verb_on_missing_target_returns_not_found() {
+        let mut state = create_test_exploration_state();
+        let loc = state
+            .world
+            .locations
+            .get_mut(&state.current_location)
+            .unwrap();
+        loc.room_features.clear();
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "open chest");
+        let all_text = output.text.join("\n");
+
+        assert!(
+            all_text.contains("don't see") || all_text.to_lowercase().contains("chest"),
+            "Expected 'don't see' or target name in response. Got: {}",
+            all_text
+        );
+    }
+
+    #[test]
+    fn test_scenery_verb_on_npc_returns_appropriate_feedback() {
+        let mut state = create_test_exploration_state();
+        let npc_id = 999;
+        state.world.npcs.insert(
+            npc_id,
+            state::Npc {
+                id: npc_id,
+                name: "Marcus".to_string(),
+                role: state::NpcRole::Guard,
+                disposition: state::Disposition::Neutral,
+                dialogue_tags: vec![],
+                location: state.current_location,
+                combat_stats: None,
+                conditions: vec![],
+            },
+        );
+        state
+            .world
+            .locations
+            .get_mut(&state.current_location)
+            .unwrap()
+            .npcs
+            .push(npc_id);
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "attack marcus");
+        let all_text = output.text.join("\n");
+
+        // Should mention the NPC and suggest talking instead
+        assert!(
+            all_text.contains("Marcus") && (all_text.contains("hostile") || all_text.contains("talk")),
+            "Expected NPC-specific feedback. Got: {}",
+            all_text
+        );
+    }
+
     #[test]
     fn test_search_reveals_hidden_trigger_without_room_restatement() {
         let mut state = create_test_exploration_state();
@@ -9552,16 +10378,19 @@ mod tests {
         let loc_id = state.current_location;
 
         state.world.locations.get_mut(&loc_id).unwrap().triggers = vec![trigger_id];
-        state.world.triggers.insert(trigger_id, state::Trigger {
-            id: trigger_id,
-            location: loc_id,
-            trigger_type: state::TriggerType::SkillCheck(Skill::Perception),
-            dc: 1,
-            success_text: "A careful search reveals a hidden compartment.".to_string(),
-            failure_text: "You search but find nothing of interest.".to_string(),
-            one_shot: true,
-            damage_on_failure: 0,
-        });
+        state.world.triggers.insert(
+            trigger_id,
+            state::Trigger {
+                id: trigger_id,
+                location: loc_id,
+                trigger_type: state::TriggerType::SkillCheck(Skill::Perception),
+                dc: 1,
+                success_text: "A careful search reveals a hidden compartment.".to_string(),
+                failure_text: "You search but find nothing of interest.".to_string(),
+                one_shot: true,
+                damage_on_failure: 0,
+            },
+        );
 
         let state_json = serde_json::to_string(&state).unwrap();
         let output = process_input(&state_json, "search");
@@ -9569,8 +10398,15 @@ mod tests {
         let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
 
         assert!(all_text.contains("hidden compartment"), "Got: {}", all_text);
-        assert!(!all_text.contains("You are in") && !all_text.contains("Before you lies"), "Search should not restate the room. Got: {}", all_text);
-        assert!(new_state.world.triggered.contains(&trigger_id), "Successful search should consume one-shot trigger");
+        assert!(
+            !all_text.contains("You are in") && !all_text.contains("Before you lies"),
+            "Search should not restate the room. Got: {}",
+            all_text
+        );
+        assert!(
+            new_state.world.triggered.contains(&trigger_id),
+            "Successful search should consume one-shot trigger"
+        );
     }
 
     #[test]
@@ -9580,24 +10416,47 @@ mod tests {
         let item_id = 5432;
         let item_name = "Test Relic".to_string();
 
-        state.world.locations.get_mut(&loc_id).unwrap().triggers.clear();
-        state.world.locations.get_mut(&loc_id).unwrap().items.push(item_id);
-        state.world.items.insert(item_id, state::Item {
-            id: item_id,
-            name: item_name.clone(),
-            description: "A small carved relic.".to_string(),
-            item_type: state::ItemType::Misc,
-            location: Some(loc_id),
-            carried_by_player: false,
-            charges_remaining: None,
-        });
+        state
+            .world
+            .locations
+            .get_mut(&loc_id)
+            .unwrap()
+            .triggers
+            .clear();
+        state
+            .world
+            .locations
+            .get_mut(&loc_id)
+            .unwrap()
+            .items
+            .push(item_id);
+        state.world.items.insert(
+            item_id,
+            state::Item {
+                id: item_id,
+                name: item_name.clone(),
+                description: "A small carved relic.".to_string(),
+                item_type: state::ItemType::Misc,
+                location: Some(loc_id),
+                carried_by_player: false,
+                charges_remaining: None,
+            },
+        );
 
         let state_json = serde_json::to_string(&state).unwrap();
         let output = process_input(&state_json, "search room");
         let all_text = output.text.join("\n");
 
-        assert!(all_text.contains("uncover nothing new") || all_text.contains("Within reach:"), "Got: {}", all_text);
-        assert!(all_text.contains(&item_name), "Search fallback should surface current room item names. Got: {}", all_text);
+        assert!(
+            all_text.contains("uncover nothing new") || all_text.contains("Within reach:"),
+            "Got: {}",
+            all_text
+        );
+        assert!(
+            all_text.contains(&item_name),
+            "Search fallback should surface current room item names. Got: {}",
+            all_text
+        );
     }
 
     #[test]
@@ -9607,21 +10466,34 @@ mod tests {
         let item_id = 6543;
         let item_name = "Hidden Ledger".to_string();
 
-        state.world.locations.get_mut(&loc_id).unwrap().items.push(item_id);
-        state.world.items.insert(item_id, state::Item {
-            id: item_id,
-            name: item_name.clone(),
-            description: "A weathered ledger packed with cramped notes.".to_string(),
-            item_type: state::ItemType::Misc,
-            location: Some(loc_id),
-            carried_by_player: false,
-            charges_remaining: None,
-        });
+        state
+            .world
+            .locations
+            .get_mut(&loc_id)
+            .unwrap()
+            .items
+            .push(item_id);
+        state.world.items.insert(
+            item_id,
+            state::Item {
+                id: item_id,
+                name: item_name.clone(),
+                description: "A weathered ledger packed with cramped notes.".to_string(),
+                item_type: state::ItemType::Misc,
+                location: Some(loc_id),
+                carried_by_player: false,
+                charges_remaining: None,
+            },
+        );
 
         let state_json = serde_json::to_string(&state).unwrap();
         let output = process_input(&state_json, &format!("search {}", item_name.to_lowercase()));
 
-        assert!(output.text.iter().any(|t| t.contains(&item_name)), "Got: {:?}", output.text);
+        assert!(
+            output.text.iter().any(|t| t.contains(&item_name)),
+            "Got: {:?}",
+            output.text
+        );
     }
 
     #[test]
@@ -9778,6 +10650,206 @@ mod tests {
                 output.text
             );
         }
+    }
+
+    #[test]
+    fn test_talk_command_uses_current_room_context() {
+        let mut state = create_test_exploration_state();
+        let location = state
+            .world
+            .locations
+            .get_mut(&state.current_location)
+            .unwrap();
+        location.name = "Ancient Library".to_string();
+        location.location_type = state::LocationType::Ruins;
+        location.light_level = state::LightLevel::Dim;
+        location.room_features = vec![state::RoomFeature {
+            name: "bookshelf".to_string(),
+            description: "Warped shelves lean against the wall.".to_string(),
+        }];
+        let npc_id = 50_001;
+        location.npcs.push(npc_id);
+
+        state.world.npcs.insert(
+            npc_id,
+            state::Npc {
+                id: npc_id,
+                name: "Orin the Quiet".to_string(),
+                role: state::NpcRole::Guard,
+                disposition: state::Disposition::Neutral,
+                dialogue_tags: vec!["danger".to_string()],
+                location: state.current_location,
+                combat_stats: None,
+                conditions: vec![],
+            },
+        );
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "talk orin");
+        let joined = output.text.join("\n").to_lowercase();
+
+        assert!(joined.contains("ancient library"), "Got: {:?}", output.text);
+        assert!(joined.contains("bookshelf"), "Got: {:?}", output.text);
+        assert!(joined.contains("danger"), "Got: {:?}", output.text);
+    }
+
+    #[test]
+    fn test_generate_dialogue_uses_room_context() {
+        let npc = state::Npc {
+            id: 7,
+            name: "Orin the Quiet".to_string(),
+            role: state::NpcRole::Guard,
+            disposition: state::Disposition::Neutral,
+            dialogue_tags: vec!["danger".to_string()],
+            location: 0,
+            combat_stats: None,
+            conditions: vec![],
+        };
+        let location = state::Location {
+            id: 0,
+            name: "Ancient Library".to_string(),
+            description: "Dust hangs in the air.".to_string(),
+            location_type: state::LocationType::Ruins,
+            exits: HashMap::new(),
+            npcs: vec![npc.id],
+            items: vec![],
+            triggers: vec![],
+            light_level: state::LightLevel::Dim,
+            room_features: vec![state::RoomFeature {
+                name: "bookshelf".to_string(),
+                description: "Warped shelves lean against the wall.".to_string(),
+            }],
+        };
+
+        let mut rng = StdRng::seed_from_u64(7);
+        let lines = npc.generate_dialogue(Some(&location), None, &mut rng);
+        let joined = lines.join("\n").to_lowercase();
+
+        assert!(joined.contains("ancient library"), "Got: {:?}", lines);
+        assert!(joined.contains("bookshelf"), "Got: {:?}", lines);
+        assert!(joined.contains("danger"), "Got: {:?}", lines);
+    }
+
+    #[test]
+    fn test_generate_dialogue_without_location_uses_generic_fallback() {
+        let npc = state::Npc {
+            id: 8,
+            name: "Dara the Bold".to_string(),
+            role: state::NpcRole::Merchant,
+            disposition: state::Disposition::Friendly,
+            dialogue_tags: vec!["goods".to_string()],
+            location: 0,
+            combat_stats: None,
+            conditions: vec![],
+        };
+
+        let mut rng = StdRng::seed_from_u64(11);
+        let lines = npc.generate_dialogue(None, None, &mut rng);
+
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("I have wares, if you have coin.")),
+            "Got: {:?}",
+            lines
+        );
+    }
+
+    #[test]
+    fn test_generate_dialogue_surfaces_objective_context() {
+        let npc = state::Npc {
+            id: 9,
+            name: "Theron the Scarred".to_string(),
+            role: state::NpcRole::Guard,
+            disposition: state::Disposition::Hostile,
+            dialogue_tags: vec!["danger".to_string()],
+            location: 0,
+            combat_stats: None,
+            conditions: vec![],
+        };
+
+        let location = state::Location {
+            id: 0,
+            name: "Gatehouse".to_string(),
+            description: "Broken banners hang from the wall.".to_string(),
+            location_type: state::LocationType::Ruins,
+            exits: HashMap::new(),
+            npcs: vec![npc.id],
+            items: vec![],
+            triggers: vec![],
+            light_level: state::LightLevel::Dim,
+            room_features: vec![],
+        };
+
+        let mut rng = StdRng::seed_from_u64(13);
+        let lines = npc.generate_dialogue(
+            Some(&location),
+            Some("This one sounds tied to your current objective: Defeat Theron the Scarred."),
+            &mut rng,
+        );
+        let joined = lines.join("\n");
+
+        assert!(
+            joined.contains("Defeat Theron the Scarred"),
+            "Got: {:?}",
+            lines
+        );
+    }
+
+    #[test]
+    fn test_talk_surfaces_find_item_objective_context() {
+        let mut state = create_test_exploration_state();
+        let loc_id = state.current_location;
+        let npc_id = 777;
+        let item_id = 778;
+
+        state.world.npcs.insert(
+            npc_id,
+            state::Npc {
+                id: npc_id,
+                name: "Petra the Wise".to_string(),
+                role: state::NpcRole::Hermit,
+                disposition: state::Disposition::Friendly,
+                dialogue_tags: vec!["lore".to_string()],
+                location: loc_id,
+                combat_stats: None,
+                conditions: vec![],
+            },
+        );
+        state.world.items.insert(
+            item_id,
+            state::Item {
+                id: item_id,
+                name: "Ancient Gem".to_string(),
+                description: "A pale crystal with a hidden glow.".to_string(),
+                item_type: state::ItemType::Misc,
+                location: Some(loc_id),
+                carried_by_player: false,
+                charges_remaining: None,
+            },
+        );
+        state.world.locations.get_mut(&loc_id).unwrap().npcs = vec![npc_id];
+        state.progress.objectives.push(state::Objective {
+            id: "find_gem".to_string(),
+            title: "Recover the Ancient Gem".to_string(),
+            description: "Find the gem hidden somewhere in the complex.".to_string(),
+            completed: false,
+        });
+        state
+            .progress
+            .objective_triggers
+            .push(state::ObjectiveType::FindItem(item_id));
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "talk petra");
+        let joined = output.text.join("\n");
+
+        assert!(
+            joined.contains("Recover the Ancient Gem"),
+            "Got: {:?}",
+            output.text
+        );
+        assert!(joined.contains("Ancient Gem"), "Got: {:?}", output.text);
     }
 
     #[test]
@@ -10146,6 +11218,72 @@ mod tests {
         state
     }
 
+    fn create_test_rogue_combat_state() -> GameState {
+        let mut state = create_test_exploration_state();
+        // Change character class to Rogue
+        state.character.class = character::class::Class::Rogue;
+        // Add a hostile goblin with combat stats to current location
+        let npc_id = 100;
+        let loc_id = state.current_location;
+        state.world.npcs.insert(npc_id, state::Npc {
+            id: npc_id,
+            name: "Test Goblin".to_string(),
+            role: state::NpcRole::Guard,
+            disposition: state::Disposition::Hostile,
+            dialogue_tags: vec![],
+            location: loc_id,
+            combat_stats: Some(state::CombatStats {
+                max_hp: 7, current_hp: 7, ac: 15, speed: 30,
+                ability_scores: {
+                    let mut m = HashMap::new();
+                    m.insert(Ability::Strength, 8);
+                    m.insert(Ability::Dexterity, 14);
+                    m
+                },
+                attacks: vec![state::NpcAttack {
+                    name: "Scimitar".to_string(), hit_bonus: 4,
+                    damage_dice: 1, damage_die: 6, damage_bonus: 2,
+                    damage_type: state::DamageType::Slashing, reach: 5,
+                    range_normal: 0, range_long: 0,
+                }],
+                proficiency_bonus: 2,
+                cr: 0.25,
+                ..Default::default()
+            }),
+            conditions: Vec::new(),
+        });
+        if let Some(loc) = state.world.locations.get_mut(&loc_id) {
+            loc.npcs.push(npc_id);
+        }
+
+        // Give player a weapon
+        let weapon_id = 200;
+        state.world.items.insert(weapon_id, state::Item {
+            id: weapon_id,
+            name: "Shortsword".to_string(),
+            description: "A fine shortsword.".to_string(),
+            item_type: state::ItemType::Weapon {
+                damage_dice: 1, damage_die: 6,
+                damage_type: state::DamageType::Piercing,
+                properties: crate::equipment::LIGHT | crate::equipment::FINESSE,
+                category: state::WeaponCategory::Martial,
+                versatile_die: 0, range_normal: 0, range_long: 0,
+            },
+            location: None,
+            carried_by_player: true,
+            charges_remaining: None,
+        });
+        state.character.inventory.push(weapon_id);
+        state.character.equipped.main_hand = Some(weapon_id);
+
+        // Start combat
+        let mut rng = rand::rngs::StdRng::seed_from_u64(state.rng_seed + state.rng_counter);
+        state.rng_counter += 1;
+        let combat_state = combat::start_combat(&mut rng, &state.character, &[npc_id], &state.world.npcs);
+        state.active_combat = Some(combat_state);
+        state
+    }
+
     fn force_player_turn(state: &mut GameState) {
         if let Some(ref mut combat) = state.active_combat {
             for (i, (c, _)) in combat.initiative_order.iter().enumerate() {
@@ -10439,7 +11577,15 @@ mod tests {
     fn test_attack_then_bonus_dash_allowed_on_same_turn() {
         // Attack consumes action; movement goes to zero; player can still
         // spend a bonus action (e.g. bonus dash) before ending the turn.
-        let mut state = create_test_combat_state();
+        // Rogue is used because bonus-action Dash requires Cunning Action (SRD 5.1).
+        let mut state = create_test_rogue_combat_state();
+        // Ensure goblin survives the attack so combat persists through bonus action.
+        if let Some(npc) = state.world.npcs.get_mut(&100) {
+            if let Some(ref mut stats) = npc.combat_stats {
+                stats.current_hp = 100;
+                stats.max_hp = 100;
+            }
+        }
         force_player_turn(&mut state);
         if let Some(ref mut combat) = state.active_combat {
             combat.distances.insert(100, 5);
@@ -10813,6 +11959,121 @@ mod tests {
         assert!(
             joined.contains("reaction") || joined.contains("yes/no"),
             "Combat help should mention reactions, got: {:?}",
+            output.text
+        );
+    }
+
+    #[test]
+    fn test_combat_help_mentions_spells() {
+        // Issue #182: Combat help should mention spellcasting commands.
+        let state = create_test_combat_state();
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "help combat");
+
+        let joined = output.text.join("\n").to_lowercase();
+        assert!(
+            joined.contains("cast"),
+            "Combat help should mention 'cast' command, got: {:?}",
+            output.text
+        );
+        assert!(
+            joined.contains("spells"),
+            "Combat help should mention 'spells' command, got: {:?}",
+            output.text
+        );
+    }
+
+    // ---- Caster Combat UX (issue #182) ----
+
+    #[test]
+    fn test_wizard_combat_prompt_shows_spell_commands() {
+        // Issue #182: Wizard combat prompt should mention spell commands.
+        let mut state = create_test_combat_state();
+        // Replace character with wizard
+        let wizard = make_wizard_for_shield();
+        state.character.class = wizard.class;
+        state.character.known_spells = wizard.known_spells;
+        state.character.spell_slots_max = wizard.spell_slots_max.clone();
+        state.character.spell_slots_remaining = wizard.spell_slots_max;
+        state.character.ability_scores = wizard.ability_scores;
+
+        force_player_turn(&mut state);
+
+        // Trigger turn prompt via an action that doesn't end turn
+        if let Some(ref mut combat) = state.active_combat {
+            combat.distances.insert(100, 30);
+        }
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "approach test goblin");
+
+        let joined = output.text.join("\n").to_lowercase();
+        assert!(
+            joined.contains("cast"),
+            "Wizard combat prompt should mention 'cast', got: {:?}",
+            output.text
+        );
+    }
+
+    #[test]
+    fn test_wizard_combat_prompt_shows_spell_slots() {
+        // Issue #182: Wizard combat prompt should show spell slot status.
+        let mut state = create_test_combat_state();
+        // Replace character with wizard
+        let wizard = make_wizard_for_shield();
+        state.character.class = wizard.class;
+        state.character.known_spells = wizard.known_spells;
+        state.character.spell_slots_max = wizard.spell_slots_max.clone();
+        state.character.spell_slots_remaining = wizard.spell_slots_max;
+        state.character.ability_scores = wizard.ability_scores;
+
+        force_player_turn(&mut state);
+
+        // Trigger turn prompt via an action that doesn't end turn
+        if let Some(ref mut combat) = state.active_combat {
+            combat.distances.insert(100, 30);
+        }
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "approach test goblin");
+
+        let joined = output.text.join("\n").to_lowercase();
+        assert!(
+            joined.contains("spells") || joined.contains("slots") || joined.contains("l1"),
+            "Wizard combat prompt should show spell slot status, got: {:?}",
+            output.text
+        );
+    }
+
+    #[test]
+    fn test_fighter_combat_prompt_does_not_show_spell_commands() {
+        // Issue #182: Non-caster prompt should remain concise (no spell hints).
+        let state = create_test_combat_state(); // Fighter by default
+
+        let mut state_with_turn = state;
+        force_player_turn(&mut state_with_turn);
+
+        // Trigger turn prompt via an action that doesn't end turn
+        if let Some(ref mut combat) = state_with_turn.active_combat {
+            combat.distances.insert(100, 30);
+        }
+        let state_json = serde_json::to_string(&state_with_turn).unwrap();
+        let output = process_input(&state_json, "approach test goblin");
+
+        // Find the Commands line
+        let commands_line = output.text.iter().find(|line| line.contains("Commands:"));
+        if let Some(line) = commands_line {
+            // The fighter's Commands line should NOT mention cast
+            assert!(
+                !line.to_lowercase().contains("cast"),
+                "Fighter combat Commands line should not mention 'cast', got: {}",
+                line
+            );
+        }
+
+        // Fighter should not see a "Spells:" line
+        let spells_line = output.text.iter().find(|line| line.starts_with("Spells:"));
+        assert!(
+            spells_line.is_none(),
+            "Fighter combat prompt should not have 'Spells:' line, got: {:?}",
             output.text
         );
     }
@@ -11712,7 +12973,7 @@ mod tests {
 
     #[test]
     fn test_bonus_dash_grants_movement_and_consumes_bonus_action() {
-        let mut state = create_test_combat_state();
+        let mut state = create_test_rogue_combat_state();
         force_player_turn(&mut state);
         if let Some(ref mut combat) = state.active_combat {
             combat.player_movement_remaining = 15; // some movement already spent
@@ -11751,7 +13012,7 @@ mod tests {
 
     #[test]
     fn test_bonus_dash_blocked_when_bonus_action_used() {
-        let mut state = create_test_combat_state();
+        let mut state = create_test_rogue_combat_state();
         force_player_turn(&mut state);
         if let Some(ref mut combat) = state.active_combat {
             combat.bonus_action_used = true;
@@ -11779,7 +13040,7 @@ mod tests {
 
     #[test]
     fn test_bonus_dash_does_not_end_turn_automatically() {
-        let mut state = create_test_combat_state();
+        let mut state = create_test_rogue_combat_state();
         force_player_turn(&mut state);
         if let Some(ref mut combat) = state.active_combat {
             combat.player_movement_remaining = 0;
@@ -11795,6 +13056,30 @@ mod tests {
             combat.is_player_turn(),
             "BonusDash should keep the player's turn open (movement just got granted)."
         );
+    }
+
+    #[test]
+    fn test_bonus_dash_rejected_for_non_rogue() {
+        // SRD 5.1: bonus-action Dash is only available to Rogues via Cunning Action.
+        // A Fighter should not be able to use it.
+        let mut state = create_test_combat_state();
+        force_player_turn(&mut state);
+        // Fighter should not be able to use bonus dash
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "bonus dash");
+
+        // Should reject with a message about Cunning Action
+        assert!(output.text.iter().any(|t| t.contains("don't have a class feature") || t.contains("Cunning Action")),
+            "Bonus dash should be rejected for non-Rogues. Got: {:?}", output.text);
+
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        let combat = new_state.active_combat.as_ref().unwrap();
+        let original_movement = state.active_combat.as_ref().unwrap().player_movement_remaining;
+        // Movement should not change
+        assert_eq!(combat.player_movement_remaining, original_movement,
+            "Movement should not change when bonus dash is rejected");
+        assert!(!combat.bonus_action_used, "Bonus action should not be consumed");
     }
 
     #[test]
@@ -11983,6 +13268,38 @@ mod tests {
             new_state.character.current_hp <= new_state.character.max_hp,
             "HP should not exceed max_hp"
         );
+    }
+
+    #[test]
+    fn test_srd_potion_of_healing_heals_2d4_plus_2() {
+        // SRD 5.1 Potion of Healing: 2d4 + 2 HP healing.
+        // Test across multiple seeds to verify the range (min 4, max 10).
+        let mut min_heal = i32::MAX;
+        let mut max_heal = i32::MIN;
+
+        for seed in 0..50 {
+            let mut state = create_test_exploration_state();
+            state.rng_seed = seed;
+            state.character.current_hp = 1; // Start low so heal is never capped
+
+            give_consumable_to_player(&mut state, "Healing Potion", "A potion.", "heal_srd_potion");
+            let old_hp = state.character.current_hp;
+
+            let state_json = serde_json::to_string(&state).unwrap();
+            let output = process_input(&state_json, "use healing potion");
+
+            let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+            let healed = new_state.character.current_hp - old_hp;
+
+            if healed > 0 {
+                min_heal = min_heal.min(healed);
+                max_heal = max_heal.max(healed);
+            }
+        }
+
+        // 2d4 + 2 ranges from 4 (1+1+2) to 10 (4+4+2)
+        assert!(min_heal >= 4, "Min heal should be at least 4 (2d4+2 minimum), got {}", min_heal);
+        assert!(max_heal <= 10, "Max heal should be at most 10 (2d4+2 maximum), got {}", max_heal);
     }
 
     #[test]
@@ -13386,7 +14703,7 @@ mod tests {
         state.character.general_feats = vec!["Tough".to_string()];
         let hp_before = state.character.max_hp;
         // Award enough XP to level up from 1 to 2.
-        let xp_lines = leveling::award_xp(&mut state.character, 300);
+        let xp_lines = leveling::award_xp(&mut state.character, 300, None);
         // apply_post_levelup_feat_bonuses to add Tough's +2 HP for the new level.
         apply_post_levelup_feat_bonuses(&mut state.character, 1);
         assert_eq!(state.character.level, 2);
@@ -13418,7 +14735,7 @@ mod tests {
         // No feats
         state.character.general_feats = vec![];
         let hp_before = state.character.max_hp;
-        leveling::award_xp(&mut state.character, 300);
+        leveling::award_xp(&mut state.character, 300, None);
         apply_post_levelup_feat_bonuses(&mut state.character, 1);
         assert_eq!(state.character.level, 2);
         let hp_gain = state.character.max_hp - hp_before;
@@ -13435,7 +14752,7 @@ mod tests {
         state.character.origin_feat = Some("Tough".to_string());
         state.character.general_feats = vec![];
         let hp_before = state.character.max_hp;
-        leveling::award_xp(&mut state.character, 300);
+        leveling::award_xp(&mut state.character, 300, None);
         apply_post_levelup_feat_bonuses(&mut state.character, 1);
         assert_eq!(state.character.level, 2);
         let hp_gain = state.character.max_hp - hp_before;
@@ -16681,6 +17998,7 @@ mod tests {
             pending_background_pattern: None,
             pending_subrace: None,
             pending_disambiguation: None,
+            pending_new_game_confirm: false,
         };
 
         let json = serde_json::to_string_pretty(&state).unwrap();
@@ -16745,6 +18063,7 @@ mod tests {
             pending_background_pattern: None,
             pending_subrace: None,
             pending_disambiguation: None,
+            pending_new_game_confirm: false,
         };
 
         let rest_json = serde_json::to_string_pretty(&rest_state).unwrap();

@@ -276,6 +276,37 @@ pub fn narrate_character_sheet(state: &GameState) -> Vec<String> {
     lines.push(String::new());
     lines.push(format!("AC: {}", ac));
 
+    if matches!(c.class, crate::character::class::Class::Barbarian) {
+        lines.push(String::new());
+        lines.push("Barbarian Features:".to_string());
+        let rage_state = if c.class_features.rage_active {
+            "active".to_string()
+        } else if c.class_features.rage_uses_remaining > 0 {
+            "ready".to_string()
+        } else {
+            "spent".to_string()
+        };
+        lines.push(format!(
+            "  Rage: {} ({} use{} remaining)",
+            rage_state,
+            c.class_features.rage_uses_remaining,
+            if c.class_features.rage_uses_remaining == 1 {
+                ""
+            } else {
+                "s"
+            }
+        ));
+        if c.equipped.body.is_none() {
+            lines.push(
+                "  Unarmored Defense: AC uses 10 + DEX modifier + CON modifier while unarmored."
+                    .to_string(),
+            );
+        }
+        lines.push(
+            "  Signature combat options: rage, grapple <target>, shove <target>.".to_string(),
+        );
+    }
+
     lines
 }
 

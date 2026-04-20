@@ -2,18 +2,18 @@
 // Combat system: state, initiative, attack resolution, movement, NPC AI.
 pub mod monsters;
 
-use std::collections::HashMap;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
-use crate::types::{NpcId, Ability, ItemId, Skill, Cover};
-use crate::state::{GameState, CombatStats, NpcAttack, DamageType, ItemType};
-use crate::equipment::{FINESSE, THROWN, VERSATILE, REACH, AMMUNITION};
-use crate::rules::dice::{roll_d20, roll_dice};
 use crate::character::Character;
-use crate::conditions::{self, ConditionType, ConditionDuration, ActiveCondition};
-use crate::state::Npc;
+use crate::conditions::{self, ActiveCondition, ConditionDuration, ConditionType};
+use crate::equipment::{AMMUNITION, FINESSE, REACH, THROWN, VERSATILE};
 use crate::output::format_roll;
+use crate::rules::dice::{roll_d20, roll_dice};
+use crate::state::Npc;
+use crate::state::{CombatStats, DamageType, GameState, ItemType, NpcAttack};
+use crate::types::{Ability, Cover, ItemId, NpcId, Skill};
 
 /// Identifies a combatant in initiative order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -199,14 +199,19 @@ impl CombatState {
         }
         let all_dead = self.initiative_order.iter().all(|(c, _)| match c {
             Combatant::Player => true,
-            Combatant::Npc(id) => {
-                state.world.npcs.get(id)
-                    .and_then(|npc| npc.combat_stats.as_ref())
-                    .map(|cs| cs.current_hp <= 0)
-                    .unwrap_or(false)
-            }
+            Combatant::Npc(id) => state
+                .world
+                .npcs
+                .get(id)
+                .and_then(|npc| npc.combat_stats.as_ref())
+                .map(|cs| cs.current_hp <= 0)
+                .unwrap_or(false),
         });
-        if all_dead { Some(true) } else { None }
+        if all_dead {
+            Some(true)
+        } else {
+            None
+        }
     }
 
     /// True when the player is in the dying state: HP at or below 0 but
@@ -391,7 +396,8 @@ impl CombatState {
                         for npc in state.world.npcs.values_mut() {
                             npc.conditions.retain(|c| {
                                 !(c.condition == ConditionType::Grappled
-                                    && c.source.as_deref()
+                                    && c.source
+                                        .as_deref()
                                         .map(|s| s.eq_ignore_ascii_case(&player_name))
                                         .unwrap_or(false))
                             });
@@ -401,7 +407,10 @@ impl CombatState {
                 }
                 Combatant::Npc(id) => {
                     // Skip dead NPCs
-                    let alive = state.world.npcs.get(&id)
+                    let alive = state
+                        .world
+                        .npcs
+                        .get(&id)
                         .and_then(|npc| npc.combat_stats.as_ref())
                         .map(|cs| cs.current_hp > 0)
                         .unwrap_or(false);
@@ -440,16 +449,10 @@ pub fn narrate_death_save_outcome(d20: i32, outcome: DeathSaveOutcome) -> Vec<St
             ));
         }
         DeathSaveOutcome::Success => {
-            lines.push(format!(
-                "Death saving throw: {} — success.",
-                d20,
-            ));
+            lines.push(format!("Death saving throw: {} — success.", d20,));
         }
         DeathSaveOutcome::Failure => {
-            lines.push(format!(
-                "Death saving throw: {} — failure.",
-                d20,
-            ));
+            lines.push(format!("Death saving throw: {} — failure.", d20,));
         }
         DeathSaveOutcome::CritFailure => {
             lines.push(format!(
@@ -506,13 +509,26 @@ pub fn roll_initiative(
     let player_roll = roll_d20(rng);
     let player_dex_mod = player.ability_modifier(Ability::Dexterity);
     let player_init = player_roll + player_dex_mod;
-    let player_dex = player.ability_scores.get(&Ability::Dexterity).copied().unwrap_or(10);
-    initiatives.push((Combatant::Player, player_init, player_dex, player.name.clone()));
+    let player_dex = player
+        .ability_scores
+        .get(&Ability::Dexterity)
+        .copied()
+        .unwrap_or(10);
+    initiatives.push((
+        Combatant::Player,
+        player_init,
+        player_dex,
+        player.name.clone(),
+    ));
 
     // NPCs
     for &(id, stats) in npcs {
         let roll = roll_d20(rng);
-        let dex = stats.ability_scores.get(&Ability::Dexterity).copied().unwrap_or(10);
+        let dex = stats
+            .ability_scores
+            .get(&Ability::Dexterity)
+            .copied()
+            .unwrap_or(10);
         let dex_mod = Ability::modifier(dex);
         let init = roll + dex_mod;
         // Use NPC id as name placeholder for tie-breaking
@@ -520,13 +536,12 @@ pub fn roll_initiative(
     }
 
     // Sort: higher initiative first, then higher DEX, then name (alphabetical)
-    initiatives.sort_by(|a, b| {
-        b.1.cmp(&a.1)
-            .then(b.2.cmp(&a.2))
-            .then(a.3.cmp(&b.3))
-    });
+    initiatives.sort_by(|a, b| b.1.cmp(&a.1).then(b.2.cmp(&a.2)).then(a.3.cmp(&b.3)));
 
-    initiatives.into_iter().map(|(c, init, _, _)| (c, init)).collect()
+    initiatives
+        .into_iter()
+        .map(|(c, init, _, _)| (c, init))
+        .collect()
 }
 
 /// Start combat: roll initiative, set distances, create CombatState.
@@ -536,7 +551,8 @@ pub fn start_combat(
     hostile_npc_ids: &[NpcId],
     npcs: &HashMap<NpcId, crate::state::Npc>,
 ) -> CombatState {
-    let npc_stats: Vec<(NpcId, &CombatStats)> = hostile_npc_ids.iter()
+    let npc_stats: Vec<(NpcId, &CombatStats)> = hostile_npc_ids
+        .iter()
         .filter_map(|&id| {
             npcs.get(&id)
                 .and_then(|npc| npc.combat_stats.as_ref())
@@ -547,9 +563,11 @@ pub fn start_combat(
     // Every hostile NPC should have combat_stats assigned by world generation.
     // If any are dropped, it means a bug upstream -- catch it in debug builds.
     debug_assert_eq!(
-        npc_stats.len(), hostile_npc_ids.len(),
+        npc_stats.len(),
+        hostile_npc_ids.len(),
         "start_combat: {} hostile NPCs provided but only {} have combat_stats",
-        hostile_npc_ids.len(), npc_stats.len()
+        hostile_npc_ids.len(),
+        npc_stats.len()
     );
 
     let initiative_order = roll_initiative(rng, player, &npc_stats);
@@ -622,12 +640,11 @@ pub fn player_melee_reach(
 /// reach (as determined by [`player_melee_reach`]). Used by the orchestrator
 /// to gate whether an NPC leaving a square should provoke a player
 /// opportunity attack.
-pub fn npc_within_player_reach(
-    state: &GameState,
-    combat: &CombatState,
-    npc_id: NpcId,
-) -> bool {
-    let alive = state.world.npcs.get(&npc_id)
+pub fn npc_within_player_reach(state: &GameState, combat: &CombatState, npc_id: NpcId) -> bool {
+    let alive = state
+        .world
+        .npcs
+        .get(&npc_id)
         .and_then(|npc| npc.combat_stats.as_ref())
         .map(|stats| stats.current_hp > 0)
         .unwrap_or(false);
@@ -644,17 +661,23 @@ pub fn npc_within_player_reach(
 
 /// Returns true if any living hostile NPC is within the specified distance.
 pub fn has_living_hostile_within(state: &GameState, combat: &CombatState, feet: u32) -> bool {
-    combat.initiative_order.iter().any(|(combatant, _)| match combatant {
-        Combatant::Player => false,
-        Combatant::Npc(id) => {
-            let alive = state.world.npcs.get(id)
-                .and_then(|npc| npc.combat_stats.as_ref())
-                .map(|stats| stats.current_hp > 0)
-                .unwrap_or(false);
-            let dist = combat.distances.get(id).copied().unwrap_or(u32::MAX);
-            alive && dist <= feet
-        }
-    })
+    combat
+        .initiative_order
+        .iter()
+        .any(|(combatant, _)| match combatant {
+            Combatant::Player => false,
+            Combatant::Npc(id) => {
+                let alive = state
+                    .world
+                    .npcs
+                    .get(id)
+                    .and_then(|npc| npc.combat_stats.as_ref())
+                    .map(|stats| stats.current_hp > 0)
+                    .unwrap_or(false);
+                let dist = combat.distances.get(id).copied().unwrap_or(u32::MAX);
+                alive && dist <= feet
+            }
+        })
 }
 
 // ---- Attack Resolution ----
@@ -704,7 +727,11 @@ pub fn format_attack_roll_details(result: &AttackResult, modifier: i32) -> Strin
 /// Determine if the player's weapon attack is ranged based on target distance and weapon.
 fn is_ranged_attack(weapon: &ItemType, distance: u32) -> bool {
     match weapon {
-        ItemType::Weapon { range_normal, properties, .. } => {
+        ItemType::Weapon {
+            range_normal,
+            properties,
+            ..
+        } => {
             let is_ammo_weapon = properties & AMMUNITION != 0;
             let is_thrown = properties & THROWN != 0;
             // If weapon has range and target is beyond melee, it's a ranged attack
@@ -755,19 +782,77 @@ pub fn resolve_player_attack(
     // `MagicWeapon` (which embeds the same mechanical fields). Magic
     // attack/damage bonuses are applied by the `lib.rs` orchestrator AFTER
     // this function returns — this function stays oblivious to magic bonuses.
-    let (weapon_name, damage_dice, damage_die, damage_type, properties, versatile_die, range_normal, range_long) =
-        match weapon_id.and_then(|id| items.get(&id)) {
-            Some(item) => match &item.item_type {
-                ItemType::Weapon { damage_dice, damage_die, damage_type, properties, versatile_die, range_normal, range_long, .. } => {
-                    (item.name.clone(), *damage_dice, *damage_die, *damage_type, *properties, *versatile_die, *range_normal, *range_long)
-                }
-                ItemType::MagicWeapon { damage_dice, damage_die, damage_type, properties, versatile_die, range_normal, range_long, .. } => {
-                    (item.name.clone(), *damage_dice, *damage_die, *damage_type, *properties, *versatile_die, *range_normal, *range_long)
-                }
-                _ => ("Unarmed".to_string(), 0, 0, DamageType::Bludgeoning, 0u16, 0, 0, 0),
-            },
-            None => ("Unarmed".to_string(), 0, 0, DamageType::Bludgeoning, 0u16, 0, 0, 0),
-        };
+    let (
+        weapon_name,
+        damage_dice,
+        damage_die,
+        damage_type,
+        properties,
+        versatile_die,
+        range_normal,
+        range_long,
+    ) = match weapon_id.and_then(|id| items.get(&id)) {
+        Some(item) => match &item.item_type {
+            ItemType::Weapon {
+                damage_dice,
+                damage_die,
+                damage_type,
+                properties,
+                versatile_die,
+                range_normal,
+                range_long,
+                ..
+            } => (
+                item.name.clone(),
+                *damage_dice,
+                *damage_die,
+                *damage_type,
+                *properties,
+                *versatile_die,
+                *range_normal,
+                *range_long,
+            ),
+            ItemType::MagicWeapon {
+                damage_dice,
+                damage_die,
+                damage_type,
+                properties,
+                versatile_die,
+                range_normal,
+                range_long,
+                ..
+            } => (
+                item.name.clone(),
+                *damage_dice,
+                *damage_die,
+                *damage_type,
+                *properties,
+                *versatile_die,
+                *range_normal,
+                *range_long,
+            ),
+            _ => (
+                "Unarmed".to_string(),
+                0,
+                0,
+                DamageType::Bludgeoning,
+                0u16,
+                0,
+                0,
+                0,
+            ),
+        },
+        None => (
+            "Unarmed".to_string(),
+            0,
+            0,
+            DamageType::Bludgeoning,
+            0u16,
+            0,
+            0,
+            0,
+        ),
+    };
 
     // Unarmed strikes (no weapon, damage_dice == 0) flow through the standard
     // attack-roll pipeline per SRD 5.1 Rules Glossary ("Unarmed Strike"):
@@ -783,17 +868,28 @@ pub fn resolve_player_attack(
     // Note: REACH is consulted at the orchestrator layer via
     // `combat::player_melee_reach` to gate opportunity attacks. It does not
     // influence per-attack resolution, so no local flag is needed here.
-    let ranged = is_ranged_attack(&ItemType::Weapon {
-        damage_dice, damage_die, damage_type, properties, category: crate::state::WeaponCategory::Simple,
-        versatile_die, range_normal, range_long,
-    }, distance);
+    let ranged = is_ranged_attack(
+        &ItemType::Weapon {
+            damage_dice,
+            damage_die,
+            damage_type,
+            properties,
+            category: crate::state::WeaponCategory::Simple,
+            versatile_die,
+            range_normal,
+            range_long,
+        },
+        distance,
+    );
 
     // Determine ability modifier for attack
     let ability_mod = if ranged {
         if is_thrown {
             // Thrown uses STR (or DEX if FINESSE)
             if is_finesse {
-                player.ability_modifier(Ability::Strength).max(player.ability_modifier(Ability::Dexterity))
+                player
+                    .ability_modifier(Ability::Strength)
+                    .max(player.ability_modifier(Ability::Dexterity))
             } else {
                 player.ability_modifier(Ability::Strength)
             }
@@ -803,7 +899,9 @@ pub fn resolve_player_attack(
         }
     } else if is_finesse {
         // Finesse: use higher of STR/DEX
-        player.ability_modifier(Ability::Strength).max(player.ability_modifier(Ability::Dexterity))
+        player
+            .ability_modifier(Ability::Strength)
+            .max(player.ability_modifier(Ability::Dexterity))
     } else {
         player.ability_modifier(Ability::Strength)
     };
@@ -887,7 +985,13 @@ pub fn resolve_player_attack(
 
     let total_attack = attack_roll + ability_mod + prof_bonus;
     let effective_ac = target_ac + target_cover.ac_bonus();
-    let hit = if natural_1 { false } else if natural_20 { true } else { total_attack >= effective_ac };
+    let hit = if natural_1 {
+        false
+    } else if natural_20 {
+        true
+    } else {
+        total_attack >= effective_ac
+    };
 
     // Check for auto-crit (paralyzed target within 5ft)
     let auto_crit = hit && conditions::is_auto_crit_target(target_conditions) && distance <= 5;
@@ -906,7 +1010,11 @@ pub fn resolve_player_attack(
                 damage_die
             };
 
-            let dice_count = if natural_20 || auto_crit { damage_dice * 2 } else { damage_dice };
+            let dice_count = if natural_20 || auto_crit {
+                damage_dice * 2
+            } else {
+                damage_dice
+            };
             let dice_total: i32 = roll_dice(rng, dice_count, actual_die).iter().sum();
             (dice_total + ability_mod).max(1)
         }
@@ -919,7 +1027,11 @@ pub fn resolve_player_attack(
         natural_20,
         natural_1,
         attack_roll_first: roll1,
-        attack_roll_second: if disadvantage || attacker_has_advantage { Some(roll2) } else { None },
+        attack_roll_second: if disadvantage || attacker_has_advantage {
+            Some(roll2)
+        } else {
+            None
+        },
         attack_roll,
         total_attack,
         target_ac: effective_ac,
@@ -1004,13 +1116,23 @@ pub fn resolve_npc_attack(
 
     let total_attack = attack_roll + attack.hit_bonus;
     let effective_player_ac = player_ac + player_cover.ac_bonus();
-    let hit = if natural_1 { false } else if natural_20 { true } else { total_attack >= effective_player_ac };
+    let hit = if natural_1 {
+        false
+    } else if natural_20 {
+        true
+    } else {
+        total_attack >= effective_player_ac
+    };
 
     // Check for auto-crit (paralyzed player within 5ft)
     let auto_crit = hit && conditions::is_auto_crit_target(player_conditions) && distance <= 5;
 
     let damage = if hit {
-        let dice_count = if natural_20 || auto_crit { attack.damage_dice * 2 } else { attack.damage_dice };
+        let dice_count = if natural_20 || auto_crit {
+            attack.damage_dice * 2
+        } else {
+            attack.damage_dice
+        };
         let dice_total: i32 = roll_dice(rng, dice_count, attack.damage_die).iter().sum();
         (dice_total + attack.damage_bonus).max(1)
     } else {
@@ -1022,7 +1144,11 @@ pub fn resolve_npc_attack(
         natural_20,
         natural_1,
         attack_roll_first: roll1,
-        attack_roll_second: if use_disadvantage || use_advantage { Some(roll2) } else { None },
+        attack_roll_second: if use_disadvantage || use_advantage {
+            Some(roll2)
+        } else {
+            None
+        },
         attack_roll,
         total_attack,
         target_ac: effective_player_ac,
@@ -1044,21 +1170,29 @@ pub fn resolve_opportunity_attack(
 ) -> Option<(String, AttackResult)> {
     let npc = state.world.npcs.get(&npc_id)?;
     let stats = npc.combat_stats.as_ref()?;
-    if stats.current_hp <= 0 { return None; }
+    if stats.current_hp <= 0 {
+        return None;
+    }
 
     // Find a melee attack that can reach the player at current distance
-    let melee_attack = stats.attacks.iter()
+    let melee_attack = stats
+        .attacks
+        .iter()
         .find(|a| a.reach > 0 && distance <= a.reach as u32)?;
     // For NPC opportunity attacks, Grappled-vs-non-grappler disadvantage against
     // the player would apply if the NPC is grappled by someone other than the
     // player. We compute it here rather than leaking target-name parsing into combat.
-    let extra_disadvantage = conditions::grappled_attack_disadvantage(
-        &npc.conditions,
-        &state.character.name,
-    );
+    let extra_disadvantage =
+        conditions::grappled_attack_disadvantage(&npc.conditions, &state.character.name);
     let result = resolve_npc_attack(
-        rng, melee_attack, player_ac, false, distance,
-        &npc.conditions, &state.character.conditions, extra_disadvantage,
+        rng,
+        melee_attack,
+        player_ac,
+        false,
+        distance,
+        &npc.conditions,
+        &state.character.conditions,
+        extra_disadvantage,
         &Cover::None, // opportunity attacks don't check cover (player is fleeing)
     );
     Some((npc.name.clone(), result))
@@ -1085,8 +1219,14 @@ fn resolve_npc_attack_action(
     combat: &mut CombatState,
 ) -> Vec<String> {
     // Prefer melee if in reach, then try ranged.
-    let melee = npc_attacks.iter().find(|a| a.reach > 0 && distance <= a.reach as u32).cloned();
-    let ranged = npc_attacks.iter().find(|a| a.range_long > 0 && distance <= a.range_long as u32).cloned();
+    let melee = npc_attacks
+        .iter()
+        .find(|a| a.reach > 0 && distance <= a.reach as u32)
+        .cloned();
+    let ranged = npc_attacks
+        .iter()
+        .find(|a| a.range_long > 0 && distance <= a.range_long as u32)
+        .cloned();
 
     let (attack, is_melee) = if let Some(a) = melee {
         (a, true)
@@ -1111,35 +1251,61 @@ fn resolve_npc_attack_action(
         let iter_disadv = grappled || (sapped_first_attack && i == 0);
         let player_ac = crate::equipment::calculate_ac(&state.character, &state.world.items);
         let player_dodging = combat.player_dodging;
-        let result = resolve_npc_attack(rng, &attack, player_ac, player_dodging, distance, npc_conditions, player_conditions, iter_disadv, &combat.player_cover);
+        let result = resolve_npc_attack(
+            rng,
+            &attack,
+            player_ac,
+            player_dodging,
+            distance,
+            npc_conditions,
+            player_conditions,
+            iter_disadv,
+            &combat.player_cover,
+        );
         if result.hit {
             let was_dying = state.character.current_hp <= 0;
             state.character.current_hp -= result.damage;
             if result.natural_20 {
-                lines.push(format!("{} {} {} -- CRITICAL HIT! {} {} damage!",
-                    npc_name, verb, result.weapon_name, result.damage, result.damage_type));
+                lines.push(format!(
+                    "{} {} {} -- CRITICAL HIT! {} {} damage!",
+                    npc_name, verb, result.weapon_name, result.damage, result.damage_type
+                ));
             } else {
-                lines.push(format!("{} {} {} ({} vs AC {}) -- hit for {} {} damage.",
-                    npc_name, verb, result.weapon_name,
+                lines.push(format!(
+                    "{} {} {} ({} vs AC {}) -- hit for {} {} damage.",
+                    npc_name,
+                    verb,
+                    result.weapon_name,
                     format_attack_roll_details(&result, attack.hit_bonus),
                     player_ac,
-                    result.damage, result.damage_type));
+                    result.damage,
+                    result.damage_type
+                ));
             }
             // Damage-while-dying: if the player was already at 0 HP when
             // this hit landed, add a death save failure (two on a crit).
             if was_dying {
                 let outcome = combat.apply_damage_while_dying(
-                    &mut state.character, result.damage, result.natural_20,
+                    &mut state.character,
+                    result.damage,
+                    result.natural_20,
                 );
                 lines.extend(narrate_damage_while_dying_outcome(outcome));
             }
         } else if result.natural_1 {
-            lines.push(format!("{} {} {} -- natural 1, miss!", npc_name, verb, result.weapon_name));
+            lines.push(format!(
+                "{} {} {} -- natural 1, miss!",
+                npc_name, verb, result.weapon_name
+            ));
         } else {
-            lines.push(format!("{} {} {} ({} vs AC {}) -- miss.",
-                npc_name, verb, result.weapon_name,
+            lines.push(format!(
+                "{} {} {} ({} vs AC {}) -- miss.",
+                npc_name,
+                verb,
+                result.weapon_name,
                 format_attack_roll_details(&result, attack.hit_bonus),
-                player_ac));
+                player_ac
+            ));
         }
     }
     lines
@@ -1186,10 +1352,7 @@ pub fn resolve_npc_turn(
 
     // Orchestrator-side grappled disadvantage: if the NPC is grappled by
     // someone other than the player, attacking the player is at disadvantage.
-    let grappled = conditions::grappled_attack_disadvantage(
-        &npc_conditions,
-        &state.character.name,
-    );
+    let grappled = conditions::grappled_attack_disadvantage(&npc_conditions, &state.character.name);
     // Sap mastery: consume the mark so only the FIRST attack this turn is
     // rolled with disadvantage. Multiattack follow-ups revert to normal.
     let sapped_first_attack = consume_sap_disadvantage(combat, npc_id);
@@ -1201,10 +1364,17 @@ pub fn resolve_npc_turn(
     // re-check. This mirrors SRD 5.1: movement and action are independent
     // resources on the same turn.
     let attack_lines = resolve_npc_attack_action(
-        rng, &npc_attacks, npc_multiattack, distance,
-        grappled, sapped_first_attack,
-        &npc_name, &npc_conditions, &player_conditions,
-        state, combat,
+        rng,
+        &npc_attacks,
+        npc_multiattack,
+        distance,
+        grappled,
+        sapped_first_attack,
+        &npc_name,
+        &npc_conditions,
+        &player_conditions,
+        state,
+        combat,
     );
     if !attack_lines.is_empty() {
         lines.extend(attack_lines);
@@ -1224,16 +1394,30 @@ pub fn resolve_npc_turn(
         ));
     }
     let move_amount = effective_speed;
-    let new_distance = if distance > move_amount { distance - move_amount } else { 5 };
+    let new_distance = if distance > move_amount {
+        distance - move_amount
+    } else {
+        5
+    };
     combat.distances.insert(npc_id, new_distance);
-    lines.push(format!("{} moves toward you. ({}ft -> {}ft)", npc_name, distance, new_distance));
+    lines.push(format!(
+        "{} moves toward you. ({}ft -> {}ft)",
+        npc_name, distance, new_distance
+    ));
 
     // After moving, attempt an attack if now in range (SRD: move then act).
     let post_move_attack = resolve_npc_attack_action(
-        rng, &npc_attacks, npc_multiattack, new_distance,
-        grappled, sapped_first_attack,
-        &npc_name, &npc_conditions, &player_conditions,
-        state, combat,
+        rng,
+        &npc_attacks,
+        npc_multiattack,
+        new_distance,
+        grappled,
+        sapped_first_attack,
+        &npc_name,
+        &npc_conditions,
+        &player_conditions,
+        state,
+        combat,
     );
     lines.extend(post_move_attack);
 
@@ -1266,22 +1450,23 @@ pub fn approach_target(
     combat.distances.insert(target_id, new_distance);
     combat.player_movement_remaining -= move_amount as i32;
 
-    let target_name = state.world.npcs.get(&target_id)
+    let target_name = state
+        .world
+        .npcs
+        .get(&target_id)
         .map(|n| n.name.clone())
         .unwrap_or_else(|| "the enemy".to_string());
 
-    lines.push(format!("You move toward {}. ({}ft -> {}ft, {}ft movement remaining)",
-        target_name, distance, new_distance, combat.player_movement_remaining));
+    lines.push(format!(
+        "You move toward {}. ({}ft -> {}ft, {}ft movement remaining)",
+        target_name, distance, new_distance, combat.player_movement_remaining
+    ));
 
     lines
 }
 
 /// Move the player away from all enemies. Returns narration lines.
-pub fn retreat(
-    rng: &mut impl Rng,
-    state: &mut GameState,
-    combat: &mut CombatState,
-) -> Vec<String> {
+pub fn retreat(rng: &mut impl Rng, state: &mut GameState, combat: &mut CombatState) -> Vec<String> {
     let mut lines = Vec::new();
     let movement = combat.player_movement_remaining;
 
@@ -1292,7 +1477,9 @@ pub fn retreat(
     let move_amount = movement as u32;
 
     // Build distance map: npc_id -> (old_distance, new_distance)
-    let distance_changes: Vec<(NpcId, u32, u32)> = combat.distances.iter()
+    let distance_changes: Vec<(NpcId, u32, u32)> = combat
+        .distances
+        .iter()
         .map(|(&id, &old)| (id, old, old.saturating_add(move_amount)))
         .collect();
 
@@ -1330,13 +1517,18 @@ pub fn fire_opportunity_attacks(
             continue;
         }
 
-        let leaves_reach = state.world.npcs.get(&npc_id)
+        let leaves_reach = state
+            .world
+            .npcs
+            .get(&npc_id)
             .and_then(|npc| npc.combat_stats.as_ref())
             .and_then(|stats| {
                 if stats.current_hp <= 0 {
                     return None;
                 }
-                let max_melee_reach = stats.attacks.iter()
+                let max_melee_reach = stats
+                    .attacks
+                    .iter()
                     .filter(|a| a.reach > 0)
                     .map(|a| a.reach as u32)
                     .max()?;
@@ -1351,21 +1543,29 @@ pub fn fire_opportunity_attacks(
         // Consume the NPC's reaction
         combat.npc_reactions_used.insert(npc_id);
 
-        if let Some((npc_name, result)) = resolve_opportunity_attack(rng, npc_id, state, player_ac, old_distance) {
+        if let Some((npc_name, result)) =
+            resolve_opportunity_attack(rng, npc_id, state, player_ac, old_distance)
+        {
             if result.hit {
                 let was_dying = state.character.current_hp <= 0;
                 state.character.current_hp -= result.damage;
-                lines.push(format!("{} makes an opportunity attack with {} -- hit for {} {} damage!",
-                    npc_name, result.weapon_name, result.damage, result.damage_type));
+                lines.push(format!(
+                    "{} makes an opportunity attack with {} -- hit for {} {} damage!",
+                    npc_name, result.weapon_name, result.damage, result.damage_type
+                ));
                 if was_dying {
                     let outcome = combat.apply_damage_while_dying(
-                        &mut state.character, result.damage, result.natural_20,
+                        &mut state.character,
+                        result.damage,
+                        result.natural_20,
                     );
                     lines.extend(narrate_damage_while_dying_outcome(outcome));
                 }
             } else {
-                lines.push(format!("{} makes an opportunity attack with {} -- miss!",
-                    npc_name, result.weapon_name));
+                lines.push(format!(
+                    "{} makes an opportunity attack with {} -- miss!",
+                    npc_name, result.weapon_name
+                ));
             }
         }
     }
@@ -1377,8 +1577,14 @@ pub fn fire_opportunity_attacks(
 pub fn format_combat_status(state: &GameState, combat: &CombatState) -> Vec<String> {
     let mut lines = Vec::new();
     lines.push(format!("=== Combat - Round {} ===", combat.round));
-    lines.push(format!("HP: {}/{}", state.character.current_hp, state.character.max_hp));
-    lines.push(format!("AC: {}", crate::equipment::calculate_ac(&state.character, &state.world.items)));
+    lines.push(format!(
+        "HP: {}/{}",
+        state.character.current_hp, state.character.max_hp
+    ));
+    lines.push(format!(
+        "AC: {}",
+        crate::equipment::calculate_ac(&state.character, &state.world.items)
+    ));
     lines.push(String::new());
     lines.push("Enemies:".to_string());
 
@@ -1390,7 +1596,10 @@ pub fn format_combat_status(state: &GameState, combat: &CombatState) -> Vec<Stri
                     let status = if stats.current_hp <= 0 {
                         "DEAD".to_string()
                     } else {
-                        format!("HP {}/{}, {}ft away", stats.current_hp, stats.max_hp, distance)
+                        format!(
+                            "HP {}/{}, {}ft away",
+                            stats.current_hp, stats.max_hp, distance
+                        )
                     };
                     lines.push(format!("  {} - {}", npc.name, status));
                 }
@@ -1400,7 +1609,10 @@ pub fn format_combat_status(state: &GameState, combat: &CombatState) -> Vec<Stri
 
     if combat.is_player_turn() {
         lines.push(String::new());
-        lines.push(format!("Movement remaining: {} ft", combat.player_movement_remaining));
+        lines.push(format!(
+            "Movement remaining: {} ft",
+            combat.player_movement_remaining
+        ));
         let status = |used: bool| if used { "used" } else { "available" };
         lines.push(format!(
             "Action: {} | Bonus: {} | Reaction: {} | Free interaction: {}",
@@ -1410,9 +1622,41 @@ pub fn format_combat_status(state: &GameState, combat: &CombatState) -> Vec<Stri
             status(combat.free_interaction_used),
         ));
         if !combat.action_used {
-            lines.push("Commands: attack <target>, dodge, disengage, dash".to_string());
+            lines.push(
+                "Commands: attack <target>, grapple <target>, shove <target>, shove prone <target>, dodge, disengage, dash"
+                    .to_string(),
+            );
         } else {
-            lines.push("Action used. You can still move (approach/retreat) or spend your bonus action.".to_string());
+            lines.push(
+                "Action used. You can still move (approach/retreat) or spend your bonus action."
+                    .to_string(),
+            );
+        }
+        if matches!(
+            state.character.class,
+            crate::character::class::Class::Barbarian
+        ) {
+            if state.character.class_features.rage_active {
+                lines.push(
+                    "Rage active: your melee hits gain bonus damage and you resist physical damage."
+                        .to_string(),
+                );
+            } else if state.character.class_features.rage_uses_remaining == 0 {
+                lines.push(
+                    "Barbarian cues: Rage is spent for now. Grapple and shove still give you strong melee control."
+                        .to_string(),
+                );
+            } else {
+                lines.push(format!(
+                    "Barbarian cues: rage is ready ({} use{} left). Grapple and shove are strong melee control options.",
+                    state.character.class_features.rage_uses_remaining,
+                    if state.character.class_features.rage_uses_remaining == 1 {
+                        ""
+                    } else {
+                        "s"
+                    }
+                ));
+            }
         }
     }
 
@@ -1426,11 +1670,19 @@ pub fn format_enemy_summary(state: &GameState, combat: &CombatState) -> Vec<Stri
         if let Combatant::Npc(id) = combatant {
             if let Some(npc) = state.world.npcs.get(id) {
                 if let Some(stats) = &npc.combat_stats {
-                    if stats.current_hp <= 0 { continue; }
+                    if stats.current_hp <= 0 {
+                        continue;
+                    }
                     let distance = combat.distances.get(id).copied().unwrap_or(0);
-                    let range_label = if distance <= 5 { "melee".to_string() } else { format!("{}ft", distance) };
-                    lines.push(format!("  {} — HP {}/{}, {}",
-                        npc.name, stats.current_hp, stats.max_hp, range_label));
+                    let range_label = if distance <= 5 {
+                        "melee".to_string()
+                    } else {
+                        format!("{}ft", distance)
+                    };
+                    lines.push(format!(
+                        "  {} — HP {}/{}, {}",
+                        npc.name, stats.current_hp, stats.max_hp, range_label
+                    ));
                 }
             }
         }
@@ -1447,7 +1699,10 @@ pub fn format_initiative(combat: &CombatState, state: &GameState) -> Vec<String>
     for (i, (combatant, init)) in combat.initiative_order.iter().enumerate() {
         let name = match combatant {
             Combatant::Player => state.character.name.clone(),
-            Combatant::Npc(id) => state.world.npcs.get(id)
+            Combatant::Npc(id) => state
+                .world
+                .npcs
+                .get(id)
                 .map(|n| n.name.clone())
                 .unwrap_or_else(|| format!("NPC {}", id)),
         };
@@ -1459,7 +1714,10 @@ pub fn format_initiative(combat: &CombatState, state: &GameState) -> Vec<String>
     // Show distances
     lines.push("Distances:".to_string());
     for (&npc_id, &dist) in &combat.distances {
-        let name = state.world.npcs.get(&npc_id)
+        let name = state
+            .world
+            .npcs
+            .get(&npc_id)
             .map(|n| n.name.clone())
             .unwrap_or_else(|| format!("NPC {}", npc_id));
         lines.push(format!("  {}: {} ft", name, dist));
@@ -1476,13 +1734,13 @@ pub fn format_initiative(combat: &CombatState, state: &GameState) -> Vec<String>
 /// Lives in `combat/` (not `conditions/`) so the conditions module stays
 /// decoupled from NPC stat-block storage. See
 /// `docs/specs/monster-stat-blocks.md`.
-pub fn try_apply_condition_to_npc(
-    npc: &mut Npc,
-    new_condition: ActiveCondition,
-) -> bool {
+pub fn try_apply_condition_to_npc(npc: &mut Npc, new_condition: ActiveCondition) -> bool {
     // Stat-block immunity check (e.g., Skeleton immune to Poisoned).
     if let Some(stats) = npc.combat_stats.as_ref() {
-        if stats.condition_immunities.contains(&new_condition.condition) {
+        if stats
+            .condition_immunities
+            .contains(&new_condition.condition)
+        {
             return false;
         }
     }
@@ -1504,7 +1762,9 @@ pub fn apply_damage_to_npc(
     narration: &mut Vec<String>,
 ) -> i32 {
     let name = npc.name.clone();
-    let Some(stats) = npc.combat_stats.as_mut() else { return 0 };
+    let Some(stats) = npc.combat_stats.as_mut() else {
+        return 0;
+    };
     let dealt = apply_damage_modifiers(stats, incoming, damage_type, &name, narration);
     stats.current_hp -= dealt;
     if stats.current_hp < 0 {
@@ -1537,12 +1797,18 @@ pub fn apply_damage_modifiers(
         return incoming.max(0);
     }
     if stats.damage_immunities.contains(&damage_type) {
-        narration.push(format!("The {} is immune to {} damage!", target_name, damage_type));
+        narration.push(format!(
+            "The {} is immune to {} damage!",
+            target_name, damage_type
+        ));
         return 0;
     }
     if stats.damage_resistances.contains(&damage_type) {
         let halved = incoming / 2;
-        narration.push(format!("The {} resists the {} damage.", target_name, damage_type));
+        narration.push(format!(
+            "The {} resists the {} damage.",
+            target_name, damage_type
+        ));
         return halved.max(0);
     }
     incoming
@@ -1618,10 +1884,7 @@ pub fn apply_vex_mastery(
 /// `target_npc_id` because of a previously-applied Vex mastery. Consumes
 /// the mark (clears `combat.player_vex_target`) so a subsequent attack
 /// does not retain the advantage.
-pub fn consume_vex_advantage(
-    combat: &mut CombatState,
-    target_npc_id: NpcId,
-) -> bool {
+pub fn consume_vex_advantage(combat: &mut CombatState, target_npc_id: NpcId) -> bool {
     if combat.player_vex_target == Some(target_npc_id) {
         combat.player_vex_target = None;
         return true;
@@ -1650,10 +1913,7 @@ pub fn apply_sap_mastery(
 /// Returns true when `npc_id` is currently sap-marked and consumes the
 /// mark. Intended to be called once per NPC attack so the mark only
 /// affects one attack roll.
-pub fn consume_sap_disadvantage(
-    combat: &mut CombatState,
-    npc_id: NpcId,
-) -> bool {
+pub fn consume_sap_disadvantage(combat: &mut CombatState, npc_id: NpcId) -> bool {
     combat.sap_targets.remove(&npc_id)
 }
 
@@ -1673,12 +1933,19 @@ pub fn apply_slow_mastery(
     if !has_mastery || !result.hit || result.damage <= 0 {
         return false;
     }
-    let existing = combat.slow_targets.get(&target_npc_id).copied().unwrap_or(0);
+    let existing = combat
+        .slow_targets
+        .get(&target_npc_id)
+        .copied()
+        .unwrap_or(0);
     if existing >= 10 {
         return false;
     }
     combat.slow_targets.insert(target_npc_id, 10);
-    narration.push("Slow: the target's Speed is reduced by 10 ft until the start of your next turn.".to_string());
+    narration.push(
+        "Slow: the target's Speed is reduced by 10 ft until the start of your next turn."
+            .to_string(),
+    );
     true
 }
 
@@ -1741,9 +2008,17 @@ pub fn apply_topple_mastery(
         return false;
     }
     let dc = 8 + ability_mod_used + player_proficiency_bonus;
-    let Some(npc) = state.world.npcs.get_mut(&target_npc_id) else { return false };
-    let Some(stats) = npc.combat_stats.as_ref() else { return false };
-    let con = stats.ability_scores.get(&Ability::Constitution).copied().unwrap_or(10);
+    let Some(npc) = state.world.npcs.get_mut(&target_npc_id) else {
+        return false;
+    };
+    let Some(stats) = npc.combat_stats.as_ref() else {
+        return false;
+    };
+    let con = stats
+        .ability_scores
+        .get(&Ability::Constitution)
+        .copied()
+        .unwrap_or(10);
     let con_mod = Ability::modifier(con);
     let con_save_prof = 0; // NPC CON save proficiency is not modelled in MVP.
     let roll = roll_d20(rng);
@@ -1752,7 +2027,9 @@ pub fn apply_topple_mastery(
     if save_total >= dc {
         narration.push(format!(
             "Topple: {} succeeds on a CON save ({} vs DC {}).",
-            npc_name, format_roll(roll, con_mod, save_total), dc
+            npc_name,
+            format_roll(roll, con_mod, save_total),
+            dc
         ));
         return false;
     }
@@ -1765,7 +2042,9 @@ pub fn apply_topple_mastery(
     if applied {
         narration.push(format!(
             "Topple: {} fails the CON save ({} vs DC {}) and is knocked Prone!",
-            npc_name, format_roll(roll, con_mod, save_total), dc
+            npc_name,
+            format_roll(roll, con_mod, save_total),
+            dc
         ));
     } else {
         narration.push(format!(
@@ -1855,8 +2134,16 @@ pub fn resolve_grapple_attempt(
 
     // Per 2024 SRD the target picks whichever of STR or DEX gives the
     // higher save total. We compute both and pick the better one.
-    let str_score = stats.ability_scores.get(&Ability::Strength).copied().unwrap_or(10);
-    let dex_score = stats.ability_scores.get(&Ability::Dexterity).copied().unwrap_or(10);
+    let str_score = stats
+        .ability_scores
+        .get(&Ability::Strength)
+        .copied()
+        .unwrap_or(10);
+    let dex_score = stats
+        .ability_scores
+        .get(&Ability::Dexterity)
+        .copied()
+        .unwrap_or(10);
     let str_mod = Ability::modifier(str_score);
     let dex_mod = Ability::modifier(dex_score);
     let (save_mod, save_ability) = if str_mod >= dex_mod {
@@ -1895,7 +2182,7 @@ pub fn resolve_grapple_attempt(
 
     Some(GrappleAttemptResult {
         success: true, // even if immune, we return success=true to keep narration simple;
-                       // `try_apply_condition_to_npc` is false on immunity
+        // `try_apply_condition_to_npc` is false on immunity
         target_d20: d20,
         target_save_total: save_total,
         dc,
@@ -1935,7 +2222,12 @@ pub fn resolve_escape_grapple(
         return None;
     }
 
-    let str_score = state.character.ability_scores.get(&Ability::Strength).copied().unwrap_or(10);
+    let str_score = state
+        .character
+        .ability_scores
+        .get(&Ability::Strength)
+        .copied()
+        .unwrap_or(10);
     let pb = state.character.proficiency_bonus();
 
     // DC is based on the grappler's stats. Since only the player can grapple
@@ -1958,7 +2250,10 @@ pub fn resolve_escape_grapple(
 
     if success {
         // Remove the Grappled condition.
-        state.character.conditions.retain(|c| c.condition != ConditionType::Grappled);
+        state
+            .character
+            .conditions
+            .retain(|c| c.condition != ConditionType::Grappled);
     }
 
     Some(GrappleEscapeResult {
@@ -1976,7 +2271,8 @@ pub fn resolve_escape_grapple(
 pub fn release_grapple_on_npc(npc: &mut Npc, grappler_name: &str) {
     npc.conditions.retain(|c| {
         !(c.condition == ConditionType::Grappled
-            && c.source.as_deref()
+            && c.source
+                .as_deref()
                 .map(|s| s.eq_ignore_ascii_case(grappler_name))
                 .unwrap_or(false))
     });
@@ -2009,8 +2305,12 @@ pub fn handle_shove(
     let mut lines = Vec::new();
 
     // Compute DC: 8 + player STR mod + proficiency bonus.
-    let str_score = state.character.ability_scores
-        .get(&Ability::Strength).copied().unwrap_or(10);
+    let str_score = state
+        .character
+        .ability_scores
+        .get(&Ability::Strength)
+        .copied()
+        .unwrap_or(10);
     let str_mod = Ability::modifier(str_score);
     let pb = state.character.proficiency_bonus();
     let dc = 8 + str_mod + pb;
@@ -2031,7 +2331,11 @@ pub fn handle_shove(
         }
     };
     let npc_display = npc.name.clone();
-    let npc_str = stats.ability_scores.get(&Ability::Strength).copied().unwrap_or(10);
+    let npc_str = stats
+        .ability_scores
+        .get(&Ability::Strength)
+        .copied()
+        .unwrap_or(10);
     let npc_str_mod = Ability::modifier(npc_str);
     let roll = roll_d20(rng);
     let npc_total = roll + npc_str_mod;
@@ -2040,7 +2344,9 @@ pub fn handle_shove(
         // NPC succeeds: resists the shove.
         lines.push(format!(
             "{} resists the shove! (STR save: {} vs DC {})",
-            npc_display, format_roll(roll, npc_str_mod, npc_total), dc
+            npc_display,
+            format_roll(roll, npc_str_mod, npc_total),
+            dc
         ));
         return lines;
     }
@@ -2048,10 +2354,7 @@ pub fn handle_shove(
     // NPC fails the save.
     if knock_prone {
         // Apply Prone condition.
-        let new_cond = ActiveCondition::new(
-            ConditionType::Prone,
-            ConditionDuration::Permanent,
-        );
+        let new_cond = ActiveCondition::new(ConditionType::Prone, ConditionDuration::Permanent);
         let npc_mut = match state.world.npcs.get_mut(&target_id) {
             Some(n) => n,
             None => return lines,
@@ -2060,12 +2363,16 @@ pub fn handle_shove(
         if applied {
             lines.push(format!(
                 "You knock {} prone! (STR save: {} vs DC {})",
-                npc_display, format_roll(roll, npc_str_mod, npc_total), dc
+                npc_display,
+                format_roll(roll, npc_str_mod, npc_total),
+                dc
             ));
         } else {
             lines.push(format!(
                 "{} fails the save but is immune to Prone. (STR save: {} vs DC {})",
-                npc_display, format_roll(roll, npc_str_mod, npc_total), dc
+                npc_display,
+                format_roll(roll, npc_str_mod, npc_total),
+                dc
             ));
         }
     } else {
@@ -2075,7 +2382,9 @@ pub fn handle_shove(
         combat.distances.insert(target_id, new_dist);
         lines.push(format!(
             "You shove {} back 5 feet! (STR save: {} vs DC {})",
-            npc_display, format_roll(roll, npc_str_mod, npc_total), dc
+            npc_display,
+            format_roll(roll, npc_str_mod, npc_total),
+            dc
         ));
     }
 
@@ -2112,11 +2421,16 @@ pub fn apply_cleave_mastery(
     }
     // Find a secondary target: a living hostile NPC, not the primary,
     // currently within 5 ft.
-    let secondary_id = combat.distances.iter()
+    let secondary_id = combat
+        .distances
+        .iter()
         .filter(|(id, dist)| {
             **id != primary_target_id
                 && **dist <= 5
-                && state.world.npcs.get(*id)
+                && state
+                    .world
+                    .npcs
+                    .get(*id)
                     .and_then(|n| n.combat_stats.as_ref())
                     .map(|s| s.current_hp > 0)
                     .unwrap_or(false)
@@ -2124,12 +2438,22 @@ pub fn apply_cleave_mastery(
         .map(|(id, _)| *id)
         .next();
     let secondary_id = secondary_id?;
-    let secondary_ac = state.world.npcs.get(&secondary_id)
+    let secondary_ac = state
+        .world
+        .npcs
+        .get(&secondary_id)
         .and_then(|n| n.combat_stats.as_ref())
         .map(|s| s.ac)
         .unwrap_or(10);
-    let secondary_dodging = combat.npc_dodging.get(&secondary_id).copied().unwrap_or(false);
-    let secondary_conditions: Vec<ActiveCondition> = state.world.npcs.get(&secondary_id)
+    let secondary_dodging = combat
+        .npc_dodging
+        .get(&secondary_id)
+        .copied()
+        .unwrap_or(false);
+    let secondary_conditions: Vec<ActiveCondition> = state
+        .world
+        .npcs
+        .get(&secondary_id)
         .map(|n| n.conditions.clone())
         .unwrap_or_default();
     let distance = combat.distances.get(&secondary_id).copied().unwrap_or(5);
@@ -2175,10 +2499,7 @@ pub fn apply_cleave_mastery(
 /// "requires bonus action" gate and skip consuming the bonus action).
 /// Also flips `nick_used_this_turn` on success so a second Nick swing in
 /// the same turn falls back to normal Two-Weapon-Fighting rules.
-pub fn apply_nick_mastery(
-    has_mastery: bool,
-    combat: &mut CombatState,
-) -> bool {
+pub fn apply_nick_mastery(has_mastery: bool, combat: &mut CombatState) -> bool {
     if !has_mastery || combat.nick_used_this_turn {
         return false;
     }
@@ -2201,10 +2522,7 @@ pub fn sneak_attack_dice_for_level(level: u32) -> u32 {
 /// a Finesse melee weapon OR a ranged weapon. `is_ranged_attack` is the
 /// orchestrator's resolution of whether this specific attack is being used
 /// at range (thrown weapons only qualify when actually thrown from range).
-pub fn sneak_attack_weapon_qualifies(
-    properties: u16,
-    is_ranged_attack: bool,
-) -> bool {
+pub fn sneak_attack_weapon_qualifies(properties: u16, is_ranged_attack: bool) -> bool {
     let is_finesse = properties & FINESSE != 0;
     is_finesse || is_ranged_attack
 }
@@ -2212,11 +2530,7 @@ pub fn sneak_attack_weapon_qualifies(
 /// Roll the Sneak Attack bonus-damage dice for the given Rogue level. On a
 /// critical hit the die count is doubled per SRD. Returns the summed damage.
 /// A zero-dice result (non-Rogue levels mis-used) returns 0.
-pub fn roll_sneak_attack(
-    rng: &mut impl Rng,
-    level: u32,
-    critical: bool,
-) -> i32 {
+pub fn roll_sneak_attack(rng: &mut impl Rng, level: u32, critical: bool) -> i32 {
     let dice = sneak_attack_dice_for_level(level);
     if dice == 0 {
         return 0;
@@ -2228,14 +2542,14 @@ pub fn roll_sneak_attack(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::SeedableRng;
-    use rand::rngs::StdRng;
-    use std::collections::HashMap;
-    use crate::character::{create_character, race::Race, class::Class};
-    use crate::state::{Npc, NpcRole, Disposition, WorldState, GamePhase, SAVE_VERSION};
-    use crate::state::{CombatStats, NpcAttack, DamageType};
+    use crate::character::{class::Class, create_character, race::Race};
     #[allow(unused_imports)]
     use crate::equipment::Equipment;
+    use crate::state::{CombatStats, DamageType, NpcAttack};
+    use crate::state::{Disposition, GamePhase, Npc, NpcRole, WorldState, SAVE_VERSION};
+    use rand::rngs::StdRng;
+    use rand::SeedableRng;
+    use std::collections::HashMap;
     use std::collections::HashSet;
 
     fn test_character() -> Character {
@@ -2246,12 +2560,21 @@ mod tests {
         scores.insert(Ability::Intelligence, 10);
         scores.insert(Ability::Wisdom, 12);
         scores.insert(Ability::Charisma, 8);
-        create_character("TestHero".to_string(), Race::Human, Class::Fighter, scores, vec![])
+        create_character(
+            "TestHero".to_string(),
+            Race::Human,
+            Class::Fighter,
+            scores,
+            vec![],
+        )
     }
 
     fn goblin_stats() -> CombatStats {
         CombatStats {
-            max_hp: 7, current_hp: 7, ac: 15, speed: 30,
+            max_hp: 7,
+            current_hp: 7,
+            ac: 15,
+            speed: 30,
             ability_scores: {
                 let mut m = HashMap::new();
                 m.insert(Ability::Strength, 8);
@@ -2264,16 +2587,26 @@ mod tests {
             },
             attacks: vec![
                 NpcAttack {
-                    name: "Scimitar".to_string(), hit_bonus: 4,
-                    damage_dice: 1, damage_die: 6, damage_bonus: 2,
-                    damage_type: DamageType::Slashing, reach: 5,
-                    range_normal: 0, range_long: 0,
+                    name: "Scimitar".to_string(),
+                    hit_bonus: 4,
+                    damage_dice: 1,
+                    damage_die: 6,
+                    damage_bonus: 2,
+                    damage_type: DamageType::Slashing,
+                    reach: 5,
+                    range_normal: 0,
+                    range_long: 0,
                 },
                 NpcAttack {
-                    name: "Shortbow".to_string(), hit_bonus: 4,
-                    damage_dice: 1, damage_die: 6, damage_bonus: 2,
-                    damage_type: DamageType::Piercing, reach: 0,
-                    range_normal: 80, range_long: 320,
+                    name: "Shortbow".to_string(),
+                    hit_bonus: 4,
+                    damage_dice: 1,
+                    damage_die: 6,
+                    damage_bonus: 2,
+                    damage_type: DamageType::Piercing,
+                    reach: 0,
+                    range_normal: 80,
+                    range_long: 320,
                 },
             ],
             proficiency_bonus: 2,
@@ -2285,16 +2618,19 @@ mod tests {
     fn test_state_with_goblin() -> GameState {
         let character = test_character();
         let mut npcs = HashMap::new();
-        npcs.insert(0, Npc {
-            id: 0,
-            name: "Goblin".to_string(),
-            role: NpcRole::Guard,
-            disposition: Disposition::Hostile,
-            dialogue_tags: vec![],
-            location: 0,
-            combat_stats: Some(goblin_stats()),
-            conditions: Vec::new(),
-        });
+        npcs.insert(
+            0,
+            Npc {
+                id: 0,
+                name: "Goblin".to_string(),
+                role: NpcRole::Guard,
+                disposition: Disposition::Hostile,
+                dialogue_tags: vec![],
+                location: 0,
+                combat_stats: Some(goblin_stats()),
+                conditions: Vec::new(),
+            },
+        );
 
         GameState {
             version: SAVE_VERSION.to_string(),
@@ -2302,8 +2638,11 @@ mod tests {
             current_location: 0,
             discovered_locations: HashSet::new(),
             world: WorldState {
-                locations: HashMap::new(), npcs, items: HashMap::new(),
-                triggers: HashMap::new(), triggered: HashSet::new(),
+                locations: HashMap::new(),
+                npcs,
+                items: HashMap::new(),
+                triggers: HashMap::new(),
+                triggered: HashSet::new(),
             },
             log: Vec::new(),
             rng_seed: 42,
@@ -2356,8 +2695,11 @@ mod tests {
     fn test_player_melee_reach_unarmed_is_5() {
         let character = test_character();
         let items = HashMap::new();
-        assert_eq!(player_melee_reach(&character, &items), 5,
-            "Unarmed melee reach should be 5 ft");
+        assert_eq!(
+            player_melee_reach(&character, &items),
+            5,
+            "Unarmed melee reach should be 5 ft"
+        );
     }
 
     #[test]
@@ -2365,24 +2707,33 @@ mod tests {
         use crate::state::{Item, ItemType, WeaponCategory};
         let mut character = test_character();
         let mut items = HashMap::new();
-        items.insert(500u32, Item {
-            id: 500,
-            name: "Longsword".to_string(),
-            description: "".to_string(),
-            item_type: ItemType::Weapon {
-                damage_dice: 1, damage_die: 8,
-                damage_type: DamageType::Slashing,
-                properties: crate::equipment::VERSATILE,
-                category: WeaponCategory::Martial,
-                versatile_die: 10, range_normal: 0, range_long: 0,
+        items.insert(
+            500u32,
+            Item {
+                id: 500,
+                name: "Longsword".to_string(),
+                description: "".to_string(),
+                item_type: ItemType::Weapon {
+                    damage_dice: 1,
+                    damage_die: 8,
+                    damage_type: DamageType::Slashing,
+                    properties: crate::equipment::VERSATILE,
+                    category: WeaponCategory::Martial,
+                    versatile_die: 10,
+                    range_normal: 0,
+                    range_long: 0,
+                },
+                location: None,
+                carried_by_player: true,
+                charges_remaining: None,
             },
-            location: None,
-            carried_by_player: true,
-            charges_remaining: None,
-        });
+        );
         character.equipped.main_hand = Some(500);
-        assert_eq!(player_melee_reach(&character, &items), 5,
-            "Non-reach weapon should give 5 ft reach");
+        assert_eq!(
+            player_melee_reach(&character, &items),
+            5,
+            "Non-reach weapon should give 5 ft reach"
+        );
     }
 
     #[test]
@@ -2390,24 +2741,35 @@ mod tests {
         use crate::state::{Item, ItemType, WeaponCategory};
         let mut character = test_character();
         let mut items = HashMap::new();
-        items.insert(501u32, Item {
-            id: 501,
-            name: "Glaive".to_string(),
-            description: "".to_string(),
-            item_type: ItemType::Weapon {
-                damage_dice: 1, damage_die: 10,
-                damage_type: DamageType::Slashing,
-                properties: crate::equipment::REACH | crate::equipment::HEAVY | crate::equipment::TWO_HANDED,
-                category: WeaponCategory::Martial,
-                versatile_die: 0, range_normal: 0, range_long: 0,
+        items.insert(
+            501u32,
+            Item {
+                id: 501,
+                name: "Glaive".to_string(),
+                description: "".to_string(),
+                item_type: ItemType::Weapon {
+                    damage_dice: 1,
+                    damage_die: 10,
+                    damage_type: DamageType::Slashing,
+                    properties: crate::equipment::REACH
+                        | crate::equipment::HEAVY
+                        | crate::equipment::TWO_HANDED,
+                    category: WeaponCategory::Martial,
+                    versatile_die: 0,
+                    range_normal: 0,
+                    range_long: 0,
+                },
+                location: None,
+                carried_by_player: true,
+                charges_remaining: None,
             },
-            location: None,
-            carried_by_player: true,
-            charges_remaining: None,
-        });
+        );
         character.equipped.main_hand = Some(501);
-        assert_eq!(player_melee_reach(&character, &items), 10,
-            "REACH weapon should give 10 ft reach");
+        assert_eq!(
+            player_melee_reach(&character, &items),
+            10,
+            "REACH weapon should give 10 ft reach"
+        );
     }
 
     #[test]
@@ -2417,24 +2779,35 @@ mod tests {
         use crate::state::{Item, ItemType, WeaponCategory};
         let mut character = test_character();
         let mut items = HashMap::new();
-        items.insert(502u32, Item {
-            id: 502,
-            name: "Longbow".to_string(),
-            description: "".to_string(),
-            item_type: ItemType::Weapon {
-                damage_dice: 1, damage_die: 8,
-                damage_type: DamageType::Piercing,
-                properties: crate::equipment::AMMUNITION | crate::equipment::TWO_HANDED | crate::equipment::HEAVY,
-                category: WeaponCategory::Martial,
-                versatile_die: 0, range_normal: 150, range_long: 600,
+        items.insert(
+            502u32,
+            Item {
+                id: 502,
+                name: "Longbow".to_string(),
+                description: "".to_string(),
+                item_type: ItemType::Weapon {
+                    damage_dice: 1,
+                    damage_die: 8,
+                    damage_type: DamageType::Piercing,
+                    properties: crate::equipment::AMMUNITION
+                        | crate::equipment::TWO_HANDED
+                        | crate::equipment::HEAVY,
+                    category: WeaponCategory::Martial,
+                    versatile_die: 0,
+                    range_normal: 150,
+                    range_long: 600,
+                },
+                location: None,
+                carried_by_player: true,
+                charges_remaining: None,
             },
-            location: None,
-            carried_by_player: true,
-            charges_remaining: None,
-        });
+        );
         character.equipped.main_hand = Some(502);
-        assert_eq!(player_melee_reach(&character, &items), 5,
-            "Pure ranged weapon should fall back to unarmed reach of 5 ft");
+        assert_eq!(
+            player_melee_reach(&character, &items),
+            5,
+            "Pure ranged weapon should fall back to unarmed reach of 5 ft"
+        );
     }
 
     #[test]
@@ -2444,12 +2817,16 @@ mod tests {
         let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
 
         combat.distances.insert(0, 5);
-        assert!(npc_within_player_reach(&state, &combat, 0),
-            "Goblin at 5 ft should be in unarmed reach");
+        assert!(
+            npc_within_player_reach(&state, &combat, 0),
+            "Goblin at 5 ft should be in unarmed reach"
+        );
 
         combat.distances.insert(0, 10);
-        assert!(!npc_within_player_reach(&state, &combat, 0),
-            "Goblin at 10 ft should NOT be in unarmed reach");
+        assert!(
+            !npc_within_player_reach(&state, &combat, 0),
+            "Goblin at 10 ft should NOT be in unarmed reach"
+        );
     }
 
     #[test]
@@ -2458,31 +2835,43 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(42);
         let mut state = test_state_with_goblin();
         // Equip a glaive (REACH weapon). 10 ft threatened area.
-        state.world.items.insert(700u32, Item {
-            id: 700,
-            name: "Glaive".to_string(),
-            description: "".to_string(),
-            item_type: ItemType::Weapon {
-                damage_dice: 1, damage_die: 10,
-                damage_type: DamageType::Slashing,
-                properties: crate::equipment::REACH | crate::equipment::HEAVY | crate::equipment::TWO_HANDED,
-                category: WeaponCategory::Martial,
-                versatile_die: 0, range_normal: 0, range_long: 0,
+        state.world.items.insert(
+            700u32,
+            Item {
+                id: 700,
+                name: "Glaive".to_string(),
+                description: "".to_string(),
+                item_type: ItemType::Weapon {
+                    damage_dice: 1,
+                    damage_die: 10,
+                    damage_type: DamageType::Slashing,
+                    properties: crate::equipment::REACH
+                        | crate::equipment::HEAVY
+                        | crate::equipment::TWO_HANDED,
+                    category: WeaponCategory::Martial,
+                    versatile_die: 0,
+                    range_normal: 0,
+                    range_long: 0,
+                },
+                location: None,
+                carried_by_player: true,
+                charges_remaining: None,
             },
-            location: None,
-            carried_by_player: true,
-            charges_remaining: None,
-        });
+        );
         state.character.equipped.main_hand = Some(700);
 
         let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
         combat.distances.insert(0, 10);
-        assert!(npc_within_player_reach(&state, &combat, 0),
-            "Glaive-equipped player should threaten NPC at 10 ft");
+        assert!(
+            npc_within_player_reach(&state, &combat, 0),
+            "Glaive-equipped player should threaten NPC at 10 ft"
+        );
 
         combat.distances.insert(0, 15);
-        assert!(!npc_within_player_reach(&state, &combat, 0),
-            "Glaive reach is 10 ft; NPC at 15 ft should NOT be threatened");
+        assert!(
+            !npc_within_player_reach(&state, &combat, 0),
+            "Glaive reach is 10 ft; NPC at 15 ft should NOT be threatened"
+        );
     }
 
     #[test]
@@ -2492,10 +2881,20 @@ mod tests {
         let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
 
         // Kill the goblin.
-        state.world.npcs.get_mut(&0).unwrap().combat_stats.as_mut().unwrap().current_hp = 0;
+        state
+            .world
+            .npcs
+            .get_mut(&0)
+            .unwrap()
+            .combat_stats
+            .as_mut()
+            .unwrap()
+            .current_hp = 0;
         combat.distances.insert(0, 5);
-        assert!(!npc_within_player_reach(&state, &combat, 0),
-            "Dead NPC at 5 ft should not be treated as reachable for OA");
+        assert!(
+            !npc_within_player_reach(&state, &combat, 0),
+            "Dead NPC at 5 ft should not be treated as reachable for OA"
+        );
     }
 
     #[test]
@@ -2511,7 +2910,15 @@ mod tests {
         assert!(!has_living_hostile_within(&state, &combat, 5));
 
         // dead enemy should not count
-        state.world.npcs.get_mut(&0).unwrap().combat_stats.as_mut().unwrap().current_hp = 0;
+        state
+            .world
+            .npcs
+            .get_mut(&0)
+            .unwrap()
+            .combat_stats
+            .as_mut()
+            .unwrap()
+            .current_hp = 0;
         combat.distances.insert(0, 5);
         assert!(!has_living_hostile_within(&state, &combat, 5));
     }
@@ -2519,18 +2926,37 @@ mod tests {
     #[test]
     fn test_resolve_npc_attack_hit_or_miss() {
         let attack = NpcAttack {
-            name: "Scimitar".to_string(), hit_bonus: 4,
-            damage_dice: 1, damage_die: 6, damage_bonus: 2,
-            damage_type: DamageType::Slashing, reach: 5,
-            range_normal: 0, range_long: 0,
+            name: "Scimitar".to_string(),
+            hit_bonus: 4,
+            damage_dice: 1,
+            damage_die: 6,
+            damage_bonus: 2,
+            damage_type: DamageType::Slashing,
+            reach: 5,
+            range_normal: 0,
+            range_long: 0,
         };
         // Run many times to get both hits and misses
         let mut hits = 0;
         let mut misses = 0;
         for seed in 0..100 {
             let mut rng = StdRng::seed_from_u64(seed);
-            let result = resolve_npc_attack(&mut rng, &attack, 15, false, 5, &[], &[], false, &Cover::None);
-            if result.hit { hits += 1; } else { misses += 1; }
+            let result = resolve_npc_attack(
+                &mut rng,
+                &attack,
+                15,
+                false,
+                5,
+                &[],
+                &[],
+                false,
+                &Cover::None,
+            );
+            if result.hit {
+                hits += 1;
+            } else {
+                misses += 1;
+            }
         }
         assert!(hits > 0, "Should have some hits");
         assert!(misses > 0, "Should have some misses");
@@ -2539,15 +2965,30 @@ mod tests {
     #[test]
     fn test_natural_20_always_hits() {
         let attack = NpcAttack {
-            name: "Test".to_string(), hit_bonus: -10, // Very low bonus
-            damage_dice: 1, damage_die: 6, damage_bonus: 0,
-            damage_type: DamageType::Slashing, reach: 5,
-            range_normal: 0, range_long: 0,
+            name: "Test".to_string(),
+            hit_bonus: -10, // Very low bonus
+            damage_dice: 1,
+            damage_die: 6,
+            damage_bonus: 0,
+            damage_type: DamageType::Slashing,
+            reach: 5,
+            range_normal: 0,
+            range_long: 0,
         };
         // Find a seed that gives nat 20
         for seed in 0..1000 {
             let mut rng = StdRng::seed_from_u64(seed);
-            let result = resolve_npc_attack(&mut rng, &attack, 30, false, 5, &[], &[], false, &Cover::None);
+            let result = resolve_npc_attack(
+                &mut rng,
+                &attack,
+                30,
+                false,
+                5,
+                &[],
+                &[],
+                false,
+                &Cover::None,
+            );
             if result.natural_20 {
                 assert!(result.hit, "Natural 20 should always hit");
                 return;
@@ -2559,14 +3000,29 @@ mod tests {
     #[test]
     fn test_natural_1_always_misses() {
         let attack = NpcAttack {
-            name: "Test".to_string(), hit_bonus: 100, // Very high bonus
-            damage_dice: 1, damage_die: 6, damage_bonus: 0,
-            damage_type: DamageType::Slashing, reach: 5,
-            range_normal: 0, range_long: 0,
+            name: "Test".to_string(),
+            hit_bonus: 100, // Very high bonus
+            damage_dice: 1,
+            damage_die: 6,
+            damage_bonus: 0,
+            damage_type: DamageType::Slashing,
+            reach: 5,
+            range_normal: 0,
+            range_long: 0,
         };
         for seed in 0..1000 {
             let mut rng = StdRng::seed_from_u64(seed);
-            let result = resolve_npc_attack(&mut rng, &attack, 1, false, 5, &[], &[], false, &Cover::None);
+            let result = resolve_npc_attack(
+                &mut rng,
+                &attack,
+                1,
+                false,
+                5,
+                &[],
+                &[],
+                false,
+                &Cover::None,
+            );
             if result.natural_1 {
                 assert!(!result.hit, "Natural 1 should always miss");
                 return;
@@ -2578,16 +3034,31 @@ mod tests {
     #[test]
     fn test_critical_hit_doubles_dice() {
         let attack = NpcAttack {
-            name: "Test".to_string(), hit_bonus: 4,
-            damage_dice: 1, damage_die: 6, damage_bonus: 2,
-            damage_type: DamageType::Slashing, reach: 5,
-            range_normal: 0, range_long: 0,
+            name: "Test".to_string(),
+            hit_bonus: 4,
+            damage_dice: 1,
+            damage_die: 6,
+            damage_bonus: 2,
+            damage_type: DamageType::Slashing,
+            reach: 5,
+            range_normal: 0,
+            range_long: 0,
         };
         // Find a nat 20 and verify higher damage potential
         let mut crit_damages = Vec::new();
         for seed in 0..1000 {
             let mut rng = StdRng::seed_from_u64(seed);
-            let result = resolve_npc_attack(&mut rng, &attack, 10, false, 5, &[], &[], false, &Cover::None);
+            let result = resolve_npc_attack(
+                &mut rng,
+                &attack,
+                10,
+                false,
+                5,
+                &[],
+                &[],
+                false,
+                &Cover::None,
+            );
             if result.natural_20 {
                 crit_damages.push(result.damage);
             }
@@ -2602,10 +3073,15 @@ mod tests {
     #[test]
     fn test_dodge_grants_disadvantage() {
         let attack = NpcAttack {
-            name: "Test".to_string(), hit_bonus: 4,
-            damage_dice: 1, damage_die: 6, damage_bonus: 2,
-            damage_type: DamageType::Slashing, reach: 5,
-            range_normal: 0, range_long: 0,
+            name: "Test".to_string(),
+            hit_bonus: 4,
+            damage_dice: 1,
+            damage_die: 6,
+            damage_bonus: 2,
+            damage_type: DamageType::Slashing,
+            reach: 5,
+            range_normal: 0,
+            range_long: 0,
         };
 
         let mut dodge_hits = 0;
@@ -2613,12 +3089,41 @@ mod tests {
         for seed in 0..1000 {
             let mut rng1 = StdRng::seed_from_u64(seed);
             let mut rng2 = StdRng::seed_from_u64(seed);
-            let dodge = resolve_npc_attack(&mut rng1, &attack, 15, true, 5, &[], &[], false, &Cover::None);
-            let normal = resolve_npc_attack(&mut rng2, &attack, 15, false, 5, &[], &[], false, &Cover::None);
-            if dodge.hit { dodge_hits += 1; }
-            if normal.hit { normal_hits += 1; }
+            let dodge = resolve_npc_attack(
+                &mut rng1,
+                &attack,
+                15,
+                true,
+                5,
+                &[],
+                &[],
+                false,
+                &Cover::None,
+            );
+            let normal = resolve_npc_attack(
+                &mut rng2,
+                &attack,
+                15,
+                false,
+                5,
+                &[],
+                &[],
+                false,
+                &Cover::None,
+            );
+            if dodge.hit {
+                dodge_hits += 1;
+            }
+            if normal.hit {
+                normal_hits += 1;
+            }
         }
-        assert!(dodge_hits < normal_hits, "Dodging should reduce hit rate: dodge={}, normal={}", dodge_hits, normal_hits);
+        assert!(
+            dodge_hits < normal_hits,
+            "Dodging should reduce hit rate: dodge={}, normal={}",
+            dodge_hits,
+            normal_hits
+        );
     }
 
     // Hypothesis (see handoff fix-unarmed-attack-roll):
@@ -2638,21 +3143,49 @@ mod tests {
         let mut saw_miss = false;
         for seed in 0..200 {
             let mut rng = StdRng::seed_from_u64(seed);
-            let result = resolve_player_attack(&mut rng, &player, 100, false, None, &items, 5, true, false, &[], false, false, &Cover::None);
+            let result = resolve_player_attack(
+                &mut rng,
+                &player,
+                100,
+                false,
+                None,
+                &items,
+                5,
+                true,
+                false,
+                &[],
+                false,
+                false,
+                &Cover::None,
+            );
             assert_eq!(result.weapon_name, "Unarmed");
-            assert!(result.attack_roll >= 1 && result.attack_roll <= 20,
-                "Attack roll must be a real d20 (seed={}, roll={})", seed, result.attack_roll);
+            assert!(
+                result.attack_roll >= 1 && result.attack_roll <= 20,
+                "Attack roll must be a real d20 (seed={}, roll={})",
+                seed,
+                result.attack_roll
+            );
             if result.natural_20 {
                 // Nat 20 always hits per SRD, even against absurd AC.
                 assert!(result.hit, "Nat 20 must hit (seed={})", seed);
             } else {
                 saw_miss = true;
-                assert!(!result.hit, "Non-crit unarmed must miss AC 100 (seed={}, roll={}, total={})",
-                    seed, result.attack_roll, result.total_attack);
-                assert_eq!(result.damage, 0, "Miss should deal 0 damage (seed={})", seed);
+                assert!(
+                    !result.hit,
+                    "Non-crit unarmed must miss AC 100 (seed={}, roll={}, total={})",
+                    seed, result.attack_roll, result.total_attack
+                );
+                assert_eq!(
+                    result.damage, 0,
+                    "Miss should deal 0 damage (seed={})",
+                    seed
+                );
             }
         }
-        assert!(saw_miss, "Expected to observe at least one miss against AC 100");
+        assert!(
+            saw_miss,
+            "Expected to observe at least one miss against AC 100"
+        );
     }
 
     #[test]
@@ -2667,25 +3200,57 @@ mod tests {
         let mut crit_damage_seen = false;
         for seed in 0..200 {
             let mut rng = StdRng::seed_from_u64(seed);
-            let result = resolve_player_attack(&mut rng, &player, 1, false, None, &items, 5, true, false, &[], false, false, &Cover::None);
+            let result = resolve_player_attack(
+                &mut rng,
+                &player,
+                1,
+                false,
+                None,
+                &items,
+                5,
+                true,
+                false,
+                &[],
+                false,
+                false,
+                &Cover::None,
+            );
             assert_eq!(result.weapon_name, "Unarmed");
             assert_eq!(result.damage_type, DamageType::Bludgeoning);
             if result.hit {
                 hit_count += 1;
                 if result.natural_20 {
-                    assert_eq!(result.damage, 5, "Nat 20 crit should deal 2 + STR mod (seed={})", seed);
+                    assert_eq!(
+                        result.damage, 5,
+                        "Nat 20 crit should deal 2 + STR mod (seed={})",
+                        seed
+                    );
                     crit_damage_seen = true;
                 } else {
-                    assert_eq!(result.damage, 4, "Normal hit should deal 1 + STR mod (seed={})", seed);
+                    assert_eq!(
+                        result.damage, 4,
+                        "Normal hit should deal 1 + STR mod (seed={})",
+                        seed
+                    );
                     base_damage_seen = true;
                 }
             } else {
-                assert!(result.natural_1, "Only a nat 1 should miss AC 1 (seed={}, roll={})", seed, result.attack_roll);
+                assert!(
+                    result.natural_1,
+                    "Only a nat 1 should miss AC 1 (seed={}, roll={})",
+                    seed, result.attack_roll
+                );
             }
         }
         assert!(hit_count > 0, "Expected at least some hits against AC 1");
-        assert!(base_damage_seen, "Expected to observe a normal-hit damage roll");
-        assert!(crit_damage_seen, "Expected to observe a nat-20 crit in 200 seeds");
+        assert!(
+            base_damage_seen,
+            "Expected to observe a normal-hit damage roll"
+        );
+        assert!(
+            crit_damage_seen,
+            "Expected to observe a nat-20 crit in 200 seeds"
+        );
     }
 
     #[test]
@@ -2697,7 +3262,8 @@ mod tests {
         let player = test_character();
         let mut poisoned_player = player.clone();
         poisoned_player.conditions.push(ActiveCondition::new(
-            ConditionType::Poisoned, ConditionDuration::Rounds(3),
+            ConditionType::Poisoned,
+            ConditionDuration::Rounds(3),
         ));
         let items = HashMap::new();
 
@@ -2706,14 +3272,49 @@ mod tests {
         for seed in 0..1000 {
             let mut rng1 = StdRng::seed_from_u64(seed);
             let mut rng2 = StdRng::seed_from_u64(seed);
-            let normal = resolve_player_attack(&mut rng1, &player, 15, false, None, &items, 5, true, false, &[], false, false, &Cover::None);
-            let poisoned = resolve_player_attack(&mut rng2, &poisoned_player, 15, false, None, &items, 5, true, false, &[], false, false, &Cover::None);
-            if normal.hit { normal_hits += 1; }
-            if poisoned.hit { poisoned_hits += 1; }
+            let normal = resolve_player_attack(
+                &mut rng1,
+                &player,
+                15,
+                false,
+                None,
+                &items,
+                5,
+                true,
+                false,
+                &[],
+                false,
+                false,
+                &Cover::None,
+            );
+            let poisoned = resolve_player_attack(
+                &mut rng2,
+                &poisoned_player,
+                15,
+                false,
+                None,
+                &items,
+                5,
+                true,
+                false,
+                &[],
+                false,
+                false,
+                &Cover::None,
+            );
+            if normal.hit {
+                normal_hits += 1;
+            }
+            if poisoned.hit {
+                poisoned_hits += 1;
+            }
         }
-        assert!(poisoned_hits < normal_hits,
+        assert!(
+            poisoned_hits < normal_hits,
             "Poisoned unarmed attacker should hit less often: normal={}, poisoned={}",
-            normal_hits, poisoned_hits);
+            normal_hits,
+            poisoned_hits
+        );
     }
 
     #[test]
@@ -2760,9 +3361,16 @@ mod tests {
     fn test_retreat_triggers_opportunity_attack_with_reach_10() {
         let mut rng = StdRng::seed_from_u64(42);
         let mut state = test_state_with_goblin();
-        state.world.npcs.get_mut(&0).unwrap()
-            .combat_stats.as_mut().unwrap()
-            .attacks[0].reach = 10;
+        state
+            .world
+            .npcs
+            .get_mut(&0)
+            .unwrap()
+            .combat_stats
+            .as_mut()
+            .unwrap()
+            .attacks[0]
+            .reach = 10;
 
         let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
         combat.distances.insert(0, 10);
@@ -2770,17 +3378,27 @@ mod tests {
         combat.player_disengaging = false;
 
         let lines = retreat(&mut rng, &mut state, &mut combat);
-        assert!(lines.iter().any(|l| l.contains("opportunity attack")),
-            "Expected opportunity attack narration, got {:?}", lines);
+        assert!(
+            lines.iter().any(|l| l.contains("opportunity attack")),
+            "Expected opportunity attack narration, got {:?}",
+            lines
+        );
     }
 
     #[test]
     fn test_retreat_no_opportunity_attack_outside_reach_5() {
         let mut rng = StdRng::seed_from_u64(42);
         let mut state = test_state_with_goblin();
-        state.world.npcs.get_mut(&0).unwrap()
-            .combat_stats.as_mut().unwrap()
-            .attacks[0].reach = 5;
+        state
+            .world
+            .npcs
+            .get_mut(&0)
+            .unwrap()
+            .combat_stats
+            .as_mut()
+            .unwrap()
+            .attacks[0]
+            .reach = 5;
 
         let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
         combat.distances.insert(0, 10);
@@ -2788,17 +3406,27 @@ mod tests {
         combat.player_disengaging = false;
 
         let lines = retreat(&mut rng, &mut state, &mut combat);
-        assert!(!lines.iter().any(|l| l.contains("opportunity attack")),
-            "Did not expect opportunity attack narration, got {:?}", lines);
+        assert!(
+            !lines.iter().any(|l| l.contains("opportunity attack")),
+            "Did not expect opportunity attack narration, got {:?}",
+            lines
+        );
     }
 
     #[test]
     fn test_retreat_no_opportunity_attack_when_still_within_reach_10() {
         let mut rng = StdRng::seed_from_u64(42);
         let mut state = test_state_with_goblin();
-        state.world.npcs.get_mut(&0).unwrap()
-            .combat_stats.as_mut().unwrap()
-            .attacks[0].reach = 10;
+        state
+            .world
+            .npcs
+            .get_mut(&0)
+            .unwrap()
+            .combat_stats
+            .as_mut()
+            .unwrap()
+            .attacks[0]
+            .reach = 10;
 
         let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
         combat.distances.insert(0, 5);
@@ -2806,8 +3434,11 @@ mod tests {
         combat.player_disengaging = false;
 
         let lines = retreat(&mut rng, &mut state, &mut combat);
-        assert!(!lines.iter().any(|l| l.contains("opportunity attack")),
-            "Should not trigger OA when still within reach, got {:?}", lines);
+        assert!(
+            !lines.iter().any(|l| l.contains("opportunity attack")),
+            "Should not trigger OA when still within reach, got {:?}",
+            lines
+        );
     }
 
     #[test]
@@ -2817,9 +3448,16 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(42);
         let mut state = test_state_with_goblin();
         // Put goblin at 5ft so it is within reach
-        state.world.npcs.get_mut(&0).unwrap()
-            .combat_stats.as_mut().unwrap()
-            .attacks[0].reach = 5;
+        state
+            .world
+            .npcs
+            .get_mut(&0)
+            .unwrap()
+            .combat_stats
+            .as_mut()
+            .unwrap()
+            .attacks[0]
+            .reach = 5;
 
         let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
         combat.distances.insert(0, 5);
@@ -2827,18 +3465,25 @@ mod tests {
         // First call: old=5, new=u32::MAX — should potentially fire OA
         let changes1 = vec![(0u32, 5u32, u32::MAX)];
         let _lines1 = fire_opportunity_attacks(&mut rng, &mut state, &mut combat, &changes1);
-        assert!(combat.npc_reactions_used.contains(&0),
-            "NPC reaction should be marked used after OA");
+        assert!(
+            combat.npc_reactions_used.contains(&0),
+            "NPC reaction should be marked used after OA"
+        );
 
         // Second call: same scenario — should NOT fire another OA (reaction consumed)
         let initial_hp = state.character.current_hp;
         let changes2 = vec![(0u32, 5u32, u32::MAX)];
         let lines2 = fire_opportunity_attacks(&mut rng, &mut state, &mut combat, &changes2);
-        assert!(!lines2.iter().any(|l| l.contains("opportunity attack")),
-            "Second OA call should be suppressed by spent reaction, got {:?}", lines2);
+        assert!(
+            !lines2.iter().any(|l| l.contains("opportunity attack")),
+            "Second OA call should be suppressed by spent reaction, got {:?}",
+            lines2
+        );
         // HP should not change further from the second call
-        assert_eq!(state.character.current_hp, initial_hp,
-            "HP should be unchanged after second (suppressed) OA call");
+        assert_eq!(
+            state.character.current_hp, initial_hp,
+            "HP should be unchanged after second (suppressed) OA call"
+        );
     }
 
     #[test]
@@ -2848,9 +3493,16 @@ mod tests {
         // player is disengaging).
         let mut rng = StdRng::seed_from_u64(42);
         let mut state = test_state_with_goblin();
-        state.world.npcs.get_mut(&0).unwrap()
-            .combat_stats.as_mut().unwrap()
-            .attacks[0].reach = 5;
+        state
+            .world
+            .npcs
+            .get_mut(&0)
+            .unwrap()
+            .combat_stats
+            .as_mut()
+            .unwrap()
+            .attacks[0]
+            .reach = 5;
 
         let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
         combat.distances.insert(0, 5);
@@ -2858,10 +3510,15 @@ mod tests {
         combat.player_disengaging = true;
 
         let lines = retreat(&mut rng, &mut state, &mut combat);
-        assert!(!lines.iter().any(|l| l.contains("opportunity attack")),
-            "Disengage should suppress OA on retreat, got {:?}", lines);
-        assert!(!combat.npc_reactions_used.contains(&0),
-            "NPC reaction should NOT be consumed when disengaging");
+        assert!(
+            !lines.iter().any(|l| l.contains("opportunity attack")),
+            "Disengage should suppress OA on retreat, got {:?}",
+            lines
+        );
+        assert!(
+            !combat.npc_reactions_used.contains(&0),
+            "NPC reaction should NOT be consumed when disengaging"
+        );
     }
 
     #[test]
@@ -2880,15 +3537,25 @@ mod tests {
         combat.current_turn = n - 1;
         combat.advance_turn(&mut state);
 
-        assert!(combat.npc_reactions_used.is_empty(),
-            "npc_reactions_used should be cleared when a new round begins");
+        assert!(
+            combat.npc_reactions_used.is_empty(),
+            "npc_reactions_used should be cleared when a new round begins"
+        );
     }
 
     #[test]
     fn test_combat_end_victory() {
         let mut state = test_state_with_goblin();
         // Kill the goblin
-        state.world.npcs.get_mut(&0).unwrap().combat_stats.as_mut().unwrap().current_hp = 0;
+        state
+            .world
+            .npcs
+            .get_mut(&0)
+            .unwrap()
+            .combat_stats
+            .as_mut()
+            .unwrap()
+            .current_hp = 0;
         let mut rng = StdRng::seed_from_u64(42);
         let combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
         assert_eq!(combat.check_end(&state), Some(true));
@@ -2922,26 +3589,32 @@ mod tests {
     fn test_state_with_two_goblins() -> GameState {
         let character = test_character();
         let mut npcs = HashMap::new();
-        npcs.insert(0, Npc {
-            id: 0,
-            name: "Goblin".to_string(),
-            role: NpcRole::Guard,
-            disposition: Disposition::Hostile,
-            dialogue_tags: vec![],
-            location: 0,
-            combat_stats: Some(goblin_stats()),
-            conditions: Vec::new(),
-        });
-        npcs.insert(1, Npc {
-            id: 1,
-            name: "Goblin".to_string(),
-            role: NpcRole::Guard,
-            disposition: Disposition::Hostile,
-            dialogue_tags: vec![],
-            location: 0,
-            combat_stats: Some(goblin_stats()),
-            conditions: Vec::new(),
-        });
+        npcs.insert(
+            0,
+            Npc {
+                id: 0,
+                name: "Goblin".to_string(),
+                role: NpcRole::Guard,
+                disposition: Disposition::Hostile,
+                dialogue_tags: vec![],
+                location: 0,
+                combat_stats: Some(goblin_stats()),
+                conditions: Vec::new(),
+            },
+        );
+        npcs.insert(
+            1,
+            Npc {
+                id: 1,
+                name: "Goblin".to_string(),
+                role: NpcRole::Guard,
+                disposition: Disposition::Hostile,
+                dialogue_tags: vec![],
+                location: 0,
+                combat_stats: Some(goblin_stats()),
+                conditions: Vec::new(),
+            },
+        );
 
         GameState {
             version: SAVE_VERSION.to_string(),
@@ -2949,8 +3622,11 @@ mod tests {
             current_location: 0,
             discovered_locations: HashSet::new(),
             world: WorldState {
-                locations: HashMap::new(), npcs, items: HashMap::new(),
-                triggers: HashMap::new(), triggered: HashSet::new(),
+                locations: HashMap::new(),
+                npcs,
+                items: HashMap::new(),
+                triggers: HashMap::new(),
+                triggered: HashSet::new(),
             },
             log: Vec::new(),
             rng_seed: 42,
@@ -2975,11 +3651,22 @@ mod tests {
         let combat = start_combat(&mut rng, &state.character, &[0, 1], &state.world.npcs);
 
         // Kill only the first goblin
-        state.world.npcs.get_mut(&0).unwrap().combat_stats.as_mut().unwrap().current_hp = 0;
+        state
+            .world
+            .npcs
+            .get_mut(&0)
+            .unwrap()
+            .combat_stats
+            .as_mut()
+            .unwrap()
+            .current_hp = 0;
 
         // Combat should NOT be over -- second goblin still alive
-        assert_eq!(combat.check_end(&state), None,
-            "Combat should continue when one of two hostile NPCs is still alive");
+        assert_eq!(
+            combat.check_end(&state),
+            None,
+            "Combat should continue when one of two hostile NPCs is still alive"
+        );
     }
 
     #[test]
@@ -2989,12 +3676,31 @@ mod tests {
         let combat = start_combat(&mut rng, &state.character, &[0, 1], &state.world.npcs);
 
         // Kill both goblins
-        state.world.npcs.get_mut(&0).unwrap().combat_stats.as_mut().unwrap().current_hp = 0;
-        state.world.npcs.get_mut(&1).unwrap().combat_stats.as_mut().unwrap().current_hp = 0;
+        state
+            .world
+            .npcs
+            .get_mut(&0)
+            .unwrap()
+            .combat_stats
+            .as_mut()
+            .unwrap()
+            .current_hp = 0;
+        state
+            .world
+            .npcs
+            .get_mut(&1)
+            .unwrap()
+            .combat_stats
+            .as_mut()
+            .unwrap()
+            .current_hp = 0;
 
         // Now combat should end in victory
-        assert_eq!(combat.check_end(&state), Some(true),
-            "Combat should end in VICTORY when all hostile NPCs are dead");
+        assert_eq!(
+            combat.check_end(&state),
+            Some(true),
+            "Combat should end in VICTORY when all hostile NPCs are dead"
+        );
     }
 
     #[test]
@@ -3045,34 +3751,51 @@ mod tests {
         };
 
         // Kill the first goblin (the one with stats)
-        state.world.npcs.get_mut(&0).unwrap().combat_stats.as_mut().unwrap().current_hp = 0;
+        state
+            .world
+            .npcs
+            .get_mut(&0)
+            .unwrap()
+            .combat_stats
+            .as_mut()
+            .unwrap()
+            .current_hp = 0;
 
         // Combat should NOT end -- the ghost NPC (no stats) should be treated as alive
-        assert_eq!(combat.check_end(&state), None,
-            "NPC with missing combat_stats should be treated as alive, not dead");
+        assert_eq!(
+            combat.check_end(&state),
+            None,
+            "NPC with missing combat_stats should be treated as alive, not dead"
+        );
     }
 
     #[test]
     fn test_advance_turn_skips_dead() {
         let mut state = test_state_with_goblin();
         // Add a second goblin that's dead
-        state.world.npcs.insert(1, Npc {
-            id: 1,
-            name: "Dead Goblin".to_string(),
-            role: NpcRole::Guard,
-            disposition: Disposition::Hostile,
-            dialogue_tags: vec![],
-            location: 0,
-            combat_stats: Some(CombatStats {
-                max_hp: 7, current_hp: 0, ac: 15, speed: 30,
-                ability_scores: HashMap::new(),
-                attacks: vec![],
-                proficiency_bonus: 2,
-                cr: 0.25,
-                ..Default::default()
-            }),
-            conditions: Vec::new(),
-        });
+        state.world.npcs.insert(
+            1,
+            Npc {
+                id: 1,
+                name: "Dead Goblin".to_string(),
+                role: NpcRole::Guard,
+                disposition: Disposition::Hostile,
+                dialogue_tags: vec![],
+                location: 0,
+                combat_stats: Some(CombatStats {
+                    max_hp: 7,
+                    current_hp: 0,
+                    ac: 15,
+                    speed: 30,
+                    ability_scores: HashMap::new(),
+                    attacks: vec![],
+                    proficiency_bonus: 2,
+                    cr: 0.25,
+                    ..Default::default()
+                }),
+                conditions: Vec::new(),
+            },
+        );
 
         let mut rng = StdRng::seed_from_u64(42);
         let mut combat = start_combat(&mut rng, &state.character, &[0, 1], &state.world.npcs);
@@ -3098,7 +3821,11 @@ mod tests {
         let lines = resolve_npc_turn(&mut rng, 0, &mut state, &mut combat);
         assert!(!lines.is_empty());
         // Should attack with Scimitar (melee)
-        assert!(lines[0].contains("Scimitar"), "NPC should use melee: {}", lines[0]);
+        assert!(
+            lines[0].contains("Scimitar"),
+            "NPC should use melee: {}",
+            lines[0]
+        );
     }
 
     #[test]
@@ -3111,7 +3838,11 @@ mod tests {
         let lines = resolve_npc_turn(&mut rng, 0, &mut state, &mut combat);
         assert!(!lines.is_empty());
         // Should use Shortbow (ranged)
-        assert!(lines[0].contains("Shortbow"), "NPC should use ranged: {}", lines[0]);
+        assert!(
+            lines[0].contains("Shortbow"),
+            "NPC should use ranged: {}",
+            lines[0]
+        );
     }
 
     #[test]
@@ -3119,21 +3850,36 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(42);
         let mut state = test_state_with_goblin();
         // Remove ranged attack so NPC can only melee
-        state.world.npcs.get_mut(&0).unwrap().combat_stats.as_mut().unwrap().attacks = vec![
-            NpcAttack {
-                name: "Scimitar".to_string(), hit_bonus: 4,
-                damage_dice: 1, damage_die: 6, damage_bonus: 2,
-                damage_type: DamageType::Slashing, reach: 5,
-                range_normal: 0, range_long: 0,
-            },
-        ];
+        state
+            .world
+            .npcs
+            .get_mut(&0)
+            .unwrap()
+            .combat_stats
+            .as_mut()
+            .unwrap()
+            .attacks = vec![NpcAttack {
+            name: "Scimitar".to_string(),
+            hit_bonus: 4,
+            damage_dice: 1,
+            damage_die: 6,
+            damage_bonus: 2,
+            damage_type: DamageType::Slashing,
+            reach: 5,
+            range_normal: 0,
+            range_long: 0,
+        }];
         let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
         combat.distances.insert(0, 60); // Far away
 
         let lines = resolve_npc_turn(&mut rng, 0, &mut state, &mut combat);
         let new_dist = *combat.distances.get(&0).unwrap();
         assert!(new_dist < 60, "NPC should have moved closer");
-        assert!(lines[0].contains("moves toward"), "Should narrate movement: {}", lines[0]);
+        assert!(
+            lines[0].contains("moves toward"),
+            "Should narrate movement: {}",
+            lines[0]
+        );
     }
 
     // Hypothesis: resolve_npc_turn() moves the NPC toward the player but
@@ -3146,14 +3892,25 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(42);
         let mut state = test_state_with_goblin();
         // Melee-only NPC: remove ranged attack
-        state.world.npcs.get_mut(&0).unwrap().combat_stats.as_mut().unwrap().attacks = vec![
-            NpcAttack {
-                name: "Scimitar".to_string(), hit_bonus: 4,
-                damage_dice: 1, damage_die: 6, damage_bonus: 2,
-                damage_type: DamageType::Slashing, reach: 5,
-                range_normal: 0, range_long: 0,
-            },
-        ];
+        state
+            .world
+            .npcs
+            .get_mut(&0)
+            .unwrap()
+            .combat_stats
+            .as_mut()
+            .unwrap()
+            .attacks = vec![NpcAttack {
+            name: "Scimitar".to_string(),
+            hit_bonus: 4,
+            damage_dice: 1,
+            damage_die: 6,
+            damage_bonus: 2,
+            damage_type: DamageType::Slashing,
+            reach: 5,
+            range_normal: 0,
+            range_long: 0,
+        }];
         let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
         // Distance 35: with speed 30, NPC moves to 5ft (melee range)
         combat.distances.insert(0, 35);
@@ -3165,7 +3922,11 @@ mod tests {
         let has_move = lines.iter().any(|l| l.contains("moves toward"));
         let has_attack = lines.iter().any(|l| l.contains("Scimitar"));
         assert!(has_move, "NPC should narrate movement: {:?}", lines);
-        assert!(has_attack, "NPC should attack after moving into melee range: {:?}", lines);
+        assert!(
+            has_attack,
+            "NPC should attack after moving into melee range: {:?}",
+            lines
+        );
     }
 
     #[test]
@@ -3173,14 +3934,25 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(42);
         let mut state = test_state_with_goblin();
         // Ranged-only NPC: remove melee attack, keep shortbow (range 80/320)
-        state.world.npcs.get_mut(&0).unwrap().combat_stats.as_mut().unwrap().attacks = vec![
-            NpcAttack {
-                name: "Shortbow".to_string(), hit_bonus: 4,
-                damage_dice: 1, damage_die: 6, damage_bonus: 2,
-                damage_type: DamageType::Piercing, reach: 0,
-                range_normal: 80, range_long: 320,
-            },
-        ];
+        state
+            .world
+            .npcs
+            .get_mut(&0)
+            .unwrap()
+            .combat_stats
+            .as_mut()
+            .unwrap()
+            .attacks = vec![NpcAttack {
+            name: "Shortbow".to_string(),
+            hit_bonus: 4,
+            damage_dice: 1,
+            damage_die: 6,
+            damage_bonus: 2,
+            damage_type: DamageType::Piercing,
+            reach: 0,
+            range_normal: 80,
+            range_long: 320,
+        }];
         let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
         // Distance 350: with speed 30, NPC moves to 320ft (at ranged long range)
         combat.distances.insert(0, 350);
@@ -3191,7 +3963,11 @@ mod tests {
         let has_move = lines.iter().any(|l| l.contains("moves toward"));
         let has_attack = lines.iter().any(|l| l.contains("Shortbow"));
         assert!(has_move, "NPC should narrate movement: {:?}", lines);
-        assert!(has_attack, "NPC should attack after moving into ranged range: {:?}", lines);
+        assert!(
+            has_attack,
+            "NPC should attack after moving into ranged range: {:?}",
+            lines
+        );
     }
 
     #[test]
@@ -3199,236 +3975,310 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(42);
         let mut state = test_state_with_goblin();
         // Melee-only NPC
-        state.world.npcs.get_mut(&0).unwrap().combat_stats.as_mut().unwrap().attacks = vec![
-            NpcAttack {
-                name: "Scimitar".to_string(), hit_bonus: 4,
-                damage_dice: 1, damage_die: 6, damage_bonus: 2,
-                damage_type: DamageType::Slashing, reach: 5,
-                range_normal: 0, range_long: 0,
-            },
-        ];
+        state
+            .world
+            .npcs
+            .get_mut(&0)
+            .unwrap()
+            .combat_stats
+            .as_mut()
+            .unwrap()
+            .attacks = vec![NpcAttack {
+            name: "Scimitar".to_string(),
+            hit_bonus: 4,
+            damage_dice: 1,
+            damage_die: 6,
+            damage_bonus: 2,
+            damage_type: DamageType::Slashing,
+            reach: 5,
+            range_normal: 0,
+            range_long: 0,
+        }];
         let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
         // Distance 60: with speed 30, NPC moves to 30ft — still NOT in melee range
         combat.distances.insert(0, 60);
 
         let lines = resolve_npc_turn(&mut rng, 0, &mut state, &mut combat);
         let new_dist = *combat.distances.get(&0).unwrap();
-        assert_eq!(new_dist, 30, "NPC should have moved closer but still out of range");
+        assert_eq!(
+            new_dist, 30,
+            "NPC should have moved closer but still out of range"
+        );
         let has_move = lines.iter().any(|l| l.contains("moves toward"));
         let has_attack = lines.iter().any(|l| l.contains("Scimitar"));
         assert!(has_move, "NPC should narrate movement: {:?}", lines);
-        assert!(!has_attack, "NPC should NOT attack when still out of range: {:?}", lines);
+        assert!(
+            !has_attack,
+            "NPC should NOT attack when still out of range: {:?}",
+            lines
+        );
     }
 
     // ---- Condition Integration Tests ----
 
     #[test]
     fn test_poisoned_player_attacks_with_disadvantage() {
-        use crate::conditions::{self, ActiveCondition, ConditionType, ConditionDuration};
+        use crate::conditions::{self, ActiveCondition, ConditionDuration, ConditionType};
 
         // Direct test: verify that poisoned condition returns disadvantage from get_attack_advantage
-        let poisoned = vec![
-            ActiveCondition::new(ConditionType::Poisoned, ConditionDuration::Rounds(3)),
-        ];
+        let poisoned = vec![ActiveCondition::new(
+            ConditionType::Poisoned,
+            ConditionDuration::Rounds(3),
+        )];
 
-        assert_eq!(conditions::get_attack_advantage(&poisoned), Some(false),
-            "Poisoned should impose disadvantage on attacks");
+        assert_eq!(
+            conditions::get_attack_advantage(&poisoned),
+            Some(false),
+            "Poisoned should impose disadvantage on attacks"
+        );
     }
 
     #[test]
     fn test_attacking_stunned_target_grants_advantage() {
-        use crate::conditions::{self, ActiveCondition, ConditionType, ConditionDuration};
+        use crate::conditions::{self, ActiveCondition, ConditionDuration, ConditionType};
 
         // Direct test: verify that stunned target grants advantage to attacker
         let attacker: Vec<ActiveCondition> = vec![];
-        let stunned = vec![
-            ActiveCondition::new(ConditionType::Stunned, ConditionDuration::Rounds(1)),
-        ];
+        let stunned = vec![ActiveCondition::new(
+            ConditionType::Stunned,
+            ConditionDuration::Rounds(1),
+        )];
 
-        assert_eq!(conditions::get_defense_advantage(&attacker, &stunned), Some(true),
-            "Attacking stunned target should grant advantage");
+        assert_eq!(
+            conditions::get_defense_advantage(&attacker, &stunned),
+            Some(true),
+            "Attacking stunned target should grant advantage"
+        );
     }
 
     #[test]
     fn test_paralyzed_target_is_auto_crit() {
-        use crate::conditions::{self, ActiveCondition, ConditionType, ConditionDuration};
+        use crate::conditions::{self, ActiveCondition, ConditionDuration, ConditionType};
 
         // Direct test: verify paralyzed condition marks target as auto-crit
-        let paralyzed = vec![
-            ActiveCondition::new(ConditionType::Paralyzed, ConditionDuration::Rounds(1)),
-        ];
+        let paralyzed = vec![ActiveCondition::new(
+            ConditionType::Paralyzed,
+            ConditionDuration::Rounds(1),
+        )];
 
-        assert!(conditions::is_auto_crit_target(&paralyzed),
-            "Paralyzed target should be subject to auto-crits");
+        assert!(
+            conditions::is_auto_crit_target(&paralyzed),
+            "Paralyzed target should be subject to auto-crits"
+        );
 
         // Stunned should NOT be auto-crit
-        let stunned = vec![
-            ActiveCondition::new(ConditionType::Stunned, ConditionDuration::Rounds(1)),
-        ];
-        assert!(!conditions::is_auto_crit_target(&stunned),
-            "Stunned target should not be auto-crit");
+        let stunned = vec![ActiveCondition::new(
+            ConditionType::Stunned,
+            ConditionDuration::Rounds(1),
+        )];
+        assert!(
+            !conditions::is_auto_crit_target(&stunned),
+            "Stunned target should not be auto-crit"
+        );
     }
 
     #[test]
     fn test_prone_grants_advantage_within_5ft() {
-        use crate::conditions::{self, ActiveCondition, ConditionType, ConditionDuration};
+        use crate::conditions::{self, ActiveCondition, ConditionDuration, ConditionType};
 
         // Direct test: prone target grants advantage to attackers
         let attacker: Vec<ActiveCondition> = vec![];
-        let prone = vec![
-            ActiveCondition::new(ConditionType::Prone, ConditionDuration::Permanent),
-        ];
+        let prone = vec![ActiveCondition::new(
+            ConditionType::Prone,
+            ConditionDuration::Permanent,
+        )];
 
-        assert_eq!(conditions::get_defense_advantage(&attacker, &prone), Some(true),
-            "Attacking prone target should grant advantage");
+        assert_eq!(
+            conditions::get_defense_advantage(&attacker, &prone),
+            Some(true),
+            "Attacking prone target should grant advantage"
+        );
     }
 
     #[test]
     fn test_blinded_target_grants_advantage() {
-        use crate::conditions::{self, ActiveCondition, ConditionType, ConditionDuration};
+        use crate::conditions::{self, ActiveCondition, ConditionDuration, ConditionType};
 
         // Direct test: blinded target grants advantage to attackers
         let attacker: Vec<ActiveCondition> = vec![];
-        let blinded = vec![
-            ActiveCondition::new(ConditionType::Blinded, ConditionDuration::Rounds(2)),
-        ];
+        let blinded = vec![ActiveCondition::new(
+            ConditionType::Blinded,
+            ConditionDuration::Rounds(2),
+        )];
 
-        assert_eq!(conditions::get_defense_advantage(&attacker, &blinded), Some(true),
-            "Attacking blinded target should grant advantage");
+        assert_eq!(
+            conditions::get_defense_advantage(&attacker, &blinded),
+            Some(true),
+            "Attacking blinded target should grant advantage"
+        );
     }
 
     #[test]
     fn test_blinded_and_poisoned_impose_attack_disadvantage() {
-        use crate::conditions::{self, ActiveCondition, ConditionType, ConditionDuration};
+        use crate::conditions::{self, ActiveCondition, ConditionDuration, ConditionType};
 
         // Blinded imposes disadvantage
-        let blinded = vec![
-            ActiveCondition::new(ConditionType::Blinded, ConditionDuration::Rounds(1)),
-        ];
+        let blinded = vec![ActiveCondition::new(
+            ConditionType::Blinded,
+            ConditionDuration::Rounds(1),
+        )];
         assert_eq!(conditions::get_attack_advantage(&blinded), Some(false));
 
         // Prone imposes disadvantage
-        let prone = vec![
-            ActiveCondition::new(ConditionType::Prone, ConditionDuration::Permanent),
-        ];
+        let prone = vec![ActiveCondition::new(
+            ConditionType::Prone,
+            ConditionDuration::Permanent,
+        )];
         assert_eq!(conditions::get_attack_advantage(&prone), Some(false));
     }
 
     #[test]
     fn test_stunned_and_paralyzed_prevent_actions() {
-        use crate::conditions::{self, ActiveCondition, ConditionType, ConditionDuration};
+        use crate::conditions::{self, ActiveCondition, ConditionDuration, ConditionType};
 
         // Stunned prevents actions
-        let stunned = vec![
-            ActiveCondition::new(ConditionType::Stunned, ConditionDuration::Rounds(1)),
-        ];
+        let stunned = vec![ActiveCondition::new(
+            ConditionType::Stunned,
+            ConditionDuration::Rounds(1),
+        )];
         assert!(!conditions::can_take_actions(&stunned));
         assert!(!conditions::can_take_reactions(&stunned));
 
         // Paralyzed prevents actions
-        let paralyzed = vec![
-            ActiveCondition::new(ConditionType::Paralyzed, ConditionDuration::Rounds(1)),
-        ];
+        let paralyzed = vec![ActiveCondition::new(
+            ConditionType::Paralyzed,
+            ConditionDuration::Rounds(1),
+        )];
         assert!(!conditions::can_take_actions(&paralyzed));
         assert!(!conditions::can_take_reactions(&paralyzed));
 
         // Poisoned allows actions
-        let poisoned = vec![
-            ActiveCondition::new(ConditionType::Poisoned, ConditionDuration::Rounds(2)),
-        ];
+        let poisoned = vec![ActiveCondition::new(
+            ConditionType::Poisoned,
+            ConditionDuration::Rounds(2),
+        )];
         assert!(conditions::can_take_actions(&poisoned));
         assert!(conditions::can_take_reactions(&poisoned));
     }
 
     #[test]
     fn test_stunned_and_paralyzed_auto_fail_str_dex_saves() {
-        use crate::conditions::{self, ActiveCondition, ConditionType, ConditionDuration};
+        use crate::conditions::{self, ActiveCondition, ConditionDuration, ConditionType};
         use crate::types::Ability;
 
         // Stunned auto-fails STR and DEX saves
-        let stunned = vec![
-            ActiveCondition::new(ConditionType::Stunned, ConditionDuration::Rounds(1)),
-        ];
+        let stunned = vec![ActiveCondition::new(
+            ConditionType::Stunned,
+            ConditionDuration::Rounds(1),
+        )];
         assert!(conditions::get_save_auto_fail(&stunned, Ability::Strength));
         assert!(conditions::get_save_auto_fail(&stunned, Ability::Dexterity));
-        assert!(!conditions::get_save_auto_fail(&stunned, Ability::Constitution));
+        assert!(!conditions::get_save_auto_fail(
+            &stunned,
+            Ability::Constitution
+        ));
 
         // Paralyzed auto-fails STR and DEX saves
-        let paralyzed = vec![
-            ActiveCondition::new(ConditionType::Paralyzed, ConditionDuration::Rounds(1)),
-        ];
-        assert!(conditions::get_save_auto_fail(&paralyzed, Ability::Strength));
-        assert!(conditions::get_save_auto_fail(&paralyzed, Ability::Dexterity));
+        let paralyzed = vec![ActiveCondition::new(
+            ConditionType::Paralyzed,
+            ConditionDuration::Rounds(1),
+        )];
+        assert!(conditions::get_save_auto_fail(
+            &paralyzed,
+            Ability::Strength
+        ));
+        assert!(conditions::get_save_auto_fail(
+            &paralyzed,
+            Ability::Dexterity
+        ));
         assert!(!conditions::get_save_auto_fail(&paralyzed, Ability::Wisdom));
     }
 
     #[test]
     fn test_prone_reduces_speed() {
-        use crate::conditions::{self, ActiveCondition, ConditionType, ConditionDuration};
+        use crate::conditions::{self, ActiveCondition, ConditionDuration, ConditionType};
 
-        let prone = vec![
-            ActiveCondition::new(ConditionType::Prone, ConditionDuration::Permanent),
-        ];
-        assert_eq!(conditions::get_speed_multiplier(&prone), 0.5,
-            "Prone should reduce speed multiplier to 0.5");
+        let prone = vec![ActiveCondition::new(
+            ConditionType::Prone,
+            ConditionDuration::Permanent,
+        )];
+        assert_eq!(
+            conditions::get_speed_multiplier(&prone),
+            0.5,
+            "Prone should reduce speed multiplier to 0.5"
+        );
 
         let normal: Vec<ActiveCondition> = vec![];
-        assert_eq!(conditions::get_speed_multiplier(&normal), 1.0,
-            "No conditions should have normal speed");
+        assert_eq!(
+            conditions::get_speed_multiplier(&normal),
+            1.0,
+            "No conditions should have normal speed"
+        );
     }
 
     // ---- Integration: new SRD conditions in attack resolution ----
 
     #[test]
     fn test_invisible_attacker_vs_visible_target_grants_advantage() {
-        use crate::conditions::{self, ActiveCondition, ConditionType, ConditionDuration};
+        use crate::conditions::{self, ActiveCondition, ConditionDuration, ConditionType};
 
-        let invisible = vec![
-            ActiveCondition::new(ConditionType::Invisible, ConditionDuration::Rounds(3)),
-        ];
+        let invisible = vec![ActiveCondition::new(
+            ConditionType::Invisible,
+            ConditionDuration::Rounds(3),
+        )];
         // Attacker-side query returns Some(true) => advantage.
         assert_eq!(conditions::get_attack_advantage(&invisible), Some(true));
     }
 
     #[test]
     fn test_restrained_imposes_attack_disadvantage_in_combat() {
-        use crate::conditions::{self, ActiveCondition, ConditionType, ConditionDuration};
+        use crate::conditions::{self, ActiveCondition, ConditionDuration, ConditionType};
 
-        let restrained = vec![
-            ActiveCondition::new(ConditionType::Restrained, ConditionDuration::Permanent),
-        ];
+        let restrained = vec![ActiveCondition::new(
+            ConditionType::Restrained,
+            ConditionDuration::Permanent,
+        )];
         assert_eq!(conditions::get_attack_advantage(&restrained), Some(false));
     }
 
     #[test]
     fn test_attacking_restrained_target_grants_advantage_in_combat() {
-        use crate::conditions::{self, ActiveCondition, ConditionType, ConditionDuration};
+        use crate::conditions::{self, ActiveCondition, ConditionDuration, ConditionType};
 
         let attacker: Vec<ActiveCondition> = vec![];
-        let restrained = vec![
-            ActiveCondition::new(ConditionType::Restrained, ConditionDuration::Permanent),
-        ];
-        assert_eq!(conditions::get_defense_advantage(&attacker, &restrained), Some(true));
+        let restrained = vec![ActiveCondition::new(
+            ConditionType::Restrained,
+            ConditionDuration::Permanent,
+        )];
+        assert_eq!(
+            conditions::get_defense_advantage(&attacker, &restrained),
+            Some(true)
+        );
     }
 
     #[test]
     fn test_attacking_invisible_target_imposes_disadvantage() {
-        use crate::conditions::{self, ActiveCondition, ConditionType, ConditionDuration};
+        use crate::conditions::{self, ActiveCondition, ConditionDuration, ConditionType};
 
         let attacker: Vec<ActiveCondition> = vec![];
-        let invisible = vec![
-            ActiveCondition::new(ConditionType::Invisible, ConditionDuration::Rounds(3)),
-        ];
-        assert_eq!(conditions::get_defense_advantage(&attacker, &invisible), Some(false));
+        let invisible = vec![ActiveCondition::new(
+            ConditionType::Invisible,
+            ConditionDuration::Rounds(3),
+        )];
+        assert_eq!(
+            conditions::get_defense_advantage(&attacker, &invisible),
+            Some(false)
+        );
     }
 
     #[test]
     fn test_unconscious_target_is_auto_crit() {
-        use crate::conditions::{self, ActiveCondition, ConditionType, ConditionDuration};
+        use crate::conditions::{self, ActiveCondition, ConditionDuration, ConditionType};
 
-        let unconscious = vec![
-            ActiveCondition::new(ConditionType::Unconscious, ConditionDuration::Permanent),
-        ];
+        let unconscious = vec![ActiveCondition::new(
+            ConditionType::Unconscious,
+            ConditionDuration::Permanent,
+        )];
         assert!(conditions::is_auto_crit_target(&unconscious));
     }
 
@@ -3438,7 +4288,7 @@ mod tests {
         // the hit rate should be measurably higher than neutral, confirming that
         // advantage was actually applied to the roll (not just returned by the
         // query function).
-        use crate::conditions::{ActiveCondition, ConditionType, ConditionDuration};
+        use crate::conditions::{ActiveCondition, ConditionDuration, ConditionType};
 
         let mut wins_with_adv = 0;
         let mut wins_neutral = 0;
@@ -3446,9 +4296,10 @@ mod tests {
 
         for seed in 0..trials {
             let mut state_adv = test_state_with_goblin();
-            state_adv.character.conditions.push(
-                ActiveCondition::new(ConditionType::Invisible, ConditionDuration::Rounds(10)),
-            );
+            state_adv.character.conditions.push(ActiveCondition::new(
+                ConditionType::Invisible,
+                ConditionDuration::Rounds(10),
+            ));
             // Equip a simple weapon so the attack actually rolls (unarmed bypasses).
             // Shortcut: put an item with id 9999 as a club-equivalent into items.
             let club = crate::state::Item {
@@ -3482,26 +4333,50 @@ mod tests {
             let mut rng2 = StdRng::seed_from_u64(seed as u64);
 
             let res_adv = resolve_player_attack(
-                &mut rng1, &state_adv.character, target_ac, false, Some(9999),
-                &state_adv.world.items, distance, true, false,
+                &mut rng1,
+                &state_adv.character,
+                target_ac,
+                false,
+                Some(9999),
+                &state_adv.world.items,
+                distance,
+                true,
+                false,
                 &[], // defender has no conditions
-                false, false, &Cover::None,
+                false,
+                false,
+                &Cover::None,
             );
             let res_neu = resolve_player_attack(
-                &mut rng2, &state_neu.character, target_ac, false, Some(9999),
-                &state_neu.world.items, distance, true, false, &[],
-                false, false, &Cover::None,
+                &mut rng2,
+                &state_neu.character,
+                target_ac,
+                false,
+                Some(9999),
+                &state_neu.world.items,
+                distance,
+                true,
+                false,
+                &[],
+                false,
+                false,
+                &Cover::None,
             );
 
-            if res_adv.hit { wins_with_adv += 1; }
-            if res_neu.hit { wins_neutral += 1; }
+            if res_adv.hit {
+                wins_with_adv += 1;
+            }
+            if res_neu.hit {
+                wins_neutral += 1;
+            }
         }
 
         // Advantage should measurably improve hit rate; require a reasonable gap.
         assert!(
             wins_with_adv > wins_neutral + 20,
             "Invisible attacker should hit more often ({} vs neutral {})",
-            wins_with_adv, wins_neutral
+            wins_with_adv,
+            wins_neutral
         );
     }
 
@@ -3511,7 +4386,7 @@ mod tests {
         // (e.g., Grappled attacking a non-grappler) the hit rate should be
         // measurably lower than without it. This test verifies the parameter
         // is actually wired into the roll.
-        use crate::state::{Item, ItemType, DamageType, WeaponCategory};
+        use crate::state::{DamageType, Item, ItemType, WeaponCategory};
 
         let mut wins_disadv = 0;
         let mut wins_neutral = 0;
@@ -3524,12 +4399,17 @@ mod tests {
                 name: "club".to_string(),
                 description: "Sturdy club.".to_string(),
                 item_type: ItemType::Weapon {
-                    damage_dice: 1, damage_die: 6,
+                    damage_dice: 1,
+                    damage_die: 6,
                     damage_type: DamageType::Bludgeoning,
-                    properties: 0, category: WeaponCategory::Simple,
-                    versatile_die: 0, range_normal: 0, range_long: 0,
+                    properties: 0,
+                    category: WeaponCategory::Simple,
+                    versatile_die: 0,
+                    range_normal: 0,
+                    range_long: 0,
                 },
-                location: None, carried_by_player: true,
+                location: None,
+                carried_by_player: true,
                 charges_remaining: None,
             };
             state.world.items.insert(9999, club);
@@ -3540,21 +4420,48 @@ mod tests {
             let mut rng2 = StdRng::seed_from_u64(seed);
 
             let res_disadv = resolve_player_attack(
-                &mut rng1, &state.character, 15, false, Some(9999),
-                &state.world.items, 5, true, false, &[], true, false, &Cover::None,
+                &mut rng1,
+                &state.character,
+                15,
+                false,
+                Some(9999),
+                &state.world.items,
+                5,
+                true,
+                false,
+                &[],
+                true,
+                false,
+                &Cover::None,
             );
             let res_neu = resolve_player_attack(
-                &mut rng2, &state.character, 15, false, Some(9999),
-                &state.world.items, 5, true, false, &[], false, false, &Cover::None,
+                &mut rng2,
+                &state.character,
+                15,
+                false,
+                Some(9999),
+                &state.world.items,
+                5,
+                true,
+                false,
+                &[],
+                false,
+                false,
+                &Cover::None,
             );
-            if res_disadv.hit { wins_disadv += 1; }
-            if res_neu.hit { wins_neutral += 1; }
+            if res_disadv.hit {
+                wins_disadv += 1;
+            }
+            if res_neu.hit {
+                wins_neutral += 1;
+            }
         }
 
         assert!(
             wins_neutral > wins_disadv + 20,
             "extra_disadvantage should lower hit rate (disadv={}, neutral={})",
-            wins_disadv, wins_neutral
+            wins_disadv,
+            wins_neutral
         );
     }
 
@@ -3607,8 +4514,11 @@ mod tests {
             let mut test_combat = combat.clone();
             let lines = resolve_npc_turn(&mut test_rng, 0, &mut test_state, &mut test_combat);
             let all = lines.join("\n");
-            assert!(!all.contains(" -> "),
-                "Should not show dual-roll attack text when player is not dodging. Got: {}", all);
+            assert!(
+                !all.contains(" -> "),
+                "Should not show dual-roll attack text when player is not dodging. Got: {}",
+                all
+            );
         }
     }
 
@@ -3646,9 +4556,15 @@ mod tests {
 
         // Fresh combat should have all resources available.
         assert!(!combat.action_used, "Action should start available");
-        assert!(!combat.bonus_action_used, "Bonus action should start available");
+        assert!(
+            !combat.bonus_action_used,
+            "Bonus action should start available"
+        );
         assert!(!combat.reaction_used, "Reaction should start available");
-        assert!(!combat.free_interaction_used, "Free interaction should start available");
+        assert!(
+            !combat.free_interaction_used,
+            "Free interaction should start available"
+        );
     }
 
     #[test]
@@ -3663,8 +4579,10 @@ mod tests {
 
         // End the player's turn: reaction should reset so NPC-turn reactions can fire later.
         combat.end_player_turn();
-        assert!(!combat.reaction_used,
-            "Reaction should reset at end of player turn so NPCs can't prevent its use");
+        assert!(
+            !combat.reaction_used,
+            "Reaction should reset at end of player turn so NPCs can't prevent its use"
+        );
     }
 
     #[test]
@@ -3681,18 +4599,34 @@ mod tests {
 
         // Force advance_turn to cycle back to player (even if already player turn)
         // Simulate an NPC turn by setting current_turn to an NPC, then advancing.
-        combat.current_turn = combat.initiative_order.iter()
+        combat.current_turn = combat
+            .initiative_order
+            .iter()
             .position(|(c, _)| matches!(c, Combatant::Npc(_)))
             .unwrap_or(0);
 
         combat.advance_turn(&mut state);
 
-        assert!(combat.is_player_turn(), "Should advance back to player turn");
-        assert!(!combat.action_used, "Action should reset at start of player turn");
-        assert!(!combat.bonus_action_used, "Bonus should reset at start of player turn");
-        assert!(!combat.free_interaction_used, "Free interaction should reset at start of player turn");
-        assert_eq!(combat.player_movement_remaining, state.character.speed,
-            "Movement should reset to speed at start of player turn");
+        assert!(
+            combat.is_player_turn(),
+            "Should advance back to player turn"
+        );
+        assert!(
+            !combat.action_used,
+            "Action should reset at start of player turn"
+        );
+        assert!(
+            !combat.bonus_action_used,
+            "Bonus should reset at start of player turn"
+        );
+        assert!(
+            !combat.free_interaction_used,
+            "Free interaction should reset at start of player turn"
+        );
+        assert_eq!(
+            combat.player_movement_remaining, state.character.speed,
+            "Movement should reset to speed at start of player turn"
+        );
     }
 
     #[test]
@@ -3701,8 +4635,10 @@ mod tests {
         let state = test_state_with_goblin();
         let combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
 
-        assert!(combat.pending_reaction.is_none(),
-            "Fresh combat should have no pending reaction");
+        assert!(
+            combat.pending_reaction.is_none(),
+            "Fresh combat should have no pending reaction"
+        );
 
         // Round trip
         let json = serde_json::to_string(&combat).unwrap();
@@ -3727,7 +4663,10 @@ mod tests {
         let deserialised: CombatState = serde_json::from_str(&json).unwrap();
         match deserialised.pending_reaction {
             Some(PendingReaction::OpportunityAttack {
-                fleeing_npc_id, old_distance, new_distance, resume_npc_index,
+                fleeing_npc_id,
+                old_distance,
+                new_distance,
+                resume_npc_index,
             }) => {
                 assert_eq!(fleeing_npc_id, 0);
                 assert_eq!(old_distance, 5);
@@ -3755,7 +4694,10 @@ mod tests {
         let deserialised: CombatState = serde_json::from_str(&json).unwrap();
         match deserialised.pending_reaction {
             Some(PendingReaction::Shield {
-                attacker_npc_id, incoming_damage, pre_roll_ac, resume_npc_index,
+                attacker_npc_id,
+                incoming_damage,
+                pre_roll_ac,
+                resume_npc_index,
             }) => {
                 assert_eq!(attacker_npc_id, 0);
                 assert_eq!(incoming_damage, 7);
@@ -3786,8 +4728,10 @@ mod tests {
         let round_tripped: CombatState = serde_json::from_value(json)
             .expect("Old save with player_action_used should still deserialize");
         // Old-save deserialization: action_used should come from the alias value (true).
-        assert!(round_tripped.action_used,
-            "Old saves' player_action_used value should map to action_used");
+        assert!(
+            round_tripped.action_used,
+            "Old saves' player_action_used value should map to action_used"
+        );
         // New fields should default to false.
         assert!(!round_tripped.bonus_action_used);
         assert!(!round_tripped.reaction_used);
@@ -3796,8 +4740,8 @@ mod tests {
 
     // ----- monster-stat-blocks (2026-04-15) -----
 
-    use crate::conditions::ConditionDuration;
     use crate::combat::monsters::{find_monster, monster_to_combat_stats};
+    use crate::conditions::ConditionDuration;
 
     fn npc_with_stats(name: &str, stats: CombatStats) -> Npc {
         Npc {
@@ -3822,10 +4766,14 @@ mod tests {
             &mut npc,
             ActiveCondition::new(ConditionType::Poisoned, ConditionDuration::Rounds(3)),
         );
-        assert!(!applied,
-            "Skeleton should reject Poisoned condition due to stat-block immunity");
-        assert!(npc.conditions.is_empty(),
-            "rejected condition should not be appended");
+        assert!(
+            !applied,
+            "Skeleton should reject Poisoned condition due to stat-block immunity"
+        );
+        assert!(
+            npc.conditions.is_empty(),
+            "rejected condition should not be appended"
+        );
     }
 
     #[test]
@@ -3861,8 +4809,10 @@ mod tests {
             &mut npc,
             ActiveCondition::new(ConditionType::Poisoned, ConditionDuration::Rounds(3)),
         );
-        assert!(!p2,
-            "Petrified target should reject Poisoned per conditions::is_immune_to_condition");
+        assert!(
+            !p2,
+            "Petrified target should reject Poisoned per conditions::is_immune_to_condition"
+        );
         assert_eq!(npc.conditions.len(), 1);
         assert_eq!(npc.conditions[0].condition, ConditionType::Petrified);
     }
@@ -3894,10 +4844,15 @@ mod tests {
         let zombie_def = find_monster("Zombie").unwrap();
         let stats = monster_to_combat_stats(zombie_def);
         let mut narration = Vec::new();
-        let dealt = apply_damage_modifiers(&stats, 12, DamageType::Poison, "zombie", &mut narration);
+        let dealt =
+            apply_damage_modifiers(&stats, 12, DamageType::Poison, "zombie", &mut narration);
         assert_eq!(dealt, 0, "Zombie should be immune to Poison damage");
         assert_eq!(narration.len(), 1);
-        assert!(narration[0].contains("immune"), "narration mentions immunity: {:?}", narration[0]);
+        assert!(
+            narration[0].contains("immune"),
+            "narration mentions immunity: {:?}",
+            narration[0]
+        );
     }
 
     #[test]
@@ -3905,9 +4860,13 @@ mod tests {
         let zombie_def = find_monster("Zombie").unwrap();
         let stats = monster_to_combat_stats(zombie_def);
         let mut narration = Vec::new();
-        let dealt = apply_damage_modifiers(&stats, 7, DamageType::Slashing, "zombie", &mut narration);
+        let dealt =
+            apply_damage_modifiers(&stats, 7, DamageType::Slashing, "zombie", &mut narration);
         assert_eq!(dealt, 7);
-        assert!(narration.is_empty(), "no narration when no immunity/resistance applies");
+        assert!(
+            narration.is_empty(),
+            "no narration when no immunity/resistance applies"
+        );
     }
 
     #[test]
@@ -3915,7 +4874,8 @@ mod tests {
         let mut stats = CombatStats::default();
         stats.damage_resistances = vec![DamageType::Slashing];
         let mut narration = Vec::new();
-        let dealt = apply_damage_modifiers(&stats, 10, DamageType::Slashing, "ghost", &mut narration);
+        let dealt =
+            apply_damage_modifiers(&stats, 10, DamageType::Slashing, "ghost", &mut narration);
         assert_eq!(dealt, 5);
         assert_eq!(narration.len(), 1);
         assert!(narration[0].contains("resists"));
@@ -3935,8 +4895,14 @@ mod tests {
     fn test_apply_damage_modifiers_zero_or_negative_input() {
         let stats = CombatStats::default();
         let mut narration = Vec::new();
-        assert_eq!(apply_damage_modifiers(&stats, 0, DamageType::Fire, "x", &mut narration), 0);
-        assert_eq!(apply_damage_modifiers(&stats, -3, DamageType::Fire, "x", &mut narration), 0);
+        assert_eq!(
+            apply_damage_modifiers(&stats, 0, DamageType::Fire, "x", &mut narration),
+            0
+        );
+        assert_eq!(
+            apply_damage_modifiers(&stats, -3, DamageType::Fire, "x", &mut narration),
+            0
+        );
         assert!(narration.is_empty());
     }
 
@@ -3950,7 +4916,14 @@ mod tests {
         let mut state = test_state_with_goblin();
         // Bump goblin to multiattack 2 and give it lots of HP so the player
         // doesn't drop the goblin (only player can be damaged here anyway).
-        let stats = state.world.npcs.get_mut(&0).unwrap().combat_stats.as_mut().unwrap();
+        let stats = state
+            .world
+            .npcs
+            .get_mut(&0)
+            .unwrap()
+            .combat_stats
+            .as_mut()
+            .unwrap();
         stats.multiattack = 2;
         // Clear the bow attack so we are guaranteed to take the melee branch.
         stats.attacks.retain(|a| a.name == "Scimitar");
@@ -3964,9 +4937,11 @@ mod tests {
         let lines = resolve_npc_turn(&mut rng, 0, &mut state, &mut combat);
         // 2 attack lines (hit/miss/crit each emit one line; never zero per attack).
         let attack_lines = count_lines_with("Scimitar", &lines);
-        assert_eq!(attack_lines, 2,
+        assert_eq!(
+            attack_lines, 2,
             "multiattack=2 should produce 2 Scimitar attack lines, got {}: {:#?}",
-            attack_lines, lines);
+            attack_lines, lines
+        );
     }
 
     #[test]
@@ -3974,7 +4949,14 @@ mod tests {
         // multiattack==1 is the default; verify legacy behavior.
         let mut rng = StdRng::seed_from_u64(42);
         let mut state = test_state_with_goblin();
-        let stats = state.world.npcs.get_mut(&0).unwrap().combat_stats.as_mut().unwrap();
+        let stats = state
+            .world
+            .npcs
+            .get_mut(&0)
+            .unwrap()
+            .combat_stats
+            .as_mut()
+            .unwrap();
         assert_eq!(stats.multiattack, 1, "fixture default should be 1");
         stats.attacks.retain(|a| a.name == "Scimitar");
         state.character.current_hp = 1000;
@@ -3997,7 +4979,14 @@ mod tests {
         // failures (instant death via massive damage, or three hits).
         let mut rng = StdRng::seed_from_u64(42);
         let mut state = test_state_with_goblin();
-        let stats = state.world.npcs.get_mut(&0).unwrap().combat_stats.as_mut().unwrap();
+        let stats = state
+            .world
+            .npcs
+            .get_mut(&0)
+            .unwrap()
+            .combat_stats
+            .as_mut()
+            .unwrap();
         stats.multiattack = 3;
         stats.attacks.retain(|a| a.name == "Scimitar");
         // Make the attack always hit but keep damage well below max_hp so no
@@ -4015,11 +5004,17 @@ mod tests {
         // At least one attack lands (the killing blow), and multiattack may
         // continue up to three times adding death save failures. Must not
         // exceed the configured multiattack count.
-        assert!(attack_lines >= 1 && attack_lines <= 3,
+        assert!(
+            attack_lines >= 1 && attack_lines <= 3,
             "expected between 1 and 3 Scimitar attacks, got {}: {:#?}",
-            attack_lines, lines);
-        assert!(combat.death_save_failures >= 1,
-            "expected at least one DST failure from additional hits: {:#?}", lines);
+            attack_lines,
+            lines
+        );
+        assert!(
+            combat.death_save_failures >= 1,
+            "expected at least one DST failure from additional hits: {:#?}",
+            lines
+        );
     }
 
     #[test]
@@ -4032,8 +5027,11 @@ mod tests {
         let mut narr = Vec::new();
         let dealt = apply_damage_to_npc(&mut npc, 12, DamageType::Poison, &mut narr);
         assert_eq!(dealt, 0);
-        assert_eq!(npc.combat_stats.as_ref().unwrap().current_hp, starting_hp,
-            "immune target's HP should be unchanged");
+        assert_eq!(
+            npc.combat_stats.as_ref().unwrap().current_hp,
+            starting_hp,
+            "immune target's HP should be unchanged"
+        );
         assert_eq!(narr.len(), 1);
     }
 
@@ -4047,7 +5045,10 @@ mod tests {
         let mut narr = Vec::new();
         let dealt = apply_damage_to_npc(&mut npc, 5, DamageType::Slashing, &mut narr);
         assert_eq!(dealt, 5);
-        assert_eq!(npc.combat_stats.as_ref().unwrap().current_hp, starting_hp - 5);
+        assert_eq!(
+            npc.combat_stats.as_ref().unwrap().current_hp,
+            starting_hp - 5
+        );
         assert!(narr.is_empty());
     }
 
@@ -4061,8 +5062,11 @@ mod tests {
         let mut narr = Vec::new();
         let dealt = apply_damage_to_npc(&mut npc, 100, DamageType::Slashing, &mut narr);
         assert_eq!(dealt, 100);
-        assert_eq!(npc.combat_stats.as_ref().unwrap().current_hp, 0,
-            "current_hp clamps to 0, never negative");
+        assert_eq!(
+            npc.combat_stats.as_ref().unwrap().current_hp,
+            0,
+            "current_hp clamps to 0, never negative"
+        );
     }
 
     #[test]
@@ -4079,8 +5083,10 @@ mod tests {
         };
         let mut narr = Vec::new();
         let dealt = apply_damage_to_npc(&mut npc, 50, DamageType::Slashing, &mut narr);
-        assert_eq!(dealt, 0,
-            "NPC without combat_stats takes no damage and the helper is a no-op");
+        assert_eq!(
+            dealt, 0,
+            "NPC without combat_stats takes no damage and the helper is a no-op"
+        );
     }
 
     #[test]
@@ -4091,7 +5097,8 @@ mod tests {
         stats.damage_immunities = vec![DamageType::Cold];
         stats.damage_resistances = vec![DamageType::Cold];
         let mut narration = Vec::new();
-        let dealt = apply_damage_modifiers(&stats, 8, DamageType::Cold, "elemental", &mut narration);
+        let dealt =
+            apply_damage_modifiers(&stats, 8, DamageType::Cold, "elemental", &mut narration);
         assert_eq!(dealt, 0);
         assert_eq!(narration.len(), 1);
         assert!(narration[0].contains("immune"));
@@ -4169,16 +5176,20 @@ mod tests {
         let mut narr = Vec::new();
         // Per SRD, Graze damage equals the ability modifier used; a 0 or
         // negative modifier yields no damage.
-        assert_eq!(apply_graze_mastery(true, &missed, 0, &mut npc, &mut narr), 0);
-        assert_eq!(apply_graze_mastery(true, &missed, -1, &mut npc, &mut narr), 0);
+        assert_eq!(
+            apply_graze_mastery(true, &missed, 0, &mut npc, &mut narr),
+            0
+        );
+        assert_eq!(
+            apply_graze_mastery(true, &missed, -1, &mut npc, &mut narr),
+            0
+        );
     }
 
     #[test]
     fn test_vex_mastery_marks_target_and_is_consumed_on_next_attack() {
         let player = test_character();
-        let mut combat = start_combat(
-            &mut StdRng::seed_from_u64(1), &player, &[], &HashMap::new(),
-        );
+        let mut combat = start_combat(&mut StdRng::seed_from_u64(1), &player, &[], &HashMap::new());
         let hit = attack_result(true, 7, DamageType::Slashing);
         let mut narr = Vec::new();
         assert!(apply_vex_mastery(true, &hit, 42, &mut combat, &mut narr));
@@ -4193,21 +5204,23 @@ mod tests {
     fn test_vex_requires_damage() {
         // Per spec, Vex requires the hit to deal damage.
         let player = test_character();
-        let mut combat = start_combat(
-            &mut StdRng::seed_from_u64(1), &player, &[], &HashMap::new(),
-        );
+        let mut combat = start_combat(&mut StdRng::seed_from_u64(1), &player, &[], &HashMap::new());
         let zero_dmg_hit = attack_result(true, 0, DamageType::Slashing);
         let mut narr = Vec::new();
-        assert!(!apply_vex_mastery(true, &zero_dmg_hit, 42, &mut combat, &mut narr));
+        assert!(!apply_vex_mastery(
+            true,
+            &zero_dmg_hit,
+            42,
+            &mut combat,
+            &mut narr
+        ));
         assert_eq!(combat.player_vex_target, None);
     }
 
     #[test]
     fn test_sap_mastery_marks_then_consumes() {
         let player = test_character();
-        let mut combat = start_combat(
-            &mut StdRng::seed_from_u64(1), &player, &[], &HashMap::new(),
-        );
+        let mut combat = start_combat(&mut StdRng::seed_from_u64(1), &player, &[], &HashMap::new());
         let hit = attack_result(true, 5, DamageType::Slashing);
         let mut narr = Vec::new();
         assert!(apply_sap_mastery(true, &hit, 7, &mut combat, &mut narr));
@@ -4221,9 +5234,7 @@ mod tests {
     #[test]
     fn test_sap_on_miss_is_noop() {
         let player = test_character();
-        let mut combat = start_combat(
-            &mut StdRng::seed_from_u64(1), &player, &[], &HashMap::new(),
-        );
+        let mut combat = start_combat(&mut StdRng::seed_from_u64(1), &player, &[], &HashMap::new());
         let missed = attack_result(false, 0, DamageType::Slashing);
         let mut narr = Vec::new();
         assert!(!apply_sap_mastery(true, &missed, 7, &mut combat, &mut narr));
@@ -4233,9 +5244,7 @@ mod tests {
     #[test]
     fn test_slow_mastery_applies_10ft_reduction() {
         let player = test_character();
-        let mut combat = start_combat(
-            &mut StdRng::seed_from_u64(1), &player, &[], &HashMap::new(),
-        );
+        let mut combat = start_combat(&mut StdRng::seed_from_u64(1), &player, &[], &HashMap::new());
         let hit = attack_result(true, 5, DamageType::Slashing);
         let mut narr = Vec::new();
         assert!(apply_slow_mastery(true, &hit, 7, &mut combat, &mut narr));
@@ -4248,12 +5257,16 @@ mod tests {
     #[test]
     fn test_slow_requires_damage() {
         let player = test_character();
-        let mut combat = start_combat(
-            &mut StdRng::seed_from_u64(1), &player, &[], &HashMap::new(),
-        );
+        let mut combat = start_combat(&mut StdRng::seed_from_u64(1), &player, &[], &HashMap::new());
         let zero_dmg_hit = attack_result(true, 0, DamageType::Slashing);
         let mut narr = Vec::new();
-        assert!(!apply_slow_mastery(true, &zero_dmg_hit, 7, &mut combat, &mut narr));
+        assert!(!apply_slow_mastery(
+            true,
+            &zero_dmg_hit,
+            7,
+            &mut combat,
+            &mut narr
+        ));
         assert_eq!(slow_speed_reduction(&combat, 7), 0);
     }
 
@@ -4261,9 +5274,7 @@ mod tests {
     fn test_push_mastery_moves_target_10ft_away() {
         use crate::combat::monsters::Size;
         let player = test_character();
-        let mut combat = start_combat(
-            &mut StdRng::seed_from_u64(1), &player, &[], &HashMap::new(),
-        );
+        let mut combat = start_combat(&mut StdRng::seed_from_u64(1), &player, &[], &HashMap::new());
         combat.distances.insert(7, 5);
         let hit = attack_result(true, 5, DamageType::Bludgeoning);
         let mut narr = Vec::new();
@@ -4276,9 +5287,7 @@ mod tests {
     fn test_push_mastery_respects_size_limit() {
         use crate::combat::monsters::Size;
         let player = test_character();
-        let mut combat = start_combat(
-            &mut StdRng::seed_from_u64(1), &player, &[], &HashMap::new(),
-        );
+        let mut combat = start_combat(&mut StdRng::seed_from_u64(1), &player, &[], &HashMap::new());
         combat.distances.insert(7, 5);
         let hit = attack_result(true, 5, DamageType::Bludgeoning);
         let mut narr = Vec::new();
@@ -4287,7 +5296,11 @@ mod tests {
             apply_push_mastery(true, &hit, 7, &mut combat, &mut narr, Size::Huge),
             None
         );
-        assert_eq!(combat.distances.get(&7), Some(&5), "Huge should not be pushed");
+        assert_eq!(
+            combat.distances.get(&7),
+            Some(&5),
+            "Huge should not be pushed"
+        );
         // Large: pushed.
         let pushed = apply_push_mastery(true, &hit, 7, &mut combat, &mut narr, Size::Large);
         assert_eq!(pushed, Some(15));
@@ -4299,7 +5312,10 @@ mod tests {
         let mut state = test_game_state(player);
         state.world.npcs.insert(7, test_goblin(7));
         let mut combat = start_combat(
-            &mut StdRng::seed_from_u64(1), &state.character, &[], &HashMap::new(),
+            &mut StdRng::seed_from_u64(1),
+            &state.character,
+            &[],
+            &HashMap::new(),
         );
         let _ = &mut combat; // unused for this test; kept for future use
         let hit = attack_result(true, 5, DamageType::Bludgeoning);
@@ -4308,13 +5324,19 @@ mod tests {
         // chosen so the first d20 rolls less than 15 -> fail.
         let mut rng = StdRng::seed_from_u64(2);
         let applied = apply_topple_mastery(
-            true, &hit, 7, &mut state, &mut narr, /*ability_mod=*/5,
-            /*prof_bonus=*/2, &mut rng,
+            true, &hit, 7, &mut state, &mut narr, /*ability_mod=*/ 5, /*prof_bonus=*/ 2,
+            &mut rng,
         );
         // Whether applied depends on RNG; assert either outcome is reported
         // via narration and that Prone presence mirrors the reported line.
-        let got_prone = state.world.npcs.get(&7).unwrap().conditions
-            .iter().any(|c| c.condition == ConditionType::Prone);
+        let got_prone = state
+            .world
+            .npcs
+            .get(&7)
+            .unwrap()
+            .conditions
+            .iter()
+            .any(|c| c.condition == ConditionType::Prone);
         assert_eq!(applied, got_prone);
     }
 
@@ -4326,12 +5348,16 @@ mod tests {
         let missed = attack_result(false, 0, DamageType::Bludgeoning);
         let mut narr = Vec::new();
         let mut rng = StdRng::seed_from_u64(2);
-        let applied = apply_topple_mastery(
-            true, &missed, 7, &mut state, &mut narr, 5, 2, &mut rng,
-        );
+        let applied = apply_topple_mastery(true, &missed, 7, &mut state, &mut narr, 5, 2, &mut rng);
         assert!(!applied);
-        let got_prone = state.world.npcs.get(&7).unwrap().conditions
-            .iter().any(|c| c.condition == ConditionType::Prone);
+        let got_prone = state
+            .world
+            .npcs
+            .get(&7)
+            .unwrap()
+            .conditions
+            .iter()
+            .any(|c| c.condition == ConditionType::Prone);
         assert!(!got_prone);
     }
 
@@ -4343,13 +5369,22 @@ mod tests {
         // Only the primary target in range; no secondary.
         state.world.npcs.insert(7, test_goblin(7));
         let mut combat = start_combat(
-            &mut StdRng::seed_from_u64(1), &state.character, &[], &HashMap::new(),
+            &mut StdRng::seed_from_u64(1),
+            &state.character,
+            &[],
+            &HashMap::new(),
         );
         combat.distances.insert(7, 5);
         let mut rng = StdRng::seed_from_u64(3);
         let hit = attack_result(true, 8, DamageType::Slashing);
         let out = apply_cleave_mastery(
-            &mut rng, true, &hit, 7, &mut combat, &state, /*ability_mod=*/5,
+            &mut rng,
+            true,
+            &hit,
+            7,
+            &mut combat,
+            &state,
+            /*ability_mod=*/ 5,
         );
         assert!(out.is_none(), "No secondary in 5 ft -> no cleave");
         assert!(!combat.cleave_used_this_turn);
@@ -4367,32 +5402,29 @@ mod tests {
         state.world.npcs.insert(7, test_goblin(7));
         state.world.npcs.insert(8, test_goblin(8));
         let mut combat = start_combat(
-            &mut StdRng::seed_from_u64(1), &state.character, &[], &HashMap::new(),
+            &mut StdRng::seed_from_u64(1),
+            &state.character,
+            &[],
+            &HashMap::new(),
         );
         combat.distances.insert(7, 5);
         combat.distances.insert(8, 5);
         let mut rng = StdRng::seed_from_u64(3);
         let hit = attack_result(true, 8, DamageType::Slashing);
-        let out = apply_cleave_mastery(
-            &mut rng, true, &hit, 7, &mut combat, &state, 5,
-        );
+        let out = apply_cleave_mastery(&mut rng, true, &hit, 7, &mut combat, &state, 5);
         assert!(out.is_some());
         let (secondary_id, _cleave_result, _mod) = out.unwrap();
         assert_eq!(secondary_id, 8);
         assert!(combat.cleave_used_this_turn);
         // Second cleave same turn is blocked by the flag.
-        let out2 = apply_cleave_mastery(
-            &mut rng, true, &hit, 7, &mut combat, &state, 5,
-        );
+        let out2 = apply_cleave_mastery(&mut rng, true, &hit, 7, &mut combat, &state, 5);
         assert!(out2.is_none());
     }
 
     #[test]
     fn test_nick_mastery_fires_once_per_turn() {
         let player = test_character();
-        let mut combat = start_combat(
-            &mut StdRng::seed_from_u64(1), &player, &[], &HashMap::new(),
-        );
+        let mut combat = start_combat(&mut StdRng::seed_from_u64(1), &player, &[], &HashMap::new());
         // First Nick swing: applies, consumes the once-per-turn slot.
         assert!(apply_nick_mastery(true, &mut combat));
         assert!(combat.nick_used_this_turn);
@@ -4405,9 +5437,7 @@ mod tests {
     #[test]
     fn test_nick_mastery_no_op_without_mastery() {
         let player = test_character();
-        let mut combat = start_combat(
-            &mut StdRng::seed_from_u64(1), &player, &[], &HashMap::new(),
-        );
+        let mut combat = start_combat(&mut StdRng::seed_from_u64(1), &player, &[], &HashMap::new());
         assert!(!apply_nick_mastery(false, &mut combat));
         assert!(!combat.nick_used_this_turn);
     }
@@ -4453,22 +5483,31 @@ mod tests {
         for seed in 0..20u64 {
             let mut rng = StdRng::seed_from_u64(seed);
             let damage = roll_sneak_attack(&mut rng, 1, false);
-            assert!((1..=6).contains(&damage),
-                "L1 SA damage out of range: {}", damage);
+            assert!(
+                (1..=6).contains(&damage),
+                "L1 SA damage out of range: {}",
+                damage
+            );
         }
         // Level 5 -> 3d6 -> [3, 18].
         for seed in 0..20u64 {
             let mut rng = StdRng::seed_from_u64(seed);
             let damage = roll_sneak_attack(&mut rng, 5, false);
-            assert!((3..=18).contains(&damage),
-                "L5 SA damage out of range: {}", damage);
+            assert!(
+                (3..=18).contains(&damage),
+                "L5 SA damage out of range: {}",
+                damage
+            );
         }
         // Level 1 crit -> 2d6 -> [2, 12].
         for seed in 0..20u64 {
             let mut rng = StdRng::seed_from_u64(seed);
             let damage = roll_sneak_attack(&mut rng, 1, true);
-            assert!((2..=12).contains(&damage),
-                "L1 crit SA damage out of range: {}", damage);
+            assert!(
+                (2..=12).contains(&damage),
+                "L1 crit SA damage out of range: {}",
+                damage
+            );
         }
     }
 
@@ -4481,19 +5520,23 @@ mod tests {
         let mut state = test_state_with_goblin();
         state.character.class_features.sneak_attack_used_this_turn = true;
         state.character.class_features.cunning_action_used = true;
-        let mut combat = start_combat(
-            &mut rng, &state.character, &[0], &state.world.npcs,
-        );
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
         // Force current_turn to the NPC slot before advancing.
-        combat.current_turn = combat.initiative_order.iter()
+        combat.current_turn = combat
+            .initiative_order
+            .iter()
             .position(|(c, _)| matches!(c, Combatant::Npc(_)))
             .unwrap_or(0);
         combat.advance_turn(&mut state);
         assert!(combat.is_player_turn(), "should land on player turn");
-        assert!(!state.character.class_features.sneak_attack_used_this_turn,
-            "SA flag should reset at start of player turn");
-        assert!(!state.character.class_features.cunning_action_used,
-            "Cunning Action flag should reset at start of player turn");
+        assert!(
+            !state.character.class_features.sneak_attack_used_this_turn,
+            "SA flag should reset at start of player turn"
+        );
+        assert!(
+            !state.character.class_features.cunning_action_used,
+            "Cunning Action flag should reset at start of player turn"
+        );
     }
 
     /// Minimal GameState helper used only by the mastery tests above.
@@ -4504,12 +5547,15 @@ mod tests {
             current_location: 0,
             discovered_locations: HashSet::new(),
             world: WorldState {
-                locations: HashMap::new(), npcs: HashMap::new(),
-                items: HashMap::new(), triggers: HashMap::new(),
+                locations: HashMap::new(),
+                npcs: HashMap::new(),
+                items: HashMap::new(),
+                triggers: HashMap::new(),
                 triggered: HashSet::new(),
             },
             log: Vec::new(),
-            rng_seed: 1, rng_counter: 0,
+            rng_seed: 1,
+            rng_counter: 0,
             game_phase: GamePhase::Exploration,
             active_combat: None,
             ironman_mode: false,
@@ -4541,8 +5587,11 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(42);
         let combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
         // Fresh dying: 0 successes, 0 failures -- combat continues.
-        assert_eq!(combat.check_end(&state), None,
-            "Combat should continue while player is dying (not yet 3 failures)");
+        assert_eq!(
+            combat.check_end(&state),
+            None,
+            "Combat should continue while player is dying (not yet 3 failures)"
+        );
     }
 
     #[test]
@@ -4552,8 +5601,11 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(42);
         let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
         combat.death_save_failures = 3;
-        assert_eq!(combat.check_end(&state), Some(false),
-            "Three death save failures should result in defeat");
+        assert_eq!(
+            combat.check_end(&state),
+            Some(false),
+            "Three death save failures should result in defeat"
+        );
     }
 
     #[test]
@@ -4620,10 +5672,14 @@ mod tests {
         let outcome = combat.apply_death_save_roll(&mut state.character, 20);
         assert_eq!(outcome, DeathSaveOutcome::CritSuccess);
         assert_eq!(state.character.current_hp, 1);
-        assert_eq!(combat.death_save_successes, 0,
-            "Nat 20 clears death save counters");
-        assert_eq!(combat.death_save_failures, 0,
-            "Nat 20 clears death save counters");
+        assert_eq!(
+            combat.death_save_successes, 0,
+            "Nat 20 clears death save counters"
+        );
+        assert_eq!(
+            combat.death_save_failures, 0,
+            "Nat 20 clears death save counters"
+        );
     }
 
     #[test]
@@ -4636,8 +5692,10 @@ mod tests {
         combat.death_save_successes = 2;
         let outcome = combat.apply_death_save_roll(&mut state.character, 10);
         assert_eq!(outcome, DeathSaveOutcome::Stable);
-        assert_eq!(state.character.current_hp, 1,
-            "Reaching 3 successes sets HP to 1 (stable)");
+        assert_eq!(
+            state.character.current_hp, 1,
+            "Reaching 3 successes sets HP to 1 (stable)"
+        );
         assert_eq!(combat.death_save_successes, 0);
         assert_eq!(combat.death_save_failures, 0);
     }
@@ -4652,8 +5710,11 @@ mod tests {
         let outcome = combat.apply_death_save_roll(&mut state.character, 5);
         assert_eq!(outcome, DeathSaveOutcome::Dead);
         assert_eq!(combat.death_save_failures, 3);
-        assert_eq!(combat.check_end(&state), Some(false),
-            "After three failures, combat ends in defeat");
+        assert_eq!(
+            combat.check_end(&state),
+            Some(false),
+            "After three failures, combat ends in defeat"
+        );
     }
 
     #[test]
@@ -4765,13 +5826,31 @@ mod tests {
     #[test]
     fn test_target_exceeds_grapple_size_limit() {
         // Medium grappler: can grapple up to Large, not Huge or bigger.
-        assert!(!target_exceeds_grapple_size_limit(&monsters::Size::Medium, &monsters::Size::Medium));
-        assert!(!target_exceeds_grapple_size_limit(&monsters::Size::Medium, &monsters::Size::Large));
-        assert!(target_exceeds_grapple_size_limit(&monsters::Size::Medium, &monsters::Size::Huge));
-        assert!(target_exceeds_grapple_size_limit(&monsters::Size::Medium, &monsters::Size::Gargantuan));
+        assert!(!target_exceeds_grapple_size_limit(
+            &monsters::Size::Medium,
+            &monsters::Size::Medium
+        ));
+        assert!(!target_exceeds_grapple_size_limit(
+            &monsters::Size::Medium,
+            &monsters::Size::Large
+        ));
+        assert!(target_exceeds_grapple_size_limit(
+            &monsters::Size::Medium,
+            &monsters::Size::Huge
+        ));
+        assert!(target_exceeds_grapple_size_limit(
+            &monsters::Size::Medium,
+            &monsters::Size::Gargantuan
+        ));
         // Large grappler: can grapple up to Huge.
-        assert!(!target_exceeds_grapple_size_limit(&monsters::Size::Large, &monsters::Size::Huge));
-        assert!(target_exceeds_grapple_size_limit(&monsters::Size::Large, &monsters::Size::Gargantuan));
+        assert!(!target_exceeds_grapple_size_limit(
+            &monsters::Size::Large,
+            &monsters::Size::Huge
+        ));
+        assert!(target_exceeds_grapple_size_limit(
+            &monsters::Size::Large,
+            &monsters::Size::Gargantuan
+        ));
     }
 
     #[test]
@@ -4783,22 +5862,27 @@ mod tests {
         let mut state = test_state_with_goblin();
         // DC = 8 + (16-10)/2 + 2 = 8 + 3 + 2 = 13
         let result = resolve_grapple_attempt(
-            &mut rng, &mut state,
-            0, // goblin NPC id
+            &mut rng, &mut state, 0,  // goblin NPC id
             16, // grappler STR score
             2,  // grappler PB
-            "TestHero",
-            false,
-        ).unwrap();
+            "TestHero", false,
+        )
+        .unwrap();
         // Regardless of success/fail, check structure is correct.
         assert_eq!(result.dc, 13);
         assert_eq!(result.save_ability, Ability::Dexterity); // goblin picks DEX (mod +2 > STR mod -1)
-        // If the grapple succeeded, the goblin should have Grappled condition.
+                                                             // If the grapple succeeded, the goblin should have Grappled condition.
         if result.success {
             let npc = state.world.npcs.get(&0).unwrap();
-            assert!(conditions::has_condition(&npc.conditions, ConditionType::Grappled),
-                "Goblin should be grappled after a failed save");
-            let cond = npc.conditions.iter().find(|c| c.condition == ConditionType::Grappled).unwrap();
+            assert!(
+                conditions::has_condition(&npc.conditions, ConditionType::Grappled),
+                "Goblin should be grappled after a failed save"
+            );
+            let cond = npc
+                .conditions
+                .iter()
+                .find(|c| c.condition == ConditionType::Grappled)
+                .unwrap();
             assert_eq!(cond.source.as_deref(), Some("TestHero"));
         }
     }
@@ -4810,15 +5894,15 @@ mod tests {
         // Goblin STR 8 (dc would be 8 + (-1) + 2 = 9 for a weak grappler).
         let mut rng = StdRng::seed_from_u64(1);
         let mut state = test_state_with_goblin();
-        let result = resolve_grapple_attempt(
-            &mut rng, &mut state,
-            0, 8, 2, "TestHero", false,
-        ).unwrap();
+        let result =
+            resolve_grapple_attempt(&mut rng, &mut state, 0, 8, 2, "TestHero", false).unwrap();
         // DC = 9. If the goblin rolled high enough, it should not be grappled.
         if !result.success {
             let npc = state.world.npcs.get(&0).unwrap();
-            assert!(!conditions::has_condition(&npc.conditions, ConditionType::Grappled),
-                "Goblin should NOT be grappled after a successful save");
+            assert!(
+                !conditions::has_condition(&npc.conditions, ConditionType::Grappled),
+                "Goblin should NOT be grappled after a successful save"
+            );
         }
     }
 
@@ -4828,7 +5912,10 @@ mod tests {
         let mut state = test_state_with_goblin();
         // Player has no Grappled condition.
         let result = resolve_escape_grapple(&mut rng, &mut state);
-        assert!(result.is_none(), "Should return None when player is not grappled");
+        assert!(
+            result.is_none(),
+            "Should return None when player is not grappled"
+        );
     }
 
     #[test]
@@ -4842,11 +5929,15 @@ mod tests {
         );
         let result = resolve_escape_grapple(&mut rng, &mut state).unwrap();
         if result.success {
-            assert!(!conditions::has_condition(&state.character.conditions, ConditionType::Grappled),
-                "Grappled should be cleared on successful escape");
+            assert!(
+                !conditions::has_condition(&state.character.conditions, ConditionType::Grappled),
+                "Grappled should be cleared on successful escape"
+            );
         } else {
-            assert!(conditions::has_condition(&state.character.conditions, ConditionType::Grappled),
-                "Grappled should remain when escape fails");
+            assert!(
+                conditions::has_condition(&state.character.conditions, ConditionType::Grappled),
+                "Grappled should remain when escape fails"
+            );
         }
     }
 
@@ -4859,7 +5950,10 @@ mod tests {
                 .with_source("TestHero"),
         );
         release_grapple_on_npc(npc, "TestHero");
-        assert!(!conditions::has_condition(&npc.conditions, ConditionType::Grappled));
+        assert!(!conditions::has_condition(
+            &npc.conditions,
+            ConditionType::Grappled
+        ));
     }
 
     #[test]
@@ -4878,27 +5972,27 @@ mod tests {
         }
 
         // Apply Incapacitated to the player.
-        state.character.conditions.push(
-            ActiveCondition::new(ConditionType::Incapacitated, ConditionDuration::Permanent),
-        );
+        state.character.conditions.push(ActiveCondition::new(
+            ConditionType::Incapacitated,
+            ConditionDuration::Permanent,
+        ));
 
         // Set up a minimal CombatState where the player is NOT the current turn
         // so that advance_turn will land on Player next.
         let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
         // Force the initiative order so Player is always index 1 (we just
         // need to advance to the player's turn exactly once).
-        combat.initiative_order = vec![
-            (Combatant::Npc(0), 20),
-            (Combatant::Player, 10),
-        ];
+        combat.initiative_order = vec![(Combatant::Npc(0), 20), (Combatant::Player, 10)];
         combat.current_turn = 0; // NPC is current turn; next call should land on Player.
 
         combat.advance_turn(&mut state);
         // After advancing to the player's turn, the goblin's Grappled condition
         // should have been released.
         let npc = state.world.npcs.get(&0).unwrap();
-        assert!(!conditions::has_condition(&npc.conditions, ConditionType::Grappled),
-            "Grappled should be released when grappler is incapacitated");
+        assert!(
+            !conditions::has_condition(&npc.conditions, ConditionType::Grappled),
+            "Grappled should be released when grappler is incapacitated"
+        );
     }
 
     // ---- SRD Cover Rules ----
@@ -4926,11 +6020,34 @@ mod tests {
         // Use a deterministic seed that gives a d20 roll of exactly 10 (hits AC 10, misses AC 12).
         for seed in 0..10000u64 {
             let mut rng = StdRng::seed_from_u64(seed);
-            let result_no_cover = resolve_npc_attack(&mut rng, &attack, 10, false, 5, &[], &[], false, &Cover::None);
+            let result_no_cover = resolve_npc_attack(
+                &mut rng,
+                &attack,
+                10,
+                false,
+                5,
+                &[],
+                &[],
+                false,
+                &Cover::None,
+            );
             let mut rng2 = StdRng::seed_from_u64(seed);
-            let result_half = resolve_npc_attack(&mut rng2, &attack, 10, false, 5, &[], &[], false, &Cover::Half);
+            let result_half = resolve_npc_attack(
+                &mut rng2,
+                &attack,
+                10,
+                false,
+                5,
+                &[],
+                &[],
+                false,
+                &Cover::Half,
+            );
             // Effective AC for Half cover is 10+2=12. Effective AC for None is 10.
-            assert_eq!(result_half.target_ac, 12, "Half cover should raise effective AC to 12");
+            assert_eq!(
+                result_half.target_ac, 12,
+                "Half cover should raise effective AC to 12"
+            );
             assert_eq!(result_no_cover.target_ac, 10, "No cover AC should be 10");
             // The test is structural: effective_ac is applied. Early exit after first seed.
             return;
@@ -4942,8 +6059,21 @@ mod tests {
         let attack = make_attack();
         let seed = 0u64;
         let mut rng = StdRng::seed_from_u64(seed);
-        let result = resolve_npc_attack(&mut rng, &attack, 10, false, 5, &[], &[], false, &Cover::ThreeQuarters);
-        assert_eq!(result.target_ac, 15, "Three-quarters cover should raise effective AC to 15");
+        let result = resolve_npc_attack(
+            &mut rng,
+            &attack,
+            10,
+            false,
+            5,
+            &[],
+            &[],
+            false,
+            &Cover::ThreeQuarters,
+        );
+        assert_eq!(
+            result.target_ac, 15,
+            "Three-quarters cover should raise effective AC to 15"
+        );
     }
 
     #[test]
@@ -4951,15 +6081,25 @@ mod tests {
         let attack = make_attack();
         let seed = 0u64;
         let mut rng = StdRng::seed_from_u64(seed);
-        let result = resolve_npc_attack(&mut rng, &attack, 14, false, 5, &[], &[], false, &Cover::None);
+        let result = resolve_npc_attack(
+            &mut rng,
+            &attack,
+            14,
+            false,
+            5,
+            &[],
+            &[],
+            false,
+            &Cover::None,
+        );
         assert_eq!(result.target_ac, 14, "No cover: effective AC unchanged");
     }
 
     #[test]
     fn test_player_attacking_npc_with_half_cover_increases_npc_ac() {
-        use std::collections::HashMap;
-        use crate::character::{create_character, race::Race, class::Class};
+        use crate::character::{class::Class, create_character, race::Race};
         use crate::types::Ability;
+        use std::collections::HashMap;
 
         let mut scores = HashMap::new();
         scores.insert(Ability::Strength, 16);
@@ -4968,22 +6108,43 @@ mod tests {
         scores.insert(Ability::Intelligence, 8);
         scores.insert(Ability::Wisdom, 10);
         scores.insert(Ability::Charisma, 8);
-        let player = create_character("Hero".to_string(), Race::Human, Class::Fighter, scores, vec![]);
+        let player = create_character(
+            "Hero".to_string(),
+            Race::Human,
+            Class::Fighter,
+            scores,
+            vec![],
+        );
         let items = HashMap::new();
 
         let seed = 0u64;
         let mut rng = StdRng::seed_from_u64(seed);
         let result = resolve_player_attack(
-            &mut rng, &player, 10, false, None, &items, 5, true, false, &[], false, false, &Cover::Half,
+            &mut rng,
+            &player,
+            10,
+            false,
+            None,
+            &items,
+            5,
+            true,
+            false,
+            &[],
+            false,
+            false,
+            &Cover::Half,
         );
-        assert_eq!(result.target_ac, 12, "NPC with Half cover should have effective AC 12");
+        assert_eq!(
+            result.target_ac, 12,
+            "NPC with Half cover should have effective AC 12"
+        );
     }
 
     #[test]
     fn test_player_attacking_npc_with_no_cover_unmodified_ac() {
-        use std::collections::HashMap;
-        use crate::character::{create_character, race::Race, class::Class};
+        use crate::character::{class::Class, create_character, race::Race};
         use crate::types::Ability;
+        use std::collections::HashMap;
 
         let mut scores = HashMap::new();
         scores.insert(Ability::Strength, 16);
@@ -4992,15 +6153,36 @@ mod tests {
         scores.insert(Ability::Intelligence, 8);
         scores.insert(Ability::Wisdom, 10);
         scores.insert(Ability::Charisma, 8);
-        let player = create_character("Hero".to_string(), Race::Human, Class::Fighter, scores, vec![]);
+        let player = create_character(
+            "Hero".to_string(),
+            Race::Human,
+            Class::Fighter,
+            scores,
+            vec![],
+        );
         let items = HashMap::new();
 
         let seed = 0u64;
         let mut rng = StdRng::seed_from_u64(seed);
         let result = resolve_player_attack(
-            &mut rng, &player, 10, false, None, &items, 5, true, false, &[], false, false, &Cover::None,
+            &mut rng,
+            &player,
+            10,
+            false,
+            None,
+            &items,
+            5,
+            true,
+            false,
+            &[],
+            false,
+            false,
+            &Cover::None,
         );
-        assert_eq!(result.target_ac, 10, "NPC with no cover: AC unchanged at 10");
+        assert_eq!(
+            result.target_ac, 10,
+            "NPC with no cover: AC unchanged at 10"
+        );
     }
 
     #[test]
@@ -5016,8 +6198,12 @@ mod tests {
     fn test_cover_save_bonus_matches_ac_bonus() {
         // Per SRD, cover bonus applies equally to AC and DEX saves.
         for cover in [Cover::None, Cover::Half, Cover::ThreeQuarters, Cover::Total] {
-            assert_eq!(cover.save_bonus(), cover.ac_bonus(),
-                "save_bonus should equal ac_bonus for {:?}", cover);
+            assert_eq!(
+                cover.save_bonus(),
+                cover.ac_bonus(),
+                "save_bonus should equal ac_bonus for {:?}",
+                cover
+            );
         }
     }
 
@@ -5033,7 +6219,8 @@ mod tests {
         for seed in 0..1000u64 {
             let mut rng = StdRng::seed_from_u64(seed);
             let roll = roll_d20(&mut rng);
-            if roll - 1 < 13 { // -1 is goblin's STR mod
+            if roll - 1 < 13 {
+                // -1 is goblin's STR mod
                 return seed;
             }
         }
@@ -5064,12 +6251,23 @@ mod tests {
         let mut rng2 = StdRng::seed_from_u64(seed);
         let lines = handle_shove(&mut state, &mut combat, &mut rng2, 0, "goblin", false);
 
-        assert!(lines.iter().any(|l| l.contains("shove") || l.contains("back")),
-            "Should report push message: {:?}", lines);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("shove") || l.contains("back")),
+            "Should report push message: {:?}",
+            lines
+        );
         let new_dist = *combat.distances.get(&0).unwrap();
-        assert_eq!(new_dist, initial_dist + 5, "Pushed NPC should be 5 ft further");
-        assert!(!conditions::has_condition(&state.world.npcs[&0].conditions, ConditionType::Prone),
-            "Push variant should not apply Prone");
+        assert_eq!(
+            new_dist,
+            initial_dist + 5,
+            "Pushed NPC should be 5 ft further"
+        );
+        assert!(
+            !conditions::has_condition(&state.world.npcs[&0].conditions, ConditionType::Prone),
+            "Push variant should not apply Prone"
+        );
     }
 
     #[test]
@@ -5083,10 +6281,15 @@ mod tests {
         let mut rng2 = StdRng::seed_from_u64(seed);
         let lines = handle_shove(&mut state, &mut combat, &mut rng2, 0, "goblin", true);
 
-        assert!(lines.iter().any(|l| l.to_lowercase().contains("prone")),
-            "Should report prone message: {:?}", lines);
-        assert!(conditions::has_condition(&state.world.npcs[&0].conditions, ConditionType::Prone),
-            "Prone condition should be applied on failed save");
+        assert!(
+            lines.iter().any(|l| l.to_lowercase().contains("prone")),
+            "Should report prone message: {:?}",
+            lines
+        );
+        assert!(
+            conditions::has_condition(&state.world.npcs[&0].conditions, ConditionType::Prone),
+            "Prone condition should be applied on failed save"
+        );
     }
 
     #[test]
@@ -5101,12 +6304,20 @@ mod tests {
         let mut rng2 = StdRng::seed_from_u64(seed);
         let lines = handle_shove(&mut state, &mut combat, &mut rng2, 0, "goblin", false);
 
-        assert!(lines.iter().any(|l| l.contains("resists")),
-            "Should report resist message: {:?}", lines);
+        assert!(
+            lines.iter().any(|l| l.contains("resists")),
+            "Should report resist message: {:?}",
+            lines
+        );
         let new_dist = *combat.distances.get(&0).unwrap();
-        assert_eq!(new_dist, initial_dist, "Distance should be unchanged on resist");
-        assert!(!conditions::has_condition(&state.world.npcs[&0].conditions, ConditionType::Prone),
-            "No Prone should be applied when NPC resists");
+        assert_eq!(
+            new_dist, initial_dist,
+            "Distance should be unchanged on resist"
+        );
+        assert!(
+            !conditions::has_condition(&state.world.npcs[&0].conditions, ConditionType::Prone),
+            "No Prone should be applied when NPC resists"
+        );
     }
 
     #[test]
@@ -5114,8 +6325,10 @@ mod tests {
         // PC (Medium) can shove a Large target — it's only 1 category larger.
         let target_size = crate::combat::monsters::Size::Large;
         let shover_size = crate::combat::monsters::Size::Medium;
-        assert!(!target_exceeds_grapple_size_limit(&shover_size, &target_size),
-            "Medium player should be able to shove Large target");
+        assert!(
+            !target_exceeds_grapple_size_limit(&shover_size, &target_size),
+            "Medium player should be able to shove Large target"
+        );
     }
 
     #[test]
@@ -5123,7 +6336,9 @@ mod tests {
         // PC (Medium) cannot shove a Huge target — 2 categories larger.
         let target_size = crate::combat::monsters::Size::Huge;
         let shover_size = crate::combat::monsters::Size::Medium;
-        assert!(target_exceeds_grapple_size_limit(&shover_size, &target_size),
-            "Medium player should NOT be able to shove Huge target");
+        assert!(
+            target_exceeds_grapple_size_limit(&shover_size, &target_size),
+            "Medium player should NOT be able to shove Huge target"
+        );
     }
 }

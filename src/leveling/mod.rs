@@ -254,13 +254,20 @@ pub fn perform_level_up(character: &mut Character) -> LevelUpReport {
 ///
 /// Caller (orchestrator in lib.rs) is responsible for emitting these lines
 /// to the player.
-pub fn award_xp(character: &mut Character, amount: u32) -> Vec<String> {
+///
+/// The optional `source` parameter appends a suffix to the XP message,
+/// e.g., `Some("from combat")` yields "You gain 100 XP from combat."
+pub fn award_xp(character: &mut Character, amount: u32, source: Option<&str>) -> Vec<String> {
     let mut lines = Vec::new();
     if amount == 0 {
         return lines;
     }
     character.xp = character.xp.saturating_add(amount);
-    lines.push(format!("You gain {} XP.", amount));
+    let xp_msg = match source {
+        Some(s) => format!("You gain {} XP {}.", amount, s),
+        None => format!("You gain {} XP.", amount),
+    };
+    lines.push(xp_msg);
 
     while character.level < LEVEL_CAP
         && character.xp >= xp_for_next_level(character.level)
@@ -508,7 +515,7 @@ mod tests {
     #[test]
     fn award_xp_below_threshold_no_level_up() {
         let mut c = fighter_con13();
-        let lines = award_xp(&mut c, 100);
+        let lines = award_xp(&mut c, 100, None);
         assert_eq!(c.xp, 100);
         assert_eq!(c.level, 1);
         assert!(lines.iter().any(|l| l.contains("100 XP")));
@@ -518,7 +525,7 @@ mod tests {
     #[test]
     fn award_xp_zero_amount_is_noop() {
         let mut c = fighter_con13();
-        let lines = award_xp(&mut c, 0);
+        let lines = award_xp(&mut c, 0, None);
         assert!(lines.is_empty());
         assert_eq!(c.xp, 0);
     }
@@ -526,7 +533,7 @@ mod tests {
     #[test]
     fn award_xp_crosses_one_threshold() {
         let mut c = fighter_con13();
-        let lines = award_xp(&mut c, 300);
+        let lines = award_xp(&mut c, 300, None);
         assert_eq!(c.level, 2);
         assert!(lines.iter().any(|l| l.contains("level 2")));
     }
@@ -535,7 +542,7 @@ mod tests {
     fn award_xp_crosses_multiple_thresholds_in_one_award() {
         let mut c = fighter_con13();
         // 7000 XP — level 1 -> 5 (300/900/2700/6500 thresholds).
-        let lines = award_xp(&mut c, 7_000);
+        let lines = award_xp(&mut c, 7_000, None);
         assert_eq!(c.level, 5);
         // Should mention each level reached.
         assert!(lines.iter().any(|l| l.contains("level 2")));
@@ -548,17 +555,37 @@ mod tests {
     fn award_xp_caps_at_level_20() {
         let mut c = fighter_con13();
         // Bump XP into the stratosphere — level should cap at 20.
-        let _ = award_xp(&mut c, 1_000_000);
+        let _ = award_xp(&mut c, 1_000_000, None);
         assert_eq!(c.level, 20);
         // A second huge award changes nothing about level.
         let prior_hp = c.max_hp;
         let prior_hd = c.hit_dice_remaining;
         let prior_asi = c.asi_credits;
-        let _ = award_xp(&mut c, 1_000_000);
+        let _ = award_xp(&mut c, 1_000_000, None);
         assert_eq!(c.level, 20);
         assert_eq!(c.max_hp, prior_hp);
         assert_eq!(c.hit_dice_remaining, prior_hd);
         assert_eq!(c.asi_credits, prior_asi);
+    }
+
+    #[test]
+    fn award_xp_with_source_label() {
+        let mut c = fighter_con13();
+        let lines = award_xp(&mut c, 100, Some("from combat"));
+        assert!(
+            lines.iter().any(|l| l.contains("100 XP from combat")),
+            "Expected source label in XP message, got: {:?}",
+            lines
+        );
+
+        let lines2 = award_xp(&mut c, 50, Some("for completing the objective"));
+        assert!(
+            lines2
+                .iter()
+                .any(|l| l.contains("50 XP for completing the objective")),
+            "Expected objective source label, got: {:?}",
+            lines2
+        );
     }
 
     // ---- Save/load ----

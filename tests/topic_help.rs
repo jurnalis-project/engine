@@ -154,7 +154,7 @@ fn unknown_help_topic_lists_phase_valid_topics() {
         output
             .text
             .iter()
-            .any(|line| line.contains("movement, inventory, equipment, spells, system, combat")),
+            .any(|line| line.contains("movement, actions, inventory, equipment, spells, system, combat")),
         "Expected combat topic set in fallback. Got: {:?}",
         output.text
     );
