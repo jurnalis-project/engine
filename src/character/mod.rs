@@ -120,6 +120,12 @@ pub struct Character {
     /// the attack. `#[serde(default)]` for backward compat.
     #[serde(default)]
     pub ammo: HashMap<String, u32>,
+    /// Currency in copper pieces. 1 gp = 100 cp, 1 sp = 10 cp. Copper
+    /// precision avoids floating-point rounding. Starting gold varies by
+    /// class/background. `#[serde(default)]` so legacy saves deserialize
+    /// to 0.
+    #[serde(default)]
+    pub gold_cp: u32,
 }
 
 impl Character {
@@ -260,6 +266,7 @@ pub fn create_character(
         wearing_nonproficient_armor: false,
         subrace: None,
         ammo: HashMap::new(),
+        gold_cp: 0,
     }
 }
 

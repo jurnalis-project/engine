@@ -158,6 +158,19 @@ impl Background {
         }
     }
 
+    /// Starting gold in copper pieces. SRD 2024 backgrounds provide 50 gp
+    /// (5000 cp) as Option B for starting equipment, but most backgrounds
+    /// start with less for game balance. Merchant/Noble start higher.
+    pub fn starting_gold_cp(&self) -> u32 {
+        match self {
+            Background::Noble => 10000,    // 100 gp - wealthy upbringing
+            Background::Merchant => 7500,  // 75 gp - trade background
+            Background::Charlatan => 5000, // 50 gp - ill-gotten gains
+            Background::Criminal => 3000,  // 30 gp - fenced goods
+            _ => 1500,                     // 15 gp - modest means
+        }
+    }
+
     /// Starting equipment package (option A). Each entry is a simple item name.
     /// Items that do not exist in the SRD weapon/armor tables are skipped at
     /// grant time (handled in the orchestrator).
