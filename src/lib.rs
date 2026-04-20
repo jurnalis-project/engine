@@ -4208,6 +4208,16 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
             );
         }
         Command::BonusDash => {
+            // SRD 5.1: bonus-action Dash is Rogue Cunning Action only.
+            // Other classes do not have this ability.
+            if state.character.class != character::class::Class::Rogue {
+                state.active_combat = Some(combat);
+                return vec![
+                    "You don't have a class feature that grants bonus-action Dash. \
+                     (This is a Rogue Cunning Action.)"
+                        .to_string(),
+                ];
+            }
             if combat.bonus_action_used {
                 state.active_combat = Some(combat);
                 return vec!["You've already used your bonus action this turn.".to_string()];
@@ -4215,7 +4225,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
             combat.player_movement_remaining += state.character.speed;
             combat.bonus_action_used = true;
             lines.push(format!(
-                "You dash as a bonus action. Movement this turn: {} ft.",
+                "You use Cunning Action to dash as a bonus action. Movement this turn: {} ft.",
                 combat.player_movement_remaining
             ));
         }
@@ -10524,6 +10534,72 @@ mod tests {
         state
     }
 
+    fn create_test_rogue_combat_state() -> GameState {
+        let mut state = create_test_exploration_state();
+        // Change character class to Rogue
+        state.character.class = character::class::Class::Rogue;
+        // Add a hostile goblin with combat stats to current location
+        let npc_id = 100;
+        let loc_id = state.current_location;
+        state.world.npcs.insert(npc_id, state::Npc {
+            id: npc_id,
+            name: "Test Goblin".to_string(),
+            role: state::NpcRole::Guard,
+            disposition: state::Disposition::Hostile,
+            dialogue_tags: vec![],
+            location: loc_id,
+            combat_stats: Some(state::CombatStats {
+                max_hp: 7, current_hp: 7, ac: 15, speed: 30,
+                ability_scores: {
+                    let mut m = HashMap::new();
+                    m.insert(Ability::Strength, 8);
+                    m.insert(Ability::Dexterity, 14);
+                    m
+                },
+                attacks: vec![state::NpcAttack {
+                    name: "Scimitar".to_string(), hit_bonus: 4,
+                    damage_dice: 1, damage_die: 6, damage_bonus: 2,
+                    damage_type: state::DamageType::Slashing, reach: 5,
+                    range_normal: 0, range_long: 0,
+                }],
+                proficiency_bonus: 2,
+                cr: 0.25,
+                ..Default::default()
+            }),
+            conditions: Vec::new(),
+        });
+        if let Some(loc) = state.world.locations.get_mut(&loc_id) {
+            loc.npcs.push(npc_id);
+        }
+
+        // Give player a weapon
+        let weapon_id = 200;
+        state.world.items.insert(weapon_id, state::Item {
+            id: weapon_id,
+            name: "Shortsword".to_string(),
+            description: "A fine shortsword.".to_string(),
+            item_type: state::ItemType::Weapon {
+                damage_dice: 1, damage_die: 6,
+                damage_type: state::DamageType::Piercing,
+                properties: crate::equipment::LIGHT | crate::equipment::FINESSE,
+                category: state::WeaponCategory::Martial,
+                versatile_die: 0, range_normal: 0, range_long: 0,
+            },
+            location: None,
+            carried_by_player: true,
+            charges_remaining: None,
+        });
+        state.character.inventory.push(weapon_id);
+        state.character.equipped.main_hand = Some(weapon_id);
+
+        // Start combat
+        let mut rng = rand::rngs::StdRng::seed_from_u64(state.rng_seed + state.rng_counter);
+        state.rng_counter += 1;
+        let combat_state = combat::start_combat(&mut rng, &state.character, &[npc_id], &state.world.npcs);
+        state.active_combat = Some(combat_state);
+        state
+    }
+
     fn force_player_turn(state: &mut GameState) {
         if let Some(ref mut combat) = state.active_combat {
             for (i, (c, _)) in combat.initiative_order.iter().enumerate() {
@@ -12205,7 +12281,7 @@ mod tests {
 
     #[test]
     fn test_bonus_dash_grants_movement_and_consumes_bonus_action() {
-        let mut state = create_test_combat_state();
+        let mut state = create_test_rogue_combat_state();
         force_player_turn(&mut state);
         if let Some(ref mut combat) = state.active_combat {
             combat.player_movement_remaining = 15; // some movement already spent
@@ -12244,7 +12320,7 @@ mod tests {
 
     #[test]
     fn test_bonus_dash_blocked_when_bonus_action_used() {
-        let mut state = create_test_combat_state();
+        let mut state = create_test_rogue_combat_state();
         force_player_turn(&mut state);
         if let Some(ref mut combat) = state.active_combat {
             combat.bonus_action_used = true;
@@ -12272,7 +12348,7 @@ mod tests {
 
     #[test]
     fn test_bonus_dash_does_not_end_turn_automatically() {
-        let mut state = create_test_combat_state();
+        let mut state = create_test_rogue_combat_state();
         force_player_turn(&mut state);
         if let Some(ref mut combat) = state.active_combat {
             combat.player_movement_remaining = 0;
@@ -12288,6 +12364,30 @@ mod tests {
             combat.is_player_turn(),
             "BonusDash should keep the player's turn open (movement just got granted)."
         );
+    }
+
+    #[test]
+    fn test_bonus_dash_rejected_for_non_rogue() {
+        // SRD 5.1: bonus-action Dash is only available to Rogues via Cunning Action.
+        // A Fighter should not be able to use it.
+        let mut state = create_test_combat_state();
+        force_player_turn(&mut state);
+        // Fighter should not be able to use bonus dash
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "bonus dash");
+
+        // Should reject with a message about Cunning Action
+        assert!(output.text.iter().any(|t| t.contains("don't have a class feature") || t.contains("Cunning Action")),
+            "Bonus dash should be rejected for non-Rogues. Got: {:?}", output.text);
+
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        let combat = new_state.active_combat.as_ref().unwrap();
+        let original_movement = state.active_combat.as_ref().unwrap().player_movement_remaining;
+        // Movement should not change
+        assert_eq!(combat.player_movement_remaining, original_movement,
+            "Movement should not change when bonus dash is rejected");
+        assert!(!combat.bonus_action_used, "Bonus action should not be consumed");
     }
 
     #[test]
