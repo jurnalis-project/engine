@@ -304,6 +304,53 @@ fn emit_disambiguation_with_suffix(
     resolver::format_disambiguation(matches)
 }
 
+fn format_unknown_command_message(input: &str, in_combat: bool) -> String {
+    let trimmed = input.trim();
+    let verb = trimmed
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_lowercase();
+    let hint = if in_combat {
+        combat_unknown_command_hint(&verb)
+    } else {
+        exploration_unknown_command_hint(&verb)
+    };
+
+    if in_combat {
+        format!("Unknown combat command: \"{}\". {}", trimmed, hint)
+    } else {
+        format!("I don't understand \"{}\". {}", trimmed, hint)
+    }
+}
+
+fn exploration_unknown_command_hint(verb: &str) -> &'static str {
+    match verb {
+        "jump" | "climb" | "crawl" | "run" | "sprint" => {
+            "Try `go <direction>`, `look`, `map`, or `help movement`."
+        }
+        "open" | "close" | "push" | "pull" | "press" | "unlock" => {
+            "Try `look <target>`, `use <item>`, `take <item>`, or `help interaction`."
+        }
+        "greet" | "persuade" | "question" => {
+            "Try `talk <name>`, `look`, or `help interaction`."
+        }
+        _ => "Try `look`, `go <direction>`, `talk <name>`, `inventory`, or `help`.",
+    }
+}
+
+fn combat_unknown_command_hint(verb: &str) -> &'static str {
+    match verb {
+        "jump" | "charge" | "rush" | "run" | "sprint" => {
+            "Try `approach <target>`, `retreat`, `dash`, or `help combat`."
+        }
+        "defend" | "block" | "brace" | "parry" => {
+            "Try `dodge`, `take cover`, `disengage`, or `help combat`."
+        }
+        _ => "Try `attack <target>`, `approach <target>`, `dodge`, `end turn`, or `help combat`.",
+    }
+}
+
 fn handle_creation(state: &mut GameState, input: &str, step: CreationStep) -> Vec<String> {
     let input = input.trim();
     match step {
@@ -1996,7 +2043,7 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
                 vec![]
             } else if s.to_lowercase() == input.trim().to_lowercase() {
                 // The parser echoed the raw user input — it's truly unrecognised.
-                vec![narration::templates::UNKNOWN_COMMAND.replace("{input}", &s)]
+                vec![format_unknown_command_message(&s, false)]
             } else {
                 // The parser generated a disambiguation hint — return it directly.
                 vec![s]
@@ -4740,7 +4787,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
             }
             if s.to_lowercase() == input.trim().to_lowercase() {
                 // Echo of raw user input — truly unrecognised.
-                return vec![format!("Unknown combat command: \"{}\". Type 'help' for commands.", s)];
+                return vec![format_unknown_command_message(&s, true)];
             }
             // Parser-generated hint — return directly without wrapping.
             return vec![s];
@@ -5154,13 +5201,54 @@ fn render_map(state: &GameState) -> Vec<String> {
     let mut lines = vec!["=== MAP ===".to_string()];
     for id in ids {
         if let Some(loc) = state.world.locations.get(&id) {
-            let marker = if id == state.current_location { "*" } else { " " };
-            let mut exits: Vec<String> = loc.exits.keys().map(|d| d.to_string()).collect();
-            exits.sort();
-            lines.push(format!("{} {} -> {}", marker, loc.name, exits.join(", ")));
+            let marker = if id == state.current_location { "*" } else { "-" };
+            lines.push(format!("{} {}", marker, loc.name));
+            lines.push(format!(
+                "  Type: {} | Light: {}",
+                format_location_type(loc.location_type),
+                format_light_level(loc.light_level),
+            ));
+
+            let mut exits: Vec<_> = loc.exits.iter().collect();
+            exits.sort_by_key(|(direction, _)| direction.to_string());
+
+            if exits.is_empty() {
+                lines.push("  Exits: none".to_string());
+                continue;
+            }
+
+            lines.push("  Exits:".to_string());
+            for (direction, destination_id) in exits {
+                let destination = if state.discovered_locations.contains(destination_id) {
+                    state.world.locations.get(destination_id)
+                        .map(|destination| destination.name.as_str())
+                        .unwrap_or("Unknown")
+                } else {
+                    "Undiscovered"
+                };
+                lines.push(format!("    {} -> {}", direction, destination));
+            }
         }
     }
     lines
+}
+
+fn format_location_type(location_type: state::LocationType) -> &'static str {
+    match location_type {
+        state::LocationType::Room => "room",
+        state::LocationType::Corridor => "corridor",
+        state::LocationType::Cave => "cave",
+        state::LocationType::Clearing => "clearing",
+        state::LocationType::Ruins => "ruins",
+    }
+}
+
+fn format_light_level(light_level: state::LightLevel) -> &'static str {
+    match light_level {
+        state::LightLevel::Bright => "bright",
+        state::LightLevel::Dim => "dim",
+        state::LightLevel::Dark => "dark",
+    }
 }
 
 fn handle_victory(state: &mut GameState, input: &str) -> Vec<String> {
@@ -9659,13 +9747,25 @@ mod tests {
 
     #[test]
     fn test_map_command_lists_discovered_locations_with_current_marker() {
-        let state = create_test_exploration_state();
+        let state = create_test_map_state();
         let state_json = serde_json::to_string(&state).unwrap();
 
         let output = process_input(&state_json, "map");
 
         assert!(output.text.iter().any(|t| t.contains("=== MAP ===")), "{:?}", output.text);
-        assert!(output.text.iter().any(|t| t.contains("*")), "{:?}", output.text);
+        assert!(output.text.iter().any(|t| t.contains("* Entrance Hall")), "{:?}", output.text);
+        assert!(output.text.iter().any(|t| t.contains("Type: room | Light: bright")), "{:?}", output.text);
+        assert!(output.text.iter().any(|t| t.contains("east -> Guard Room")), "{:?}", output.text);
+    }
+
+    #[test]
+    fn test_map_command_marks_undiscovered_exits_without_revealing_destination() {
+        let state = create_test_map_state();
+        let state_json = serde_json::to_string(&state).unwrap();
+
+        let output = process_input(&state_json, "map");
+
+        assert!(output.text.iter().any(|t| t.contains("north -> Undiscovered")), "{:?}", output.text);
     }
 
     #[test]
@@ -9778,6 +9878,66 @@ mod tests {
             pending_disambiguation: None,
             pending_new_game_confirm: false,
         }
+    }
+
+    fn create_test_map_state() -> GameState {
+        use crate::state::{LightLevel, Location, LocationType, WorldState};
+        use crate::types::Direction;
+
+        let mut state = create_test_exploration_state();
+        let mut locations = HashMap::new();
+
+        locations.insert(0, Location {
+            id: 0,
+            name: "Entrance Hall".to_string(),
+            description: "The threshold of the dungeon.".to_string(),
+            location_type: LocationType::Room,
+            exits: HashMap::from([
+                (Direction::East, 1),
+                (Direction::North, 2),
+            ]),
+            npcs: vec![],
+            items: vec![],
+            triggers: vec![],
+            light_level: LightLevel::Bright,
+        });
+        locations.insert(1, Location {
+            id: 1,
+            name: "Guard Room".to_string(),
+            description: "A room with old watch posts.".to_string(),
+            location_type: LocationType::Room,
+            exits: HashMap::from([
+                (Direction::West, 0),
+            ]),
+            npcs: vec![],
+            items: vec![],
+            triggers: vec![],
+            light_level: LightLevel::Dim,
+        });
+        locations.insert(2, Location {
+            id: 2,
+            name: "Hidden Alcove".to_string(),
+            description: "A cramped niche tucked beyond a narrow passage.".to_string(),
+            location_type: LocationType::Cave,
+            exits: HashMap::from([
+                (Direction::South, 0),
+            ]),
+            npcs: vec![],
+            items: vec![],
+            triggers: vec![],
+            light_level: LightLevel::Dark,
+        });
+
+        state.current_location = 0;
+        state.discovered_locations = [0, 1].into_iter().collect();
+        state.world = WorldState {
+            locations,
+            npcs: HashMap::new(),
+            items: HashMap::new(),
+            triggers: HashMap::new(),
+            triggered: HashSet::new(),
+        };
+        state
     }
 
     // Hypothesis (Bug 1): Traps deal zero damage because the Trigger struct had no
@@ -10116,6 +10276,43 @@ mod tests {
             "Unrecognised input should be wrapped in error template. Got: {}",
             text,
         );
+    }
+
+    #[test]
+    fn test_exploration_unknown_command_offers_contextual_movement_hint() {
+        let state = create_test_exploration_state();
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "jump");
+        let text = output.text.join("\n").to_lowercase();
+
+        assert!(text.contains("i don't understand \"jump\""), "Got: {}", text);
+        assert!(text.contains("go <direction>"), "Got: {}", text);
+        assert!(text.contains("help movement"), "Got: {}", text);
+    }
+
+    #[test]
+    fn test_exploration_unknown_command_offers_contextual_interaction_hint() {
+        let state = create_test_exploration_state();
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "open chest");
+        let text = output.text.join("\n").to_lowercase();
+
+        assert!(text.contains("i don't understand \"open chest\""), "Got: {}", text);
+        assert!(text.contains("look <target>"), "Got: {}", text);
+        assert!(text.contains("help interaction"), "Got: {}", text);
+    }
+
+    #[test]
+    fn test_combat_unknown_command_offers_contextual_hint() {
+        let mut state = create_test_combat_state();
+        force_player_turn(&mut state);
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "defend");
+        let text = output.text.join("\n").to_lowercase();
+
+        assert!(text.contains("unknown combat command: \"defend\""), "Got: {}", text);
+        assert!(text.contains("dodge"), "Got: {}", text);
+        assert!(text.contains("help combat"), "Got: {}", text);
     }
 
     #[test]

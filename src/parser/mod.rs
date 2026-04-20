@@ -1218,7 +1218,6 @@ mod tests {
     fn test_escape_bare_verb() {
         assert_eq!(parse("escape"), Command::EscapeGrapple);
     }
-}
 
     #[test]
     fn test_bare_attack_is_disambiguation_hint() {
@@ -1238,9 +1237,13 @@ mod tests {
         match parse("rest") {
             Command::Unknown(s) => {
                 assert_ne!(s, "rest", "bare 'rest' hint should NOT echo user input");
-                assert!(s.contains("short") || s.contains("long"),
-                    "hint should mention short/long rest, got: {}", s);
+                assert!(
+                    s.contains("short") || s.contains("long"),
+                    "hint should mention short/long rest, got: {}",
+                    s
+                );
             }
             other => panic!("Expected Unknown, got {:?}", other),
         }
     }
+}
