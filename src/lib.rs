@@ -2372,7 +2372,6 @@ fn resolve_single_npc_attack(
         lines.push("(Disadvantage from Sap mastery.)".to_string());
     }
     let verb = if attack.reach > 0 { "attacks with" } else { "fires" };
-    let disadv = if result.disadvantage { " (with disadvantage)" } else { "" };
 
     if result.hit {
         state.character.current_hp -= result.damage;
@@ -2380,10 +2379,10 @@ fn resolve_single_npc_attack(
             lines.push(format!("{} {} {} -- CRITICAL HIT! {} {} damage!",
                 npc_name, verb, result.weapon_name, result.damage, result.damage_type));
         } else {
-            lines.push(format!("{} {} {} ({} vs AC {}){} -- hit for {} {} damage.",
+            lines.push(format!("{} {} {} ({} vs AC {}) -- hit for {} {} damage.",
                 npc_name, verb, result.weapon_name,
-                format_roll(result.attack_roll, attack.hit_bonus, result.total_attack),
-                player_ac, disadv,
+                combat::format_attack_roll_details(&result, attack.hit_bonus),
+                player_ac,
                 result.damage, result.damage_type));
         }
         // Concentration check: if the player is concentrating on a spell,
@@ -2392,10 +2391,10 @@ fn resolve_single_npc_attack(
     } else if result.natural_1 {
         lines.push(format!("{} {} {} -- natural 1, miss!", npc_name, verb, result.weapon_name));
     } else {
-        lines.push(format!("{} {} {} ({} vs AC {}){} -- miss.",
+        lines.push(format!("{} {} {} ({} vs AC {}) -- miss.",
             npc_name, verb, result.weapon_name,
-            format_roll(result.attack_roll, attack.hit_bonus, result.total_attack),
-            player_ac, disadv));
+            combat::format_attack_roll_details(&result, attack.hit_bonus),
+            player_ac));
     }
     lines
 }
@@ -3081,13 +3080,13 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                         } else if is_unarmed {
                             lines.push(format!("You punch {} ({} vs AC {}) -- hit for {} {} damage.",
                                 npc_name,
-                                format_roll(result.attack_roll, result.total_attack - result.attack_roll, result.total_attack),
+                                combat::format_attack_roll_details(&result, result.total_attack - result.attack_roll),
                                 target_ac,
                                 result.damage, result.damage_type));
                         } else {
                             lines.push(format!("You attack {} with {} ({} vs AC {}) -- hit for {} {} damage.",
                                 npc_name, result.weapon_name,
-                                format_roll(result.attack_roll, result.total_attack - result.attack_roll, result.total_attack),
+                                combat::format_attack_roll_details(&result, result.total_attack - result.attack_roll),
                                 target_ac,
                                 result.damage, result.damage_type));
                         }
@@ -3101,16 +3100,13 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                     } else if is_unarmed {
                         lines.push(format!("You swing at {} ({} vs AC {}) -- miss.",
                             npc_name,
-                            format_roll(result.attack_roll, result.total_attack - result.attack_roll, result.total_attack),
+                            combat::format_attack_roll_details(&result, result.total_attack - result.attack_roll),
                             target_ac));
                     } else {
                         lines.push(format!("You attack {} with {} ({} vs AC {}) -- miss.",
                             npc_name, result.weapon_name,
-                            format_roll(result.attack_roll, result.total_attack - result.attack_roll, result.total_attack),
+                            combat::format_attack_roll_details(&result, result.total_attack - result.attack_roll),
                             target_ac));
-                    }
-                    if result.disadvantage {
-                        lines.push("(Rolled with disadvantage)".to_string());
                     }
 
                     // Apply damage (honoring stat-block resistances/immunities)
@@ -3452,7 +3448,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                             lines.push(format!(
                                 "You strike {} with your off-hand {} ({} vs AC {}) -- hit for {} {} damage.",
                                 npc_name, result.weapon_name,
-                                format_roll(result.attack_roll, result.total_attack - result.attack_roll, result.total_attack),
+                                combat::format_attack_roll_details(&result, result.total_attack - result.attack_roll),
                                 target_ac, adjusted_damage, result.damage_type
                             ));
                         }
@@ -3465,12 +3461,9 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                         lines.push(format!(
                             "You strike with your off-hand {} ({} vs AC {}) -- miss.",
                             result.weapon_name,
-                            format_roll(result.attack_roll, result.total_attack - result.attack_roll, result.total_attack),
+                            combat::format_attack_roll_details(&result, result.total_attack - result.attack_roll),
                             target_ac
                         ));
-                    }
-                    if result.disadvantage {
-                        lines.push("(Rolled with disadvantage)".to_string());
                     }
 
                     // Apply damage (honoring stat-block resistances/immunities)
@@ -8167,8 +8160,8 @@ mod tests {
         let output = process_input(&state_json, "attack test goblin");
 
         assert!(
-            output.text.iter().any(|t| t.to_lowercase().contains("disadvantage")),
-            "Expected disadvantage text for ranged attack in melee. Got: {:?}",
+            output.text.iter().any(|t| t.contains(" -> ") && t.contains("vs AC")),
+            "Expected dual-roll disadvantage text for ranged attack in melee. Got: {:?}",
             output.text
         );
     }
@@ -8211,8 +8204,8 @@ mod tests {
 
         // No hostiles within 5ft, not dodging, within normal range -> no disadvantage.
         assert!(
-            !output.text.iter().any(|t| t.to_lowercase().contains("disadvantage")),
-            "Ranged attack with no hostile in melee should NOT apply disadvantage. Got: {:?}",
+            !output.text.iter().any(|t| t.contains(" -> ") && t.contains("vs AC")),
+            "Ranged attack with no hostile in melee should NOT show dual-roll disadvantage text. Got: {:?}",
             output.text
         );
     }
@@ -8295,8 +8288,8 @@ mod tests {
         let output = process_input(&state_json, "attack test goblin");
 
         assert!(
-            output.text.iter().any(|t| t.to_lowercase().contains("disadvantage")),
-            "Ranged attack while another hostile is within 5ft should apply disadvantage. Got: {:?}",
+            output.text.iter().any(|t| t.contains(" -> ") && t.contains("vs AC")),
+            "Ranged attack while another hostile is within 5ft should show dual-roll disadvantage text. Got: {:?}",
             output.text
         );
     }
@@ -11006,6 +10999,7 @@ mod tests {
         // A near-miss that flips to a hit with +2 attack bonus.
         let mut r = AttackResult {
             hit: false, natural_20: false, natural_1: false,
+            attack_roll_first: 10, attack_roll_second: None,
             attack_roll: 10, total_attack: 14, target_ac: 15,
             damage: 0, damage_type: DamageType::Slashing,
             weapon_name: "+2 Longsword".to_string(),
@@ -11023,6 +11017,7 @@ mod tests {
         use state::DamageType;
         let mut r = AttackResult {
             hit: true, natural_20: false, natural_1: false,
+            attack_roll_first: 15, attack_roll_second: None,
             attack_roll: 15, total_attack: 20, target_ac: 15,
             damage: 8, damage_type: DamageType::Slashing,
             weapon_name: "+1 Longsword".to_string(),
@@ -11039,6 +11034,7 @@ mod tests {
         use state::DamageType;
         let mut r = AttackResult {
             hit: false, natural_20: false, natural_1: true,
+            attack_roll_first: 1, attack_roll_second: None,
             attack_roll: 1, total_attack: 5, target_ac: 15,
             damage: 0, damage_type: DamageType::Slashing,
             weapon_name: "+3 Longsword".to_string(),
@@ -11058,6 +11054,7 @@ mod tests {
         // +2 damage bonus is added flat (NOT doubled per SRD).
         let mut r = AttackResult {
             hit: true, natural_20: true, natural_1: false,
+            attack_roll_first: 20, attack_roll_second: None,
             attack_roll: 20, total_attack: 25, target_ac: 30, // still hits because nat20
             damage: 15, damage_type: DamageType::Slashing,
             weapon_name: "+2 Longsword".to_string(),
