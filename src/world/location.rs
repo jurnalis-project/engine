@@ -1,16 +1,31 @@
 // jurnalis-engine/src/world/location.rs
-use rand::Rng;
+use crate::state::{LightLevel, Location, LocationType, RoomFeature};
+use crate::types::{Direction, LocationId};
 use rand::seq::SliceRandom;
+use rand::Rng;
 use std::collections::HashMap;
-use crate::types::{LocationId, Direction};
-use crate::state::{Location, LocationType, LightLevel};
 
 const ROOM_NAMES: &[&str] = &[
-    "Entrance Hall", "Narrow Passage", "Guard Room", "Storage Chamber",
-    "Great Hall", "Collapsed Tunnel", "Damp Cellar", "Ancient Library",
-    "Shrine", "Armory", "Prison Cell", "Throne Room",
-    "Crypt", "Forge", "Well Chamber", "Hidden Alcove",
-    "Moss-Covered Grotto", "Pillared Hall", "Winding Stairs", "Dead End",
+    "Entrance Hall",
+    "Narrow Passage",
+    "Guard Room",
+    "Storage Chamber",
+    "Great Hall",
+    "Collapsed Tunnel",
+    "Damp Cellar",
+    "Ancient Library",
+    "Shrine",
+    "Armory",
+    "Prison Cell",
+    "Throne Room",
+    "Crypt",
+    "Forge",
+    "Well Chamber",
+    "Hidden Alcove",
+    "Moss-Covered Grotto",
+    "Pillared Hall",
+    "Winding Stairs",
+    "Dead End",
 ];
 
 const ROOM_DESCRIPTIONS: &[&str] = &[
@@ -25,6 +40,62 @@ const ROOM_DESCRIPTIONS: &[&str] = &[
     "The room smells of damp earth and decay.",
     "Shadows dance at the edges of your vision.",
 ];
+
+const ROOM_FEATURES: &[(&str, &str)] = &[
+    (
+        "altar",
+        "Its worn surface is etched with old prayer marks and candle wax.",
+    ),
+    (
+        "statue",
+        "A weathered stone figure watches the room with a cracked, patient face.",
+    ),
+    (
+        "door",
+        "Age-darkened wood and iron bands suggest it has resisted many hands.",
+    ),
+    (
+        "runes",
+        "The faded runes look ceremonial, their grooves still sharp beneath the dust.",
+    ),
+    (
+        "torch sconce",
+        "Cold iron brackets hold the remains of long-burned torches.",
+    ),
+    (
+        "bookshelf",
+        "Warped shelves sag under mildew-stained books and loose parchment.",
+    ),
+    (
+        "well",
+        "A ring of damp stone surrounds a shaft that drops into darkness.",
+    ),
+    (
+        "forge",
+        "Ash and old slag cling to the stone, hinting at fires that once roared here.",
+    ),
+    (
+        "chains",
+        "Rust-bitten chains hang from the wall, some snapped, some still taut.",
+    ),
+    (
+        "mural",
+        "A peeling mural depicts forgotten figures in triumph and ruin.",
+    ),
+];
+
+fn generate_room_features(rng: &mut impl Rng) -> Vec<RoomFeature> {
+    let feature_count = rng.gen_range(1..=2);
+    let mut pool: Vec<_> = ROOM_FEATURES.to_vec();
+    pool.shuffle(rng);
+    pool.into_iter()
+        .take(feature_count)
+        .map(|(name, description)| RoomFeature {
+            name: name.to_string(),
+            description: description.to_string(),
+        })
+        .collect()
+}
 
 const LOCATION_TYPES: &[LocationType] = &[
     LocationType::Room,
@@ -68,21 +139,30 @@ pub fn generate_locations(rng: &mut impl Rng, count: usize) -> HashMap<LocationI
             _ => LightLevel::Dark,
         };
 
-        locations.insert(id, Location {
+        locations.insert(
             id,
-            name: format!("{}", name),
-            description: ROOM_DESCRIPTIONS[desc_idx].to_string(),
-            location_type: LOCATION_TYPES[type_idx],
-            exits: HashMap::new(),
-            npcs: Vec::new(),
-            items: Vec::new(),
-            triggers: Vec::new(),
-            light_level: light,
-        });
+            Location {
+                id,
+                name: format!("{}", name),
+                description: ROOM_DESCRIPTIONS[desc_idx].to_string(),
+                location_type: LOCATION_TYPES[type_idx],
+                exits: HashMap::new(),
+                npcs: Vec::new(),
+                items: Vec::new(),
+                triggers: Vec::new(),
+                light_level: light,
+                room_features: generate_room_features(rng),
+            },
+        );
     }
 
     // Connect locations in a chain to ensure connectivity
-    let directions = [Direction::North, Direction::East, Direction::South, Direction::West];
+    let directions = [
+        Direction::North,
+        Direction::East,
+        Direction::South,
+        Direction::West,
+    ];
     for i in 0..(count - 1) {
         let from = i as LocationId;
         let to = (i + 1) as LocationId;
@@ -92,9 +172,15 @@ pub fn generate_locations(rng: &mut impl Rng, count: usize) -> HashMap<LocationI
         let mut connected = false;
         for offset in 0..directions.len() {
             let dir = directions[(start + offset) % directions.len()];
-            if !locations[&from].exits.contains_key(&dir) && !locations[&to].exits.contains_key(&opposite(dir)) {
+            if !locations[&from].exits.contains_key(&dir)
+                && !locations[&to].exits.contains_key(&opposite(dir))
+            {
                 locations.get_mut(&from).unwrap().exits.insert(dir, to);
-                locations.get_mut(&to).unwrap().exits.insert(opposite(dir), from);
+                locations
+                    .get_mut(&to)
+                    .unwrap()
+                    .exits
+                    .insert(opposite(dir), from);
                 connected = true;
                 break;
             }
@@ -104,7 +190,11 @@ pub fn generate_locations(rng: &mut impl Rng, count: usize) -> HashMap<LocationI
         if !connected {
             let dir = directions[start % directions.len()];
             locations.get_mut(&from).unwrap().exits.insert(dir, to);
-            locations.get_mut(&to).unwrap().exits.insert(opposite(dir), from);
+            locations
+                .get_mut(&to)
+                .unwrap()
+                .exits
+                .insert(opposite(dir), from);
         }
     }
 
@@ -117,9 +207,15 @@ pub fn generate_locations(rng: &mut impl Rng, count: usize) -> HashMap<LocationI
             continue;
         }
         let dir = directions[rng.gen_range(0..directions.len())];
-        if !locations[&from].exits.contains_key(&dir) && !locations[&to].exits.contains_key(&opposite(dir)) {
+        if !locations[&from].exits.contains_key(&dir)
+            && !locations[&to].exits.contains_key(&opposite(dir))
+        {
             locations.get_mut(&from).unwrap().exits.insert(dir, to);
-            locations.get_mut(&to).unwrap().exits.insert(opposite(dir), from);
+            locations
+                .get_mut(&to)
+                .unwrap()
+                .exits
+                .insert(opposite(dir), from);
         }
     }
 
@@ -129,8 +225,8 @@ pub fn generate_locations(rng: &mut impl Rng, count: usize) -> HashMap<LocationI
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::SeedableRng;
     use rand::rngs::StdRng;
+    use rand::SeedableRng;
 
     #[test]
     fn test_generates_correct_count() {
@@ -172,7 +268,9 @@ mod tests {
                 assert!(
                     target_loc.exits.get(&opposite(*dir)) == Some(id),
                     "Exit from {} {:?} to {} is not bidirectional",
-                    id, dir, target
+                    id,
+                    dir,
+                    target
                 );
             }
         }
@@ -200,6 +298,18 @@ mod tests {
         names.sort();
         names.dedup();
 
-        assert_eq!(names.len(), locs.len(), "Location names should be unique at this size");
+        assert_eq!(
+            names.len(),
+            locs.len(),
+            "Location names should be unique at this size"
+        );
+    }
+
+    #[test]
+    fn test_locations_generate_room_features() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let locs = generate_locations(&mut rng, 5);
+
+        assert!(locs.values().all(|loc| !loc.room_features.is_empty()));
     }
 }

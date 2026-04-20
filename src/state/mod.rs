@@ -1,10 +1,10 @@
 // jurnalis-engine/src/state/mod.rs
+use crate::character::Character;
+use crate::combat::monsters::{default_multiattack, CreatureType, Size};
+use crate::conditions::{ActiveCondition, ConditionType};
+use crate::types::{Alignment, Direction, ItemId, LocationId, NpcId, TriggerId};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use crate::types::{LocationId, NpcId, ItemId, TriggerId, Direction, Alignment};
-use crate::character::Character;
-use crate::conditions::{ActiveCondition, ConditionType};
-use crate::combat::monsters::{CreatureType, Size, default_multiattack};
 
 pub const SAVE_VERSION: &str = "0.1.0";
 
@@ -120,13 +120,31 @@ pub struct Location {
     pub items: Vec<ItemId>,
     pub triggers: Vec<TriggerId>,
     pub light_level: LightLevel,
+    #[serde(default)]
+    pub room_features: Vec<RoomFeature>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoomFeature {
+    pub name: String,
+    pub description: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum LocationType { Room, Corridor, Cave, Clearing, Ruins }
+pub enum LocationType {
+    Room,
+    Corridor,
+    Cave,
+    Clearing,
+    Ruins,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum LightLevel { Bright, Dim, Dark }
+pub enum LightLevel {
+    Bright,
+    Dim,
+    Dark,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Npc {
@@ -221,10 +239,19 @@ pub struct NpcAttack {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum NpcRole { Merchant, Guard, Hermit, Adventurer }
+pub enum NpcRole {
+    Merchant,
+    Guard,
+    Hermit,
+    Adventurer,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Disposition { Friendly, Neutral, Hostile }
+pub enum Disposition {
+    Friendly,
+    Neutral,
+    Hostile,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Item {
@@ -294,10 +321,18 @@ impl std::fmt::Display for DamageType {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum WeaponCategory { Simple, Martial }
+pub enum WeaponCategory {
+    Simple,
+    Martial,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ArmorCategory { Light, Medium, Heavy, Shield }
+pub enum ArmorCategory {
+    Light,
+    Medium,
+    Heavy,
+    Shield,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ItemType {
@@ -318,8 +353,12 @@ pub enum ItemType {
         str_requirement: u32,
         stealth_disadvantage: bool,
     },
-    Consumable { effect: String },
-    Key { unlocks: String },
+    Consumable {
+        effect: String,
+    },
+    Key {
+        unlocks: String,
+    },
     Misc,
     // --- Magic item variants (added 2026-04-15, feat/magic-items). ---
     // All additive; pre-existing variants above are untouched so older saves
@@ -461,9 +500,13 @@ pub fn save_game(state: &GameState) -> Result<String, serde_json::Error> {
 }
 
 pub fn load_game(json: &str) -> Result<GameState, String> {
-    let state: GameState = serde_json::from_str(json).map_err(|e| format!("Failed to load save: {}", e))?;
+    let state: GameState =
+        serde_json::from_str(json).map_err(|e| format!("Failed to load save: {}", e))?;
     if state.version != SAVE_VERSION {
-        return Err(format!("Save version mismatch: expected {}, got {}", SAVE_VERSION, state.version));
+        return Err(format!(
+            "Save version mismatch: expected {}, got {}",
+            SAVE_VERSION, state.version
+        ));
     }
     Ok(state)
 }
@@ -471,7 +514,7 @@ pub fn load_game(json: &str) -> Result<GameState, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::character::{create_character, race::Race, class::Class};
+    use crate::character::{class::Class, create_character, race::Race};
     use crate::types::Ability;
 
     fn test_state() -> GameState {
@@ -484,7 +527,28 @@ mod tests {
         scores.insert(Ability::Charisma, 8);
 
         let character = create_character(
-            "TestHero".to_string(), Race::Human, Class::Fighter, scores, vec![],
+            "TestHero".to_string(),
+            Race::Human,
+            Class::Fighter,
+            scores,
+            vec![],
+        );
+
+        let mut locations = HashMap::new();
+        locations.insert(
+            0,
+            Location {
+                id: 0,
+                name: "Test Room".to_string(),
+                description: "A plain test chamber.".to_string(),
+                location_type: LocationType::Room,
+                exits: HashMap::new(),
+                npcs: Vec::new(),
+                items: Vec::new(),
+                triggers: Vec::new(),
+                light_level: LightLevel::Bright,
+                room_features: Vec::new(),
+            },
         );
 
         GameState {
@@ -493,8 +557,10 @@ mod tests {
             current_location: 0,
             discovered_locations: HashSet::new(),
             world: WorldState {
-                locations: HashMap::new(), npcs: HashMap::new(),
-                items: HashMap::new(), triggers: HashMap::new(),
+                locations,
+                npcs: HashMap::new(),
+                items: HashMap::new(),
+                triggers: HashMap::new(),
                 triggered: HashSet::new(),
             },
             log: Vec::new(),
@@ -526,7 +592,8 @@ mod tests {
     #[test]
     fn test_load_wrong_version() {
         let state = test_state();
-        let mut json: serde_json::Value = serde_json::from_str(&save_game(&state).unwrap()).unwrap();
+        let mut json: serde_json::Value =
+            serde_json::from_str(&save_game(&state).unwrap()).unwrap();
         json["version"] = serde_json::Value::String("99.0.0".to_string());
         let result = load_game(&json.to_string());
         assert!(result.is_err());
@@ -542,7 +609,8 @@ mod tests {
     #[test]
     fn test_load_game_missing_ironman_mode_defaults_false() {
         let state = test_state();
-        let mut json: serde_json::Value = serde_json::from_str(&save_game(&state).unwrap()).unwrap();
+        let mut json: serde_json::Value =
+            serde_json::from_str(&save_game(&state).unwrap()).unwrap();
         json.as_object_mut().unwrap().remove("ironman_mode");
 
         let loaded = load_game(&json.to_string()).unwrap();
@@ -562,7 +630,12 @@ mod tests {
             range_long: 0,
         };
         match weapon {
-            ItemType::Weapon { damage_die, damage_type, category, .. } => {
+            ItemType::Weapon {
+                damage_die,
+                damage_type,
+                category,
+                ..
+            } => {
                 assert_eq!(damage_die, 8);
                 assert_eq!(damage_type, DamageType::Slashing);
                 assert_eq!(category, WeaponCategory::Martial);
@@ -581,7 +654,12 @@ mod tests {
             stealth_disadvantage: true,
         };
         match armor {
-            ItemType::Armor { base_ac, category, stealth_disadvantage, .. } => {
+            ItemType::Armor {
+                base_ac,
+                category,
+                stealth_disadvantage,
+                ..
+            } => {
                 assert_eq!(base_ac, 16);
                 assert_eq!(category, ArmorCategory::Heavy);
                 assert!(stealth_disadvantage);
@@ -606,11 +684,32 @@ mod tests {
     #[test]
     fn test_load_game_missing_progress_defaults() {
         let state = test_state();
-        let mut json: serde_json::Value = serde_json::from_str(&save_game(&state).unwrap()).unwrap();
+        let mut json: serde_json::Value =
+            serde_json::from_str(&save_game(&state).unwrap()).unwrap();
         json.as_object_mut().unwrap().remove("progress");
 
         let loaded = load_game(&json.to_string()).unwrap();
         assert!(!loaded.progress.first_victory);
+    }
+
+    #[test]
+    fn test_load_game_missing_room_features_defaults_empty() {
+        let state = test_state();
+        let mut json: serde_json::Value =
+            serde_json::from_str(&save_game(&state).unwrap()).unwrap();
+        if let Some(location) = json
+            .get_mut("world")
+            .and_then(|world| world.get_mut("locations"))
+            .and_then(|locations| locations.as_object_mut())
+            .and_then(|locations| locations.get_mut("0"))
+            .and_then(|location| location.as_object_mut())
+        {
+            location.remove("room_features");
+        }
+
+        let loaded = load_game(&json.to_string()).unwrap();
+        let location = loaded.world.locations.get(&0).unwrap();
+        assert!(location.room_features.is_empty());
     }
 
     #[test]
@@ -649,7 +748,11 @@ mod tests {
         let loaded: Item = serde_json::from_str(&json).unwrap();
         assert_eq!(loaded.charges_remaining, Some(5));
         match loaded.item_type {
-            ItemType::Wand { ref spell_name, requires_attunement, .. } => {
+            ItemType::Wand {
+                ref spell_name,
+                requires_attunement,
+                ..
+            } => {
                 assert_eq!(spell_name, "Magic Missile");
                 assert!(!requires_attunement);
             }
@@ -666,13 +769,16 @@ mod tests {
             description: "A magic sword.".to_string(),
             item_type: ItemType::MagicWeapon {
                 base_weapon: "Longsword".to_string(),
-                damage_dice: 1, damage_die: 8,
+                damage_dice: 1,
+                damage_die: 8,
                 damage_type: DamageType::Slashing,
                 properties: 0,
                 category: WeaponCategory::Martial,
                 versatile_die: 10,
-                range_normal: 0, range_long: 0,
-                attack_bonus: 2, damage_bonus: 2,
+                range_normal: 0,
+                range_long: 0,
+                attack_bonus: 2,
+                damage_bonus: 2,
                 rarity: Rarity::Rare,
                 requires_attunement: false,
             },
@@ -683,7 +789,12 @@ mod tests {
         let json = serde_json::to_string(&item).unwrap();
         let loaded: Item = serde_json::from_str(&json).unwrap();
         match loaded.item_type {
-            ItemType::MagicWeapon { attack_bonus, damage_bonus, rarity, .. } => {
+            ItemType::MagicWeapon {
+                attack_bonus,
+                damage_bonus,
+                rarity,
+                ..
+            } => {
                 assert_eq!(attack_bonus, 2);
                 assert_eq!(damage_bonus, 2);
                 assert_eq!(rarity, Rarity::Rare);
@@ -717,7 +828,9 @@ mod tests {
         let json = serde_json::to_string(&item).unwrap();
         let loaded: Item = serde_json::from_str(&json).unwrap();
         match loaded.item_type {
-            ItemType::MagicArmor { ac_bonus, base_ac, .. } => {
+            ItemType::MagicArmor {
+                ac_bonus, base_ac, ..
+            } => {
                 assert_eq!(ac_bonus, 1);
                 assert_eq!(base_ac, 16);
             }
@@ -727,13 +840,17 @@ mod tests {
 
     #[test]
     fn test_potion_item_type_roundtrips() {
-        use crate::equipment::magic::{Rarity, PotionEffect};
+        use crate::equipment::magic::{PotionEffect, Rarity};
         let item = Item {
             id: 5,
             name: "Potion of Greater Healing".to_string(),
             description: "Vial of potent brew.".to_string(),
             item_type: ItemType::Potion {
-                effect: PotionEffect::Healing { dice: 4, die: 4, bonus: 4 },
+                effect: PotionEffect::Healing {
+                    dice: 4,
+                    die: 4,
+                    bonus: 4,
+                },
                 rarity: Rarity::Uncommon,
             },
             location: None,
@@ -747,7 +864,9 @@ mod tests {
                 assert_eq!(rarity, Rarity::Uncommon);
                 match effect {
                     PotionEffect::Healing { dice, die, bonus } => {
-                        assert_eq!(dice, 4); assert_eq!(die, 4); assert_eq!(bonus, 4);
+                        assert_eq!(dice, 4);
+                        assert_eq!(die, 4);
+                        assert_eq!(bonus, 4);
                     }
                     _ => panic!("expected Healing"),
                 }
@@ -813,7 +932,10 @@ mod tests {
             description: "Slay Theron the Scarred.".to_string(),
             completed: false,
         });
-        state.progress.objective_triggers.push(ObjectiveType::DefeatNpc(3));
+        state
+            .progress
+            .objective_triggers
+            .push(ObjectiveType::DefeatNpc(3));
 
         let json = save_game(&state).unwrap();
         let loaded = load_game(&json).unwrap();
@@ -842,9 +964,12 @@ mod tests {
     #[test]
     fn test_load_game_missing_rest_fields_defaults() {
         let state = test_state();
-        let mut json: serde_json::Value = serde_json::from_str(&save_game(&state).unwrap()).unwrap();
+        let mut json: serde_json::Value =
+            serde_json::from_str(&save_game(&state).unwrap()).unwrap();
         json.as_object_mut().unwrap().remove("in_world_minutes");
-        json.as_object_mut().unwrap().remove("last_long_rest_minutes");
+        json.as_object_mut()
+            .unwrap()
+            .remove("last_long_rest_minutes");
 
         let loaded = load_game(&json.to_string()).unwrap();
         assert_eq!(loaded.in_world_minutes, 0);
@@ -854,7 +979,8 @@ mod tests {
     #[test]
     fn test_load_game_missing_objectives_defaults_empty() {
         let state = test_state();
-        let mut json: serde_json::Value = serde_json::from_str(&save_game(&state).unwrap()).unwrap();
+        let mut json: serde_json::Value =
+            serde_json::from_str(&save_game(&state).unwrap()).unwrap();
         // Remove objectives and objective_triggers from progress
         if let Some(progress) = json.get_mut("progress").and_then(|p| p.as_object_mut()) {
             progress.remove("objectives");
