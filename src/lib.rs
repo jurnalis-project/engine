@@ -6124,13 +6124,13 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                 state.active_combat = Some(combat);
                 return vec!["You have no Rage uses remaining.".to_string()];
             }
-            if combat.action_used {
+            if combat.bonus_action_used {
                 state.active_combat = Some(combat);
-                return vec!["You have already used your action this turn.".to_string()];
+                return vec!["You have already used your bonus action this turn.".to_string()];
             }
             state.character.class_features.rage_uses_remaining -= 1;
             state.character.class_features.rage_active = true;
-            combat.action_used = true;
+            combat.bonus_action_used = true;
             lines.push("You enter a rage! Your attacks deal bonus damage and you have resistance to physical damage.".to_string());
         }
         Command::BardicInspiration(target) => {
@@ -9236,6 +9236,85 @@ mod tests {
             .text
             .iter()
             .any(|l| l.to_lowercase().contains("already")));
+    }
+
+    #[test]
+    fn test_rage_combat_consumes_bonus_action_not_action() {
+        // Rage is a bonus action per SRD. In combat it must set bonus_action_used,
+        // not action_used, and must still be available when action_used is true.
+        let mut state = create_test_combat_state();
+        state.character.class = character::class::Class::Barbarian;
+        state.character.class_features = character::class::ClassFeatureState::default();
+        let cha_mod = state.character.ability_modifier(Ability::Charisma);
+        character::init_class_features(
+            &mut state.character.class_features,
+            character::class::Class::Barbarian,
+            1,
+            cha_mod,
+            &state.character.known_spells,
+        );
+        assert!(state.character.class_features.rage_uses_remaining > 0);
+        force_player_turn(&mut state);
+        // Mark action as used but bonus action still available
+        if let Some(ref mut combat) = state.active_combat {
+            combat.action_used = true;
+            combat.bonus_action_used = false;
+        }
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "rage");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        // Should succeed: rage uses bonus action, not action
+        assert!(
+            new_state.character.class_features.rage_active,
+            "Rage should activate even when action is used"
+        );
+        let combat = new_state.active_combat.as_ref().unwrap();
+        assert!(
+            combat.bonus_action_used,
+            "Rage must consume the bonus action"
+        );
+    }
+
+    #[test]
+    fn test_rage_combat_blocked_when_bonus_action_used() {
+        let mut state = create_test_combat_state();
+        state.character.class = character::class::Class::Barbarian;
+        state.character.class_features = character::class::ClassFeatureState::default();
+        let cha_mod = state.character.ability_modifier(Ability::Charisma);
+        character::init_class_features(
+            &mut state.character.class_features,
+            character::class::Class::Barbarian,
+            1,
+            cha_mod,
+            &state.character.known_spells,
+        );
+        let uses_before = state.character.class_features.rage_uses_remaining;
+        force_player_turn(&mut state);
+        // Mark bonus action as used
+        if let Some(ref mut combat) = state.active_combat {
+            combat.bonus_action_used = true;
+        }
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "rage");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        // Should be blocked: bonus action already used
+        assert!(
+            !new_state.character.class_features.rage_active,
+            "Rage should NOT activate when bonus action is used"
+        );
+        assert_eq!(
+            new_state.character.class_features.rage_uses_remaining,
+            uses_before,
+            "Rage uses should not be decremented"
+        );
+        assert!(
+            output
+                .text
+                .iter()
+                .any(|l| l.to_lowercase().contains("bonus action")),
+            "Expected 'bonus action' in error. Got: {:?}",
+            output.text
+        );
     }
 
     // ---- Bardic Inspiration -------------------------------------------------
