@@ -133,6 +133,14 @@ pub struct CombatState {
     /// per SRD 2024).
     #[serde(default)]
     pub nick_used_this_turn: bool,
+    // ---- Extra Attack (SRD 2024, level 5) --------------------------------
+    // Tracks how many attacks the player has made this turn as part of the
+    // Attack action. Resets to 0 at the start of each player turn. Used by
+    // the orchestrator to allow Extra Attack classes (Fighter, Barbarian,
+    // Paladin, Ranger at level 5+) to make 2 attacks before consuming the
+    // action.
+    #[serde(default)]
+    pub attacks_made_this_turn: u32,
     // ---- Death Saving Throws (issue #84) ---------------------------------
     // Per SRD 5e, a player at 0 HP enters a dying state and rolls death
     // saves at the start of each of their turns. Three successes stabilize
@@ -391,6 +399,7 @@ impl CombatState {
                     self.slow_targets.clear();
                     self.cleave_used_this_turn = false;
                     self.nick_used_this_turn = false;
+                    self.attacks_made_this_turn = 0;
                     // Rogue turn-scoped class features (once-per-turn caps):
                     //   - Sneak Attack: at most one application per turn.
                     //   - Cunning Action: a Rogue's bonus-action marker.
@@ -653,6 +662,7 @@ pub fn start_combat(
         slow_targets: HashMap::new(),
         cleave_used_this_turn: false,
         nick_used_this_turn: false,
+        attacks_made_this_turn: 0,
         death_save_successes: 0,
         death_save_failures: 0,
         player_cover: Cover::None,
@@ -4323,6 +4333,7 @@ mod tests {
             slow_targets: HashMap::new(),
             cleave_used_this_turn: false,
             nick_used_this_turn: false,
+            attacks_made_this_turn: 0,
             death_save_successes: 0,
             death_save_failures: 0,
             player_cover: Cover::None,
@@ -7249,6 +7260,7 @@ mod tests {
             slow_targets: std::collections::HashMap::new(),
             cleave_used_this_turn: false,
             nick_used_this_turn: false,
+            attacks_made_this_turn: 0,
             death_save_successes: 0,
             death_save_failures: 0,
             player_cover: Cover::None,
@@ -7324,6 +7336,7 @@ mod tests {
             slow_targets: std::collections::HashMap::new(),
             cleave_used_this_turn: false,
             nick_used_this_turn: false,
+            attacks_made_this_turn: 0,
             death_save_successes: 0,
             death_save_failures: 0,
             player_cover: Cover::None,
@@ -7381,6 +7394,7 @@ mod tests {
             slow_targets: std::collections::HashMap::new(),
             cleave_used_this_turn: false,
             nick_used_this_turn: false,
+            attacks_made_this_turn: 0,
             death_save_successes: 0,
             death_save_failures: 0,
             player_cover: Cover::None,
@@ -7599,5 +7613,68 @@ mod tests {
              (advantage on DEX save). Barbarian resists: {}, Fighter resists: {}",
             barbarian_resists, fighter_resists,
         );
+    }
+}    // ---- Extra Attack: attacks_made_this_turn field ----
+
+    #[test]
+    fn test_attacks_made_this_turn_defaults_to_zero() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let state = test_state_with_goblin();
+        let combat = start_combat(
+            &mut rng,
+            &state.character,
+            &[0],
+            &state.world.npcs,
+            crate::state::LocationType::Room,
+        );
+        assert_eq!(combat.attacks_made_this_turn, 0);
+    }
+
+    #[test]
+    fn test_attacks_made_this_turn_resets_on_advance_turn() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut state = test_state_with_goblin();
+        let mut combat = start_combat(
+            &mut rng,
+            &state.character,
+            &[0],
+            &state.world.npcs,
+            crate::state::LocationType::Room,
+        );
+        combat.attacks_made_this_turn = 2;
+
+        // Position on the NPC so advance_turn cycles back to player.
+        combat.current_turn = combat
+            .initiative_order
+            .iter()
+            .position(|(c, _)| matches!(c, Combatant::Npc(_)))
+            .unwrap_or(0);
+
+        combat.advance_turn(&mut state);
+
+        assert!(combat.is_player_turn(), "Should advance back to player turn");
+        assert_eq!(
+            combat.attacks_made_this_turn, 0,
+            "attacks_made_this_turn should reset to 0 at start of player turn"
+        );
+    }
+
+    #[test]
+    fn test_attacks_made_this_turn_deserializes_from_legacy_save() {
+        // Legacy saves won't have this field — serde(default) should handle it.
+        let json = r#"{
+            "initiative_order": [],
+            "current_turn": 0,
+            "round": 1,
+            "distances": {},
+            "player_movement_remaining": 30,
+            "player_dodging": false,
+            "player_disengaging": false,
+            "action_used": false,
+            "npc_dodging": {},
+            "npc_disengaging": {}
+        }"#;
+        let combat: CombatState = serde_json::from_str(json).unwrap();
+        assert_eq!(combat.attacks_made_this_turn, 0);
     }
 }
