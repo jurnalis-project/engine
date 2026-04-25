@@ -3680,6 +3680,79 @@ fn resolve_reaction_decision(state: &mut GameState, rng: &mut StdRng, accept: bo
                 combat.advance_turn(state);
             }
         }
+        combat::PendingReaction::Counterspell {
+            caster_npc_id,
+            spell_name,
+            spell_level,
+            ..
+        } => {
+            let caster_name = state
+                .world
+                .npcs
+                .get(&caster_npc_id)
+                .map(|n| n.name.clone())
+                .unwrap_or_else(|| "The caster".to_string());
+            if accept {
+                // Consume reaction + 3rd-level spell slot.
+                if !spells::consume_spell_slot(3, &mut state.character.spell_slots_remaining) {
+                    lines.push("You reach for Counterspell but have no 3rd-level slot left.".to_string());
+                    // Let the NPC spell resolve as Flavor.
+                    lines.push(format!("{} casts {}!", caster_name, spell_name));
+                    combat.advance_turn(state);
+                    state.active_combat = Some(combat);
+                    return lines;
+                }
+                combat.reaction_used = true;
+
+                if spell_level <= 3 {
+                    // Auto-cancel: spells of level 3 or lower are automatically countered.
+                    lines.push(format!(
+                        "You cast Counterspell -- {} is countered!",
+                        spell_name
+                    ));
+                    combat.advance_turn(state);
+                } else {
+                    // Contested check: d20 + spellcasting ability mod vs DC 10 + spell level.
+                    let class_name = state.character.class.to_string();
+                    let casting_ability = spells::spellcasting_ability(&class_name);
+                    let ability_score = state
+                        .character
+                        .ability_scores
+                        .get(&casting_ability)
+                        .copied()
+                        .unwrap_or(10);
+                    let ability_mod = (ability_score - 10) / 2;
+                    let dc = 10 + spell_level as i32;
+                    let d20 = rules::dice::roll_d20(rng);
+                    let total = d20 + ability_mod;
+
+                    if total >= dc {
+                        lines.push(format!(
+                            "You cast Counterspell! ({} vs DC {} -- success) {} is countered!",
+                            output::format_roll(d20, ability_mod, total),
+                            dc,
+                            spell_name,
+                        ));
+                        combat.advance_turn(state);
+                    } else {
+                        lines.push(format!(
+                            "You cast Counterspell! ({} vs DC {} -- failed) {} completes the spell!",
+                            output::format_roll(d20, ability_mod, total),
+                            dc,
+                            caster_name,
+                        ));
+                        // NPC spell resolves as Flavor.
+                        lines.push(format!("{} casts {}!", caster_name, spell_name));
+                        combat.advance_turn(state);
+                    }
+                }
+            } else {
+                // Player declines Counterspell. NPC spell resolves as Flavor.
+                lines.push("You decline to use Counterspell.".to_string());
+                lines.push(format!("{} casts {}!", caster_name, spell_name));
+                combat.advance_turn(state);
+            }
+        }
     }
 
     state.active_combat = Some(combat);
@@ -4186,6 +4259,9 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                     }
                     combat::PendingReaction::OpportunityAttack { .. } => {
                         lines.push("Take an opportunity attack? (yes/no)".to_string())
+                    }
+                    combat::PendingReaction::Counterspell { ref spell_name, .. } => {
+                        lines.push(format!("Use Counterspell against {}? (yes/no)", spell_name))
                     }
                 }
                 return lines;

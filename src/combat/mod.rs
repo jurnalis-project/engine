@@ -53,6 +53,16 @@ pub enum PendingReaction {
         new_distance: u32,
         resume_npc_index: usize,
     },
+    /// Offer the player a Counterspell reaction when an NPC casts a spell.
+    /// The player may spend their reaction and a 3rd-level slot to attempt
+    /// to counter the spell. Spells of level 3 or lower are auto-cancelled;
+    /// level 4+ require a spellcasting ability check (DC 10 + spell level).
+    Counterspell {
+        caster_npc_id: NpcId,
+        spell_name: String,
+        spell_level: u32,
+        resume_npc_index: usize,
+    },
 }
 
 /// Full combat state, stored in GameState.active_combat.
@@ -5362,6 +5372,37 @@ mod tests {
                 assert_eq!(resume_npc_index, 1);
             }
             other => panic!("Expected Shield, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_pending_reaction_counterspell_round_trips() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let state = test_state_with_goblin();
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
+
+        combat.pending_reaction = Some(PendingReaction::Counterspell {
+            caster_npc_id: 0,
+            spell_name: "Fireball".to_string(),
+            spell_level: 3,
+            resume_npc_index: 1,
+        });
+
+        let json = serde_json::to_string(&combat).unwrap();
+        let deserialised: CombatState = serde_json::from_str(&json).unwrap();
+        match deserialised.pending_reaction {
+            Some(PendingReaction::Counterspell {
+                caster_npc_id,
+                spell_name,
+                spell_level,
+                resume_npc_index,
+            }) => {
+                assert_eq!(caster_npc_id, 0);
+                assert_eq!(spell_name, "Fireball");
+                assert_eq!(spell_level, 3);
+                assert_eq!(resume_npc_index, 1);
+            }
+            other => panic!("Expected Counterspell, got {:?}", other),
         }
     }
 
