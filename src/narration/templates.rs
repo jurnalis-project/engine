@@ -214,7 +214,9 @@ Combat commands (available during combat):
                       (also: move away, fall back, back up)
   dodge             - Take Dodge action (disadvantage on incoming attacks)
   disengage         - Take Disengage action (no opportunity attacks)
-                      (also: withdraw)
+                      (also: withdraw, flee)
+  bonus disengage   - Disengage as bonus action (Rogue Cunning Action)
+                      (also: disengage as bonus, cunning disengage)
   dash              - Take Dash action (double movement)
                       (also: run, sprint)
   end turn          - End your turn (also: end, pass, wait)";
@@ -361,7 +363,7 @@ fn topic_help(topic: &str, phase: HelpPhase) -> Vec<String> {
             "  Each turn tracks movement plus four action-economy resources: action, bonus action,".to_string(),
             "  reaction, and free interaction.".to_string(),
             "  Most weapon attacks, grapple, shove, shove prone, dodge, disengage, dash, and rage use your action.".to_string(),
-            "  Offhand attack and bonus dash use your bonus action when available.".to_string(),
+            "  Offhand attack, bonus dash, and bonus disengage use your bonus action when available.".to_string(),
             "  Reactions are prompted mid-round; answer 'yes' or 'no' when one triggers.".to_string(),
             "  If you're a Barbarian, watch for rage, grapple, and shove cues in combat prompts.".to_string(),
         ],
@@ -419,6 +421,7 @@ fn topic_help(topic: &str, phase: HelpPhase) -> Vec<String> {
             "    (also: wait, pass - skip your turn without acting)".to_string(),
             "  Bonus actions (one per turn):".to_string(),
             "    bonus dash / dash as bonus - Dash using your bonus action instead.".to_string(),
+            "    bonus disengage / disengage as bonus - Disengage using your bonus action (Rogue only).".to_string(),
             "    offhand attack <target> / attack <target> off hand - Two-Weapon Fighting.".to_string(),
             "  Reaction: when an enemy triggers a reaction (e.g. incoming hit for Shield,".to_string(),
             "    or leaving your melee reach for an opportunity attack), answer 'yes' or 'no'.".to_string(),
