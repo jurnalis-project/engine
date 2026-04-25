@@ -351,7 +351,7 @@ pub const SPELLS: &[SpellDef] = &[
         casting: CastingMode::Flavor, concentration: true, ritual: false,
         classes: &[BARD, CLERIC, SORCERER, WIZARD] },
     SpellDef { name: "Counterspell", level: 3, school: SpellSchool::Abjuration,
-        casting: CastingMode::Flavor, concentration: false, ritual: false,
+        casting: CastingMode::Reaction, concentration: false, ritual: false,
         classes: &[SORCERER, WARLOCK, WIZARD] },
     SpellDef { name: "Dispel Magic", level: 3, school: SpellSchool::Abjuration,
         casting: CastingMode::Flavor, concentration: false, ritual: false,
