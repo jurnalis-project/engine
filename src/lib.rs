@@ -4631,6 +4631,28 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                 combat.player_movement_remaining
             ));
         }
+        Command::BonusDisengage => {
+            // SRD 5.1: bonus-action Disengage is Rogue Cunning Action only.
+            if state.character.class != character::class::Class::Rogue {
+                state.active_combat = Some(combat);
+                return vec![
+                    "You don't have a class feature that grants bonus-action Disengage. \
+                     (This is a Rogue Cunning Action.)"
+                        .to_string(),
+                ];
+            }
+            if combat.bonus_action_used {
+                state.active_combat = Some(combat);
+                return vec!["You've already used your bonus action this turn.".to_string()];
+            }
+            combat.player_disengaging = true;
+            combat.bonus_action_used = true;
+            lines.push(
+                "You use Cunning Action to disengage as a bonus action. \
+                 You can retreat without provoking opportunity attacks."
+                    .to_string(),
+            );
+        }
         Command::OffHandAttack(target_name) => {
             // Two-Weapon Fighting: requires main-hand Attack action already used,
             // both weapons light melee, and bonus action available.
@@ -13693,6 +13715,90 @@ mod tests {
         // Movement should not change
         assert_eq!(combat.player_movement_remaining, original_movement,
             "Movement should not change when bonus dash is rejected");
+        assert!(!combat.bonus_action_used, "Bonus action should not be consumed");
+    }
+
+    // ---- Action Economy: BonusDisengage ----
+
+    #[test]
+    fn test_bonus_disengage_consumes_bonus_action_and_sets_flag() {
+        let mut state = create_test_rogue_combat_state();
+        force_player_turn(&mut state);
+        if let Some(ref mut combat) = state.active_combat {
+            combat.bonus_action_used = false;
+        }
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "bonus disengage");
+
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        let combat = new_state.active_combat.as_ref().unwrap();
+        assert!(
+            combat.bonus_action_used,
+            "BonusDisengage should consume the bonus action"
+        );
+        assert!(
+            !combat.action_used,
+            "BonusDisengage should NOT consume the action"
+        );
+        assert!(
+            combat.player_disengaging,
+            "BonusDisengage should set player_disengaging flag"
+        );
+        assert!(
+            output
+                .text
+                .iter()
+                .any(|t| t.to_lowercase().contains("disengage") || t.to_lowercase().contains("cunning")),
+            "Expected disengage narration, got: {:?}",
+            output.text
+        );
+    }
+
+    #[test]
+    fn test_bonus_disengage_blocked_when_bonus_action_used() {
+        let mut state = create_test_rogue_combat_state();
+        force_player_turn(&mut state);
+        if let Some(ref mut combat) = state.active_combat {
+            combat.bonus_action_used = true;
+        }
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "bonus disengage");
+
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        let combat = new_state.active_combat.as_ref().unwrap();
+        assert!(
+            !combat.player_disengaging,
+            "Disengaging flag should NOT be set when bonus action already used"
+        );
+        assert!(
+            output
+                .text
+                .iter()
+                .any(|t| t.to_lowercase().contains("bonus action")),
+            "Expected bonus-action-used narration, got: {:?}",
+            output.text
+        );
+    }
+
+    #[test]
+    fn test_bonus_disengage_rejected_for_non_rogue() {
+        let mut state = create_test_combat_state();
+        force_player_turn(&mut state);
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "bonus disengage");
+
+        assert!(
+            output.text.iter().any(|t| t.contains("don't have a class feature") || t.contains("Cunning Action")),
+            "Bonus disengage should be rejected for non-Rogues. Got: {:?}",
+            output.text
+        );
+
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        let combat = new_state.active_combat.as_ref().unwrap();
+        assert!(!combat.player_disengaging, "Disengaging flag should not be set");
         assert!(!combat.bonus_action_used, "Bonus action should not be consumed");
     }
 
