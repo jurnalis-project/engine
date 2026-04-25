@@ -776,4 +776,160 @@ mod tests {
         assert!(text.contains("3 hours"));
         assert!(text.contains("15 minutes"));
     }
+
+    // --- Long rest restores correct spell slots for non-Wizard casters at higher levels ---
+    // These tests verify the fix for issue #302: spell_slots_max must be updated
+    // during leveling for all caster classes so long rest restores the right values.
+
+    /// Helper: level a character up to `target_level` using perform_level_up.
+    fn level_to(state: &mut GameState, target_level: u32) {
+        use crate::leveling::perform_level_up;
+        while state.character.level < target_level {
+            perform_level_up(&mut state.character);
+        }
+    }
+
+    #[test]
+    fn test_long_rest_cleric_level3_restores_correct_slots() {
+        // Cleric full caster: level-3 should have [4, 2] max slots.
+        let mut state = make_state(CharClass::Cleric);
+        level_to(&mut state, 3);
+        assert_eq!(state.character.spell_slots_max, vec![4, 2],
+            "Cleric L3 should have [4, 2] max spell slots");
+
+        // Spend all slots of both tiers.
+        state.character.spell_slots_remaining = vec![0, 0];
+
+        let mut rng = StdRng::seed_from_u64(42);
+        let lines = perform_long_rest(&mut state, &mut rng);
+
+        assert_eq!(state.character.spell_slots_remaining, vec![4, 2],
+            "Long rest should restore Cleric L3 slots to [4, 2]");
+        assert!(lines.iter().any(|l| l.contains("spell slots")),
+            "Long rest output should mention spell slot restore");
+    }
+
+    #[test]
+    fn test_long_rest_sorcerer_level5_restores_correct_slots() {
+        // Sorcerer full caster: level-5 should have [4, 3, 2] max slots.
+        let mut state = make_state(CharClass::Sorcerer);
+        level_to(&mut state, 5);
+        assert_eq!(state.character.spell_slots_max, vec![4, 3, 2],
+            "Sorcerer L5 should have [4, 3, 2] max spell slots");
+
+        // Spend down to 1 slot remaining across all tiers.
+        state.character.spell_slots_remaining = vec![1, 0, 0];
+
+        let mut rng = StdRng::seed_from_u64(42);
+        perform_long_rest(&mut state, &mut rng);
+
+        assert_eq!(state.character.spell_slots_remaining, vec![4, 3, 2],
+            "Long rest should restore Sorcerer L5 slots to [4, 3, 2]");
+    }
+
+    #[test]
+    fn test_long_rest_bard_level3_restores_correct_slots() {
+        // Bard full caster: level-3 should have [4, 2] max slots.
+        let mut state = make_state(CharClass::Bard);
+        level_to(&mut state, 3);
+        assert_eq!(state.character.spell_slots_max, vec![4, 2],
+            "Bard L3 should have [4, 2] max spell slots");
+
+        // Spend all slots.
+        state.character.spell_slots_remaining = vec![0, 0];
+
+        let mut rng = StdRng::seed_from_u64(42);
+        perform_long_rest(&mut state, &mut rng);
+
+        assert_eq!(state.character.spell_slots_remaining, vec![4, 2],
+            "Long rest should restore Bard L3 slots to [4, 2]");
+    }
+
+    #[test]
+    fn test_long_rest_druid_level5_restores_correct_slots() {
+        // Druid full caster: level-5 should have [4, 3, 2] max slots.
+        let mut state = make_state(CharClass::Druid);
+        level_to(&mut state, 5);
+        assert_eq!(state.character.spell_slots_max, vec![4, 3, 2],
+            "Druid L5 should have [4, 3, 2] max spell slots");
+
+        state.character.spell_slots_remaining = vec![0, 0, 0];
+
+        let mut rng = StdRng::seed_from_u64(42);
+        perform_long_rest(&mut state, &mut rng);
+
+        assert_eq!(state.character.spell_slots_remaining, vec![4, 3, 2],
+            "Long rest should restore Druid L5 slots to [4, 3, 2]");
+    }
+
+    #[test]
+    fn test_long_rest_paladin_level5_restores_correct_slots() {
+        // Paladin half caster: level-5 should have [4, 2] max slots.
+        let mut state = make_state(CharClass::Paladin);
+        level_to(&mut state, 5);
+        assert_eq!(state.character.spell_slots_max, vec![4, 2],
+            "Paladin L5 should have [4, 2] max spell slots");
+
+        state.character.spell_slots_remaining = vec![0, 0];
+
+        let mut rng = StdRng::seed_from_u64(42);
+        perform_long_rest(&mut state, &mut rng);
+
+        assert_eq!(state.character.spell_slots_remaining, vec![4, 2],
+            "Long rest should restore Paladin L5 slots to [4, 2]");
+    }
+
+    #[test]
+    fn test_warlock_short_rest_pact_magic_preserved_at_higher_level() {
+        // Warlock Pact Magic: short rest restores slots (not long rest).
+        // At level 3, Warlock has 2 L2 pact slots.
+        let mut state = make_state(CharClass::Warlock);
+        level_to(&mut state, 3);
+        // Level-3 Warlock pact magic: 2 slots at L2 → vec has entry at index 1.
+        assert_eq!(state.character.spell_slots_max, vec![0, 2],
+            "Warlock L3 should have [0, 2] pact slots (2 L2 slots)");
+
+        // Spend both pact slots.
+        state.character.spell_slots_remaining = vec![0, 0];
+
+        // Short rest should restore pact magic.
+        let mut rng = StdRng::seed_from_u64(42);
+        let lines = perform_short_rest(&mut state, &mut rng);
+
+        assert_eq!(state.character.spell_slots_remaining, vec![0, 2],
+            "Short rest should restore Warlock pact slots to max");
+        assert!(lines.iter().any(|l| l.contains("Pact Magic")),
+            "Short rest output should mention Pact Magic restore");
+    }
+
+    #[test]
+    fn test_short_rest_does_not_restore_spell_slots_for_non_warlock_casters() {
+        // Non-Warlock casters (e.g., Cleric) should NOT have spell slots
+        // restored on a short rest.
+        for class in [CharClass::Cleric, CharClass::Sorcerer, CharClass::Bard, CharClass::Druid] {
+            let mut state = make_state(class);
+            level_to(&mut state, 3);
+            let initial_remaining = state.character.spell_slots_remaining.clone();
+            // Spend all slots.
+            for slot in state.character.spell_slots_remaining.iter_mut() { *slot = 0; }
+
+            let mut rng = StdRng::seed_from_u64(42);
+            let _ = perform_short_rest(&mut state, &mut rng);
+
+            assert!(
+                state.character.spell_slots_remaining.iter().all(|&s| s == 0)
+                    || state.character.spell_slots_remaining != initial_remaining
+                        && state.character.class == CharClass::Bard, // Bard has no short-rest slot restore
+                "Short rest must not restore spell slots for {:?}", class,
+            );
+            // Simpler: verify no additional recovery happened for these classes.
+            // Arcane Recovery doesn't apply here (not Wizard). None of these
+            // classes have short-rest slot recovery.
+            assert_eq!(
+                state.character.spell_slots_remaining.iter().sum::<i32>(),
+                0,
+                "Short rest should NOT restore spell slots for {:?}", class,
+            );
+        }
+    }
 }

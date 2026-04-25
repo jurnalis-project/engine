@@ -132,12 +132,12 @@ fn fixed_hp_per_level(class: Class) -> i32 {
     (class.hit_die() as i32 / 2) + 1
 }
 
-/// SRD wizard spell-slot table. Returns slots for spell levels 1..=9 in a
-/// vector indexed from 0. For non-Wizard classes (in the MVP) returns
-/// an empty vector; this is intentional — Fighter/Rogue gain no slots.
+/// SRD full-caster spell-slot table (Bard, Cleric, Druid, Sorcerer, Wizard).
+/// Returns slots for spell levels 1..=9 in a vector indexed from 0.
+/// For non-caster classes returns an empty vector.
 ///
 /// For levels above the cap, returns the level-20 row.
-pub fn wizard_spell_slots(level: u32) -> Vec<i32> {
+pub fn full_caster_spell_slots(level: u32) -> Vec<i32> {
     // Each row is [lvl1, lvl2, lvl3, lvl4, lvl5, lvl6, lvl7, lvl8, lvl9]
     // truncated to the highest non-zero entry to keep `Vec` sizes minimal.
     const TABLE: &[[i32; 9]] = &[
@@ -170,6 +170,69 @@ pub fn wizard_spell_slots(level: u32) -> Vec<i32> {
     // Truncate trailing zeros so Vec lengths grow naturally with level.
     let last_nonzero = row.iter().rposition(|&n| n > 0).map(|i| i + 1).unwrap_or(0);
     row[..last_nonzero].to_vec()
+}
+
+/// Backward-compat alias — Wizard uses the full-caster table.
+#[inline]
+pub fn wizard_spell_slots(level: u32) -> Vec<i32> {
+    full_caster_spell_slots(level)
+}
+
+/// SRD half-caster spell-slot table (Paladin, Ranger).
+/// Spellcasting begins at level 2 for Rangers (engine defers to level 2;
+/// method returns empty for level 1 for Ranger). Paladin gains spells at
+/// level 1 per 2024 SRD.
+///
+/// Half-casters use spell levels 1..=5 only.
+pub fn half_caster_spell_slots(level: u32) -> Vec<i32> {
+    // Each row is [lvl1, lvl2, lvl3, lvl4, lvl5]
+    const TABLE: &[[i32; 5]] = &[
+        [2, 0, 0, 0, 0],   // 1
+        [2, 0, 0, 0, 0],   // 2
+        [3, 0, 0, 0, 0],   // 3
+        [3, 0, 0, 0, 0],   // 4
+        [4, 2, 0, 0, 0],   // 5
+        [4, 2, 0, 0, 0],   // 6
+        [4, 3, 0, 0, 0],   // 7
+        [4, 3, 0, 0, 0],   // 8
+        [4, 3, 2, 0, 0],   // 9
+        [4, 3, 2, 0, 0],   // 10
+        [4, 3, 3, 0, 0],   // 11
+        [4, 3, 3, 0, 0],   // 12
+        [4, 3, 3, 1, 0],   // 13
+        [4, 3, 3, 1, 0],   // 14
+        [4, 3, 3, 2, 0],   // 15
+        [4, 3, 3, 2, 0],   // 16
+        [4, 3, 3, 3, 1],   // 17
+        [4, 3, 3, 3, 1],   // 18
+        [4, 3, 3, 3, 2],   // 19
+        [4, 3, 3, 3, 2],   // 20
+    ];
+    if level == 0 {
+        return Vec::new();
+    }
+    let idx = (level.min(LEVEL_CAP) - 1) as usize;
+    let row = TABLE[idx];
+    let last_nonzero = row.iter().rposition(|&n| n > 0).map(|i| i + 1).unwrap_or(0);
+    row[..last_nonzero].to_vec()
+}
+
+/// SRD Warlock Pact Magic slot table (short-rest recovery).
+/// Warlocks have a small pool of high-level slots that all return on a
+/// short OR long rest. Slot level equals `(level + 1) / 2` capped at 5.
+pub fn warlock_pact_magic_slots(level: u32) -> Vec<i32> {
+    // [slots_of_pact_level]
+    // Pact slot level: 1 at L1-2, 2 at L3-4, 3 at L5-6, 4 at L7-8, 5 at L9+
+    // Number of slots: 1 at L1, 2 at L2+
+    if level == 0 {
+        return Vec::new();
+    }
+    let pact_level = ((level + 1) / 2).min(5) as usize; // 1..=5
+    let num_slots: i32 = if level >= 2 { 2 } else { 1 };
+    // Build a vec with a single non-zero entry at index (pact_level - 1).
+    let mut slots = vec![0i32; pact_level];
+    slots[pact_level - 1] = num_slots;
+    slots
 }
 
 /// Result of a single level-up step.
@@ -213,25 +276,64 @@ pub fn perform_level_up(character: &mut Character) -> LevelUpReport {
         character.asi_credits += 1;
     }
 
-    // 4. Wizard spell slots — additive: top up `spell_slots_remaining` only
-    // for newly added slot tiers; leave already-spent slots un-refilled
-    // (level-up is not a long rest).
+    // 4. Spell slots — update spell_slots_max and additively credit
+    // spell_slots_remaining for changes (level-up is not a long rest).
+    //
+    // For full/half casters: only newly unlocked slot tiers are added to
+    // remaining; already-spent slots in existing tiers are not refilled.
+    // This preserves the original design: the player can't "level up" to
+    // restore spent slots.
+    //
+    // For Warlock Pact Magic: the entire slot vector can restructure between
+    // levels (pact slot level and count both change). We fully replace
+    // spell_slots_remaining with the new max so the player always has the
+    // correct pact slots available — this matches the short-rest restore
+    // semantic (Warlock effectively always has max pact slots between rests).
+    //
+    // Classes covered:
+    //   Full casters  : Bard, Cleric, Druid, Sorcerer, Wizard
+    //   Half casters  : Paladin (level 1+)
+    //   Pact Magic    : Warlock
+    //   Deferred/none : Ranger (engine defers to L2 via starting_spell_slots)
+    //                   Barbarian, Fighter, Monk, Rogue (no slots)
     let mut new_spell_tier_unlocked: Option<usize> = None;
-    if character.class == Class::Wizard {
-        let new_max = wizard_spell_slots(new_level);
-        let old_len = character.spell_slots_max.len();
-        // Pad remaining if it was shorter than max (defensive).
-        while character.spell_slots_remaining.len() < old_len {
-            character.spell_slots_remaining.push(0);
+    match character.class {
+        Class::Bard | Class::Cleric | Class::Druid
+        | Class::Sorcerer | Class::Wizard | Class::Paladin => {
+            let new_max = if character.class == Class::Paladin {
+                half_caster_spell_slots(new_level)
+            } else {
+                full_caster_spell_slots(new_level)
+            };
+            let old_len = character.spell_slots_max.len();
+            // Pad remaining defensively.
+            while character.spell_slots_remaining.len() < old_len {
+                character.spell_slots_remaining.push(0);
+            }
+            // Credit newly-unlocked tiers only.
+            for i in old_len..new_max.len() {
+                character.spell_slots_remaining.push(new_max[i]);
+            }
+            if new_max.len() > old_len {
+                new_spell_tier_unlocked = Some(old_len);
+            }
+            character.spell_slots_max = new_max;
         }
-        // For each new slot tier (index >= old_len), add to remaining.
-        for i in old_len..new_max.len() {
-            character.spell_slots_remaining.push(new_max[i]);
+        Class::Warlock => {
+            let new_max = warlock_pact_magic_slots(new_level);
+            // Warlock slots fully reset to new max on level-up so the player
+            // always has access to the correct pact slot tier and count.
+            // Short-rest recovery logic in rest/mod.rs is unchanged.
+            if new_max != character.spell_slots_max {
+                if new_max.len() > character.spell_slots_max.len() {
+                    new_spell_tier_unlocked = Some(character.spell_slots_max.len());
+                }
+                character.spell_slots_remaining = new_max.clone();
+                character.spell_slots_max = new_max;
+            }
         }
-        if new_max.len() > old_len {
-            new_spell_tier_unlocked = Some(old_len);
-        }
-        character.spell_slots_max = new_max;
+        // Non-casters and Ranger (deferred): no update.
+        _ => {}
     }
 
     // 5. Refresh class-feature flags (newly available features at this level
@@ -755,5 +857,113 @@ mod tests {
         let report = perform_level_up(&mut c);
         assert_eq!(c.level, 10);
         assert!(!report.asi_granted, "Wizard level 10 should not grant ASI");
+    }
+
+    // ---- Spell slot progression for non-Wizard casters (fix for issue #302) ----
+
+    fn make_caster(class: Class) -> crate::character::Character {
+        let mut scores = HashMap::new();
+        scores.insert(Ability::Strength, 8);
+        scores.insert(Ability::Dexterity, 12);
+        scores.insert(Ability::Constitution, 13);
+        scores.insert(Ability::Intelligence, 10);
+        scores.insert(Ability::Wisdom, 14);
+        scores.insert(Ability::Charisma, 15);
+        create_character("Caster".to_string(), crate::character::race::Race::Human,
+            class, scores, Vec::<crate::types::Skill>::new())
+    }
+
+    #[test]
+    fn cleric_spell_slots_max_updates_on_level_up() {
+        let mut c = make_caster(Class::Cleric);
+        assert_eq!(c.spell_slots_max, vec![2], "Cleric L1 should have [2]");
+        perform_level_up(&mut c); // -> L2
+        assert_eq!(c.spell_slots_max, vec![3], "Cleric L2 should have [3]");
+        perform_level_up(&mut c); // -> L3
+        assert_eq!(c.spell_slots_max, vec![4, 2], "Cleric L3 should have [4, 2]");
+    }
+
+    #[test]
+    fn sorcerer_spell_slots_max_updates_on_level_up() {
+        let mut c = make_caster(Class::Sorcerer);
+        perform_level_up(&mut c); // -> L2
+        perform_level_up(&mut c); // -> L3
+        assert_eq!(c.spell_slots_max, vec![4, 2], "Sorcerer L3 should have [4, 2]");
+        perform_level_up(&mut c); // -> L4
+        perform_level_up(&mut c); // -> L5
+        assert_eq!(c.spell_slots_max, vec![4, 3, 2], "Sorcerer L5 should have [4, 3, 2]");
+    }
+
+    #[test]
+    fn bard_spell_slots_max_updates_on_level_up() {
+        let mut c = make_caster(Class::Bard);
+        perform_level_up(&mut c); // -> L2
+        perform_level_up(&mut c); // -> L3
+        assert_eq!(c.spell_slots_max, vec![4, 2], "Bard L3 should have [4, 2]");
+    }
+
+    #[test]
+    fn druid_spell_slots_max_updates_on_level_up() {
+        let mut c = make_caster(Class::Druid);
+        perform_level_up(&mut c); // -> L2
+        perform_level_up(&mut c); // -> L3
+        assert_eq!(c.spell_slots_max, vec![4, 2], "Druid L3 should have [4, 2]");
+    }
+
+    #[test]
+    fn paladin_spell_slots_max_updates_on_level_up() {
+        // Paladin is a half caster. L5: [4, 2] per the half-caster table.
+        let mut c = make_caster(Class::Paladin);
+        for _ in 0..4 { perform_level_up(&mut c); } // L1 -> L5
+        assert_eq!(c.spell_slots_max, vec![4, 2], "Paladin L5 should have [4, 2]");
+    }
+
+    #[test]
+    fn warlock_spell_slots_max_updates_on_level_up() {
+        // Warlock L1: [1] (1 L1 pact slot). L2: [2] (2 L1 slots). L3: [0, 2] (2 L2 slots).
+        let mut c = make_caster(Class::Warlock);
+        assert_eq!(c.spell_slots_max, vec![1], "Warlock L1 should have [1]");
+        perform_level_up(&mut c); // -> L2
+        assert_eq!(c.spell_slots_max, vec![2], "Warlock L2 should have [2]");
+        perform_level_up(&mut c); // -> L3
+        assert_eq!(c.spell_slots_max, vec![0, 2], "Warlock L3 should have [0, 2]");
+    }
+
+    #[test]
+    fn warlock_spell_slots_remaining_set_to_new_max_on_level_up() {
+        // Warlock remaining should reset to new max on level-up (pact magic refresh).
+        let mut c = make_caster(Class::Warlock);
+        // Spend the single L1 slot.
+        c.spell_slots_remaining = vec![0];
+        perform_level_up(&mut c); // -> L2: max becomes [2]
+        assert_eq!(c.spell_slots_remaining, vec![2],
+            "Warlock remaining should reflect new L2 max [2] after level-up");
+    }
+
+    #[test]
+    fn full_caster_spell_slots_table_spot_checks() {
+        assert_eq!(full_caster_spell_slots(1),  vec![2]);
+        assert_eq!(full_caster_spell_slots(3),  vec![4, 2]);
+        assert_eq!(full_caster_spell_slots(5),  vec![4, 3, 2]);
+        assert_eq!(full_caster_spell_slots(17), vec![4, 3, 3, 3, 2, 1, 1, 1, 1]);
+        assert_eq!(full_caster_spell_slots(20), vec![4, 3, 3, 3, 3, 2, 2, 1, 1]);
+    }
+
+    #[test]
+    fn half_caster_spell_slots_table_spot_checks() {
+        // Half casters gain spells at L1 (Paladin) or L2 (Ranger deferred).
+        assert_eq!(half_caster_spell_slots(1),  vec![2]);
+        assert_eq!(half_caster_spell_slots(5),  vec![4, 2]);
+        assert_eq!(half_caster_spell_slots(9),  vec![4, 3, 2]);
+        assert_eq!(half_caster_spell_slots(20), vec![4, 3, 3, 3, 2]);
+    }
+
+    #[test]
+    fn warlock_pact_magic_table_spot_checks() {
+        assert_eq!(warlock_pact_magic_slots(1), vec![1]);
+        assert_eq!(warlock_pact_magic_slots(2), vec![2]);
+        assert_eq!(warlock_pact_magic_slots(3), vec![0, 2]);
+        assert_eq!(warlock_pact_magic_slots(5), vec![0, 0, 2]);
+        assert_eq!(warlock_pact_magic_slots(9), vec![0, 0, 0, 0, 2]); // L5 pact slots
     }
 }
