@@ -197,7 +197,13 @@ impl CombatState {
         if state.character.current_hp <= 0 && self.death_save_failures >= 3 {
             return Some(false); // defeat: player has died
         }
-        let all_dead = self.initiative_order.iter().all(|(c, _)| match c {
+        // Victory: all NPC combatants in the initiative order are dead.
+        // The Player entry is intentionally skipped — the Player's HP is checked
+        // above for the defeat condition; here we only ask "are all enemies gone?"
+        // An NPC that is absent from the world or has no combat_stats is treated
+        // as alive (unwrap_or(false)) so that stale initiative entries do not
+        // prematurely declare victory (see test_missing_combat_stats_treated_as_alive_not_dead).
+        let all_npcs_dead = self.initiative_order.iter().all(|(c, _)| match c {
             Combatant::Player => true,
             Combatant::Npc(id) => state
                 .world
@@ -207,7 +213,7 @@ impl CombatState {
                 .map(|cs| cs.current_hp <= 0)
                 .unwrap_or(false),
         });
-        if all_dead {
+        if all_npcs_dead {
             Some(true)
         } else {
             None

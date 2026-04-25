@@ -12092,6 +12092,219 @@ mod tests {
         );
     }
 
+    /// Regression test for issue #223: second enemy in multi-enemy room is
+    /// untargetable after first is defeated.
+    ///
+    /// Scenario: NPC1 is already dead (hp=0), NPC2 is alive (hp=7).
+    /// Both are in the initiative_order. The player should be able to target
+    /// and attack NPC2.
+    #[test]
+    fn test_second_enemy_targetable_after_first_is_dead() {
+        let mut state = create_test_combat_state();
+        let loc_id = state.current_location;
+
+        // Add second goblin (alive)
+        let second_npc_id = 101u32;
+        state.world.npcs.insert(
+            second_npc_id,
+            state::Npc {
+                id: second_npc_id,
+                name: "Second Goblin".to_string(),
+                role: state::NpcRole::Guard,
+                disposition: state::Disposition::Hostile,
+                dialogue_tags: vec![],
+                location: loc_id,
+                combat_stats: Some(state::CombatStats {
+                    max_hp: 7,
+                    current_hp: 7,
+                    ac: 15,
+                    speed: 30,
+                    ability_scores: {
+                        let mut m = HashMap::new();
+                        m.insert(Ability::Strength, 8);
+                        m.insert(Ability::Dexterity, 14);
+                        m
+                    },
+                    attacks: vec![state::NpcAttack {
+                        name: "Scimitar".to_string(),
+                        hit_bonus: 4,
+                        damage_dice: 1,
+                        damage_die: 6,
+                        damage_bonus: 2,
+                        damage_type: state::DamageType::Slashing,
+                        reach: 5,
+                        range_normal: 0,
+                        range_long: 0,
+                    }],
+                    proficiency_bonus: 2,
+                    cr: 0.25,
+                    ..Default::default()
+                }),
+                conditions: Vec::new(),
+            },
+        );
+        if let Some(loc) = state.world.locations.get_mut(&loc_id) {
+            loc.npcs.push(second_npc_id);
+        }
+
+        // Kill NPC1 (first goblin, id=100) by zeroing its HP
+        if let Some(npc) = state.world.npcs.get_mut(&100) {
+            if let Some(cs) = npc.combat_stats.as_mut() {
+                cs.current_hp = 0;
+            }
+        }
+
+        // Set up combat with both NPCs in initiative_order; NPC1 is dead
+        if let Some(ref mut combat) = state.active_combat {
+            combat.initiative_order = vec![
+                (combat::Combatant::Player, 20),
+                (combat::Combatant::Npc(100), 15),       // dead
+                (combat::Combatant::Npc(second_npc_id), 10), // alive
+            ];
+            combat.current_turn = 0; // player's turn
+            combat.action_used = false;
+            combat.distances.insert(100, 5);
+            combat.distances.insert(second_npc_id, 5);
+        }
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "attack second goblin");
+
+        // Must not say "no valid target" or "not in combat" or "can't do that during combat"
+        let full_text = output.text.join(" ");
+        assert!(
+            !full_text.to_lowercase().contains("no valid target")
+                && !full_text.contains("no \"second goblin\"")
+                && !full_text.contains("not in combat"),
+            "Second goblin should be targetable after first goblin is dead. Got: {:?}",
+            output.text
+        );
+        // Combat should still be active (NPC2 is alive)
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert!(
+            new_state.active_combat.is_some(),
+            "Combat should remain active while second goblin is alive. Got: {:?}",
+            output.text
+        );
+    }
+
+    /// Regression test for issue #223 — full sequence variant:
+    /// player kills NPC1 in round 1, then attacks NPC2 in round 2.
+    #[test]
+    fn test_second_enemy_targetable_next_round_after_killing_first() {
+        let mut state = create_test_combat_state();
+        let loc_id = state.current_location;
+
+        // Add second goblin (alive)
+        let second_npc_id = 101u32;
+        state.world.npcs.insert(
+            second_npc_id,
+            state::Npc {
+                id: second_npc_id,
+                name: "Second Goblin".to_string(),
+                role: state::NpcRole::Guard,
+                disposition: state::Disposition::Hostile,
+                dialogue_tags: vec![],
+                location: loc_id,
+                combat_stats: Some(state::CombatStats {
+                    max_hp: 7,
+                    current_hp: 7,
+                    ac: 15,
+                    speed: 30,
+                    ability_scores: {
+                        let mut m = HashMap::new();
+                        m.insert(Ability::Strength, 8);
+                        m.insert(Ability::Dexterity, 14);
+                        m
+                    },
+                    attacks: vec![state::NpcAttack {
+                        name: "Scimitar".to_string(),
+                        hit_bonus: 4,
+                        damage_dice: 1,
+                        damage_die: 6,
+                        damage_bonus: 2,
+                        damage_type: state::DamageType::Slashing,
+                        reach: 5,
+                        range_normal: 0,
+                        range_long: 0,
+                    }],
+                    proficiency_bonus: 2,
+                    cr: 0.25,
+                    ..Default::default()
+                }),
+                conditions: Vec::new(),
+            },
+        );
+        if let Some(loc) = state.world.locations.get_mut(&loc_id) {
+            loc.npcs.push(second_npc_id);
+        }
+
+        // Set NPC1 to 1 HP so any hit kills it; give it a very low AC
+        if let Some(npc) = state.world.npcs.get_mut(&100) {
+            if let Some(cs) = npc.combat_stats.as_mut() {
+                cs.current_hp = 1;
+                cs.ac = 1; // trivially hittable
+            }
+        }
+
+        // Force player first in initiative, both NPCs present
+        if let Some(ref mut combat) = state.active_combat {
+            combat.initiative_order = vec![
+                (combat::Combatant::Player, 20),
+                (combat::Combatant::Npc(100), 15),
+                (combat::Combatant::Npc(second_npc_id), 10),
+            ];
+            combat.current_turn = 0;
+            combat.action_used = false;
+            combat.distances.insert(100, 5);
+            combat.distances.insert(second_npc_id, 5);
+        }
+
+        // Give player STR 30 (+10 modifier) so even minimum damage (1+10=11) exceeds
+        // NPC1's 1 HP. NPC1 AC is set to 1 above so the attack always hits.
+        state.character.ability_scores.insert(Ability::Strength, 30);
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let out1 = process_input(&state_json, "attack test goblin");
+        // NPC1 should now be dead
+        assert!(
+            out1.text.iter().any(|t| t.contains("slain") || t.contains("hit")),
+            "Expected hit or slain output for NPC1. Got: {:?}",
+            out1.text
+        );
+        // Action is used, player's turn should still be open
+        let state2: GameState = serde_json::from_str(&out1.state_json).unwrap();
+        assert!(
+            state2.active_combat.is_some(),
+            "Combat should still be active after NPC1 is slain. Got: {:?}",
+            out1.text
+        );
+
+        // Round 1 continued: player ends turn
+        let state2_json = serde_json::to_string(&state2).unwrap();
+        let out2 = process_input(&state2_json, "end turn");
+        let state3: GameState = serde_json::from_str(&out2.state_json).unwrap();
+        // NPC2 should have acted; combat still active
+        assert!(
+            state3.active_combat.is_some(),
+            "Combat should still be active after NPC2 acts. Got: {:?}",
+            out2.text
+        );
+
+        // Round 2: player attacks NPC2 — this is the bug trigger
+        let state3_json = serde_json::to_string(&state3).unwrap();
+        let out3 = process_input(&state3_json, "attack second goblin");
+
+        let full_text = out3.text.join(" ");
+        assert!(
+            !full_text.to_lowercase().contains("no valid target")
+                && !full_text.contains("no \"second goblin\"")
+                && !full_text.contains("not in combat"),
+            "Second goblin should be targetable in round 2 after first goblin was killed. Got: {:?}",
+            out3.text
+        );
+    }
+
     #[test]
     fn test_combat_not_in_combat_message() {
         let state = create_test_exploration_state();
