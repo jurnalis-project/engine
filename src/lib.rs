@@ -3386,6 +3386,40 @@ fn process_npc_turns(state: &mut GameState, rng: &mut StdRng) -> Vec<String> {
                 return lines;
             }
 
+            // -------- Reaction trigger: Counterspell (pre-cast) --------
+            // If this NPC has spells and is about to cast, check whether
+            // the player can Counterspell. If eligible, pause for a prompt.
+            // If not eligible, resolve the NPC spell as Flavor immediately.
+            if let Some((spell_name, spell_level)) = npc_spell_to_cast(state, npc_id) {
+                let caster_name = state
+                    .world
+                    .npcs
+                    .get(&npc_id)
+                    .map(|n| n.name.clone())
+                    .unwrap_or_else(|| "An enemy".to_string());
+
+                if should_trigger_counterspell(&combat, state, npc_id) {
+                    combat.pending_reaction = Some(combat::PendingReaction::Counterspell {
+                        caster_npc_id: npc_id,
+                        spell_name: spell_name.clone(),
+                        spell_level,
+                        resume_npc_index: combat.current_turn,
+                    });
+                    lines.push(format!(
+                        "{} is casting {}! Use Counterspell? (yes/no)",
+                        caster_name, spell_name
+                    ));
+                    state.active_combat = Some(combat);
+                    return lines;
+                }
+
+                // Player is not eligible -- NPC spell resolves as Flavor.
+                lines.push(format!("{} casts {}!", caster_name, spell_name));
+                combat.advance_turn(state);
+                state.active_combat = Some(combat);
+                continue;
+            }
+
             let npc_lines = combat::resolve_npc_turn(rng, npc_id, state, &mut combat);
             lines.extend(npc_lines);
         }
@@ -3539,6 +3573,67 @@ fn should_trigger_opportunity_attack(
     // The NPC will retreat from within reach to beyond reach without
     // disengaging -- the player gets an opportunity attack.
     Some((distance, predicted_distance))
+}
+
+/// Return the first spell an NPC wants to cast this turn, if any.
+/// MVP AI: pick the first spell from the NPC's `spells` list.
+fn npc_spell_to_cast(state: &GameState, npc_id: types::NpcId) -> Option<(String, u32)> {
+    let npc = state.world.npcs.get(&npc_id)?;
+    let stats = npc.combat_stats.as_ref()?;
+    if stats.current_hp <= 0 || stats.spells.is_empty() {
+        return None;
+    }
+    let spell = stats.spells.first()?;
+    Some((spell.name.clone(), spell.level))
+}
+
+/// Return true when the player is eligible for the Counterspell reaction
+/// against the given NPC's spell cast.
+///
+/// Eligibility:
+///  1. Player knows Counterspell.
+///  2. Player has a 3rd-level spell slot remaining.
+///  3. Player's reaction is not used.
+///  4. Player can take reactions (not incapacitated).
+///  5. Player HP > 0.
+///  6. NPC is within 60 ft.
+fn should_trigger_counterspell(
+    combat: &combat::CombatState,
+    state: &GameState,
+    npc_id: types::NpcId,
+) -> bool {
+    // Player must be alive.
+    if state.character.current_hp <= 0 {
+        return false;
+    }
+    // Player must know Counterspell.
+    if !state.character.known_spells.iter().any(|s| s == "Counterspell") {
+        return false;
+    }
+    // Player must have a 3rd-level slot (index 2).
+    if state
+        .character
+        .spell_slots_remaining
+        .get(2)
+        .copied()
+        .unwrap_or(0)
+        < 1
+    {
+        return false;
+    }
+    // Reaction must be available.
+    if combat.reaction_used {
+        return false;
+    }
+    if !conditions::can_take_reactions(&state.character.conditions) {
+        return false;
+    }
+    // NPC must be within 60 ft.
+    let distance = *combat.distances.get(&npc_id).unwrap_or(&u32::MAX);
+    if distance > 60 {
+        return false;
+    }
+    true
 }
 
 /// Resolve the player's decision on a pending reaction. Consumes the reaction
@@ -23231,6 +23326,340 @@ mod tests {
         assert!(
             text.contains("no spell slots") || text.contains("No spell slots"),
             "Should report no slots. Got: {}",
+            text
+        );
+    }
+
+    // ---- Counterspell Reaction Tests ----
+
+    /// Build a Wizard with Counterspell known and L3 spell slots, facing an
+    /// NPC Mage that has spells. NPC turn is active so process_npc_turns fires.
+    fn create_counterspell_combat_state() -> GameState {
+        let mut state = create_test_exploration_state();
+        // Make character a Wizard with Counterspell
+        state.character.class = character::class::Class::Wizard;
+        state.character.known_spells = vec![
+            "Fire Bolt".to_string(),
+            "Counterspell".to_string(),
+        ];
+        // L1=4, L2=3, L3=2 (level 5 wizard)
+        state.character.spell_slots_max = vec![4, 3, 2];
+        state.character.spell_slots_remaining = vec![4, 3, 2];
+        state.character.ability_scores.insert(Ability::Intelligence, 16);
+        state.character.current_hp = 30;
+        state.character.max_hp = 30;
+
+        let npc_id = 100;
+        let loc_id = state.current_location;
+        state.world.npcs.insert(
+            npc_id,
+            state::Npc {
+                id: npc_id,
+                name: "Evil Mage".to_string(),
+                role: state::NpcRole::Guard,
+                disposition: state::Disposition::Hostile,
+                dialogue_tags: vec![],
+                location: loc_id,
+                combat_stats: Some(state::CombatStats {
+                    max_hp: 40,
+                    current_hp: 40,
+                    ac: 12,
+                    speed: 30,
+                    ability_scores: {
+                        let mut m = HashMap::new();
+                        m.insert(Ability::Intelligence, 16);
+                        m
+                    },
+                    attacks: vec![state::NpcAttack {
+                        name: "Staff".to_string(),
+                        hit_bonus: 2,
+                        damage_dice: 1,
+                        damage_die: 6,
+                        damage_bonus: 0,
+                        damage_type: state::DamageType::Bludgeoning,
+                        reach: 5,
+                        range_normal: 0,
+                        range_long: 0,
+                    }],
+                    proficiency_bonus: 2,
+                    cr: 1.0,
+                    spells: vec![
+                        state::NpcSpell { name: "Fireball".to_string(), level: 3 },
+                    ],
+                    ..Default::default()
+                }),
+                conditions: Vec::new(),
+            },
+        );
+        if let Some(loc) = state.world.locations.get_mut(&loc_id) {
+            loc.npcs.push(npc_id);
+        }
+
+        // Give player a weapon
+        let weapon_id = 200;
+        state.world.items.insert(
+            weapon_id,
+            state::Item {
+                id: weapon_id,
+                name: "Quarterstaff".to_string(),
+                description: "A sturdy staff.".to_string(),
+                item_type: state::ItemType::Weapon {
+                    damage_dice: 1, damage_die: 6,
+                    damage_type: state::DamageType::Bludgeoning,
+                    properties: crate::equipment::VERSATILE,
+                    category: state::WeaponCategory::Simple,
+                    versatile_die: 8, range_normal: 0, range_long: 0,
+                },
+                location: None,
+                carried_by_player: true,
+                charges_remaining: None,
+            },
+        );
+        state.character.inventory.push(weapon_id);
+        state.character.equipped.main_hand = Some(weapon_id);
+
+        // Start combat
+        let mut rng = rand::rngs::StdRng::seed_from_u64(state.rng_seed + state.rng_counter);
+        state.rng_counter += 1;
+        let loc_type = state.world.locations.get(&state.current_location)
+            .map(|l| l.location_type)
+            .unwrap_or(state::LocationType::Room);
+        let mut combat_state = combat::start_combat(
+            &mut rng, &state.character, &[npc_id], &state.world.npcs, loc_type,
+        );
+        combat_state.npc_cover.clear();
+        // Set distance within 60ft
+        combat_state.distances.insert(npc_id, 30);
+        state.active_combat = Some(combat_state);
+        state
+    }
+
+    /// Force the combat to be on the NPC's turn (the mage at npc_id=100).
+    fn force_npc_mage_turn(state: &mut GameState) {
+        if let Some(ref mut combat) = state.active_combat {
+            for (i, (c, _)) in combat.initiative_order.iter().enumerate() {
+                if let combat::Combatant::Npc(100) = c {
+                    combat.current_turn = i;
+                    break;
+                }
+            }
+            combat.reaction_used = false;
+            combat.pending_reaction = None;
+        }
+    }
+
+    #[test]
+    fn test_counterspell_prompt_fires_when_npc_casts_spell() {
+        let mut state = create_counterspell_combat_state();
+        force_npc_mage_turn(&mut state);
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "end turn");
+        let text = output.text.join("\n");
+
+        assert!(
+            text.contains("is casting") && text.contains("Counterspell"),
+            "Should prompt for Counterspell when NPC casts. Got: {}",
+            text
+        );
+
+        // Verify pending_reaction is set
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert!(
+            new_state.active_combat.as_ref().unwrap().pending_reaction.is_some(),
+            "pending_reaction should be set"
+        );
+    }
+
+    #[test]
+    fn test_counterspell_yes_auto_cancels_level3_spell() {
+        let mut state = create_counterspell_combat_state();
+        force_npc_mage_turn(&mut state);
+        // Set pending reaction directly
+        if let Some(ref mut combat) = state.active_combat {
+            combat.pending_reaction = Some(combat::PendingReaction::Counterspell {
+                caster_npc_id: 100,
+                spell_name: "Fireball".to_string(),
+                spell_level: 3,
+                resume_npc_index: combat.current_turn,
+            });
+        }
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "yes");
+        let text = output.text.join("\n");
+
+        assert!(
+            text.contains("countered"),
+            "Level 3 spell should be auto-countered. Got: {}",
+            text
+        );
+
+        // Verify slot consumed
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(
+            new_state.character.spell_slots_remaining[2], 1,
+            "Should consume one 3rd-level slot"
+        );
+    }
+
+    #[test]
+    fn test_counterspell_no_lets_spell_resolve() {
+        let mut state = create_counterspell_combat_state();
+        force_npc_mage_turn(&mut state);
+        if let Some(ref mut combat) = state.active_combat {
+            combat.pending_reaction = Some(combat::PendingReaction::Counterspell {
+                caster_npc_id: 100,
+                spell_name: "Fireball".to_string(),
+                spell_level: 3,
+                resume_npc_index: combat.current_turn,
+            });
+        }
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "no");
+        let text = output.text.join("\n");
+
+        assert!(
+            text.contains("decline") || text.contains("Decline"),
+            "Should decline Counterspell. Got: {}",
+            text
+        );
+        assert!(
+            text.contains("casts Fireball"),
+            "NPC spell should resolve after declining. Got: {}",
+            text
+        );
+
+        // Verify no slot consumed
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(
+            new_state.character.spell_slots_remaining[2], 2,
+            "Should not consume a slot when declining"
+        );
+    }
+
+    #[test]
+    fn test_counterspell_contested_check_for_level4_spell() {
+        let mut state = create_counterspell_combat_state();
+        force_npc_mage_turn(&mut state);
+        // Give the NPC a level 4 spell
+        if let Some(npc) = state.world.npcs.get_mut(&100) {
+            if let Some(ref mut stats) = npc.combat_stats {
+                stats.spells = vec![
+                    state::NpcSpell { name: "Ice Storm".to_string(), level: 4 },
+                ];
+            }
+        }
+        if let Some(ref mut combat) = state.active_combat {
+            combat.pending_reaction = Some(combat::PendingReaction::Counterspell {
+                caster_npc_id: 100,
+                spell_name: "Ice Storm".to_string(),
+                spell_level: 4,
+                resume_npc_index: combat.current_turn,
+            });
+        }
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "yes");
+        let text = output.text.join("\n");
+
+        // Should show a contested check (d20 + mod vs DC 14)
+        assert!(
+            text.contains("vs DC 14"),
+            "Should show contested check vs DC 14 for level 4 spell. Got: {}",
+            text
+        );
+
+        // Slot should be consumed regardless of success/failure
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(
+            new_state.character.spell_slots_remaining[2], 1,
+            "Should consume one 3rd-level slot on contested check"
+        );
+    }
+
+    #[test]
+    fn test_counterspell_not_offered_when_no_spell_known() {
+        let mut state = create_counterspell_combat_state();
+        // Remove Counterspell from known spells
+        state.character.known_spells.retain(|s| s != "Counterspell");
+        force_npc_mage_turn(&mut state);
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "end turn");
+        let text = output.text.join("\n");
+
+        assert!(
+            !text.contains("Counterspell"),
+            "Should not offer Counterspell when not known. Got: {}",
+            text
+        );
+    }
+
+    #[test]
+    fn test_counterspell_not_offered_when_no_slot() {
+        let mut state = create_counterspell_combat_state();
+        // Exhaust all L3 slots
+        state.character.spell_slots_remaining[2] = 0;
+        force_npc_mage_turn(&mut state);
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "end turn");
+        let text = output.text.join("\n");
+
+        assert!(
+            !text.contains("Counterspell"),
+            "Should not offer Counterspell with no L3 slots. Got: {}",
+            text
+        );
+    }
+
+    #[test]
+    fn test_counterspell_not_offered_when_reaction_used() {
+        let mut state = create_counterspell_combat_state();
+        force_npc_mage_turn(&mut state);
+        if let Some(ref mut combat) = state.active_combat {
+            combat.reaction_used = true;
+        }
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "end turn");
+        let text = output.text.join("\n");
+
+        assert!(
+            !text.contains("Counterspell"),
+            "Should not offer Counterspell when reaction used. Got: {}",
+            text
+        );
+    }
+
+    #[test]
+    fn test_counterspell_not_offered_when_npc_beyond_60ft() {
+        let mut state = create_counterspell_combat_state();
+        force_npc_mage_turn(&mut state);
+        if let Some(ref mut combat) = state.active_combat {
+            combat.distances.insert(100, 65);
+        }
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "end turn");
+        let text = output.text.join("\n");
+
+        assert!(
+            !text.contains("Counterspell"),
+            "Should not offer Counterspell when NPC is beyond 60ft. Got: {}",
+            text
+        );
+    }
+
+    #[test]
+    fn test_counterspell_not_offered_when_player_at_0_hp() {
+        let mut state = create_counterspell_combat_state();
+        state.character.current_hp = 0;
+        force_npc_mage_turn(&mut state);
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "end turn");
+        let text = output.text.join("\n");
+
+        assert!(
+            !text.contains("Counterspell"),
+            "Should not offer Counterspell at 0 HP. Got: {}",
             text
         );
     }
