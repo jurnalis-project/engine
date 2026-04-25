@@ -119,6 +119,12 @@ pub enum Command {
     Buy(String),
     /// Sell an item to a merchant NPC. Argument is the item name from inventory.
     Sell(String),
+    /// Explicit ranged attack with an AMMUNITION weapon (bow, crossbow).
+    /// Forces ranged mode; blocked if the equipped weapon lacks AMMUNITION.
+    Shoot(String),
+    /// Explicit thrown attack. Forces ranged mode for THROWN weapons even
+    /// within melee range (overriding the default melee-at-5ft behavior).
+    Throw(String),
     Unknown(String),
 }
 
@@ -382,7 +388,7 @@ pub fn parse(input: &str) -> Command {
                 Command::Cast { spell, target, ritual }
             }
         }
-        "attack" | "hit" | "strike" | "shoot" => {
+        "attack" | "hit" | "strike" => {
             if args.is_empty() {
                 Command::Unknown("Attack what?".to_string())
             } else if let Some(target) = strip_offhand_suffix(&args) {
@@ -393,6 +399,20 @@ pub fn parse(input: &str) -> Command {
                 }
             } else {
                 Command::Attack(args)
+            }
+        }
+        "shoot" | "fire" => {
+            if args.is_empty() {
+                Command::Unknown("Shoot what?".to_string())
+            } else {
+                Command::Shoot(args)
+            }
+        }
+        "throw" | "hurl" | "toss" | "lob" => {
+            if args.is_empty() {
+                Command::Unknown("Throw what?".to_string())
+            } else {
+                Command::Throw(args)
             }
         }
         "grapple" | "wrestle" | "seize" => {
@@ -994,7 +1014,6 @@ mod tests {
         assert_eq!(parse("attack goblin"), Command::Attack("goblin".to_string()));
         assert_eq!(parse("hit orc"), Command::Attack("orc".to_string()));
         assert_eq!(parse("strike skeleton"), Command::Attack("skeleton".to_string()));
-        assert_eq!(parse("shoot goblin"), Command::Attack("goblin".to_string()));
         assert_eq!(parse("swing at goblin"), Command::Attack("goblin".to_string()));
     }
 
@@ -1495,5 +1514,71 @@ mod tests {
     fn test_buy_case_insensitive() {
         assert_eq!(parse("BUY TORCH"), Command::Buy("torch".to_string()));
         assert_eq!(parse("Purchase Dagger"), Command::Buy("dagger".to_string()));
+    }
+
+    // ---- Shoot command (ranged attack with AMMUNITION weapons) ----
+
+    #[test]
+    fn test_shoot_command() {
+        assert_eq!(parse("shoot goblin"), Command::Shoot("goblin".to_string()));
+        assert_eq!(parse("shoot orc"), Command::Shoot("orc".to_string()));
+    }
+
+    #[test]
+    fn test_shoot_alias_fire() {
+        assert_eq!(parse("fire goblin"), Command::Shoot("goblin".to_string()));
+    }
+
+    #[test]
+    fn test_shoot_multi_word_target() {
+        assert_eq!(parse("shoot giant rat"), Command::Shoot("giant rat".to_string()));
+    }
+
+    #[test]
+    fn test_shoot_bare_verb_error() {
+        match parse("shoot") {
+            Command::Unknown(s) => assert!(s.to_lowercase().contains("shoot"), "Got: {}", s),
+            other => panic!("Expected Unknown, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_shoot_case_insensitive() {
+        assert_eq!(parse("SHOOT GOBLIN"), Command::Shoot("goblin".to_string()));
+        assert_eq!(parse("Fire Orc"), Command::Shoot("orc".to_string()));
+    }
+
+    // ---- Throw command (explicit thrown attack) ----
+
+    #[test]
+    fn test_throw_command() {
+        assert_eq!(parse("throw goblin"), Command::Throw("goblin".to_string()));
+        assert_eq!(parse("throw orc"), Command::Throw("orc".to_string()));
+    }
+
+    #[test]
+    fn test_throw_aliases() {
+        assert_eq!(parse("hurl goblin"), Command::Throw("goblin".to_string()));
+        assert_eq!(parse("toss goblin"), Command::Throw("goblin".to_string()));
+        assert_eq!(parse("lob goblin"), Command::Throw("goblin".to_string()));
+    }
+
+    #[test]
+    fn test_throw_multi_word_target() {
+        assert_eq!(parse("throw giant rat"), Command::Throw("giant rat".to_string()));
+    }
+
+    #[test]
+    fn test_throw_bare_verb_error() {
+        match parse("throw") {
+            Command::Unknown(s) => assert!(s.to_lowercase().contains("throw"), "Got: {}", s),
+            other => panic!("Expected Unknown, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_throw_case_insensitive() {
+        assert_eq!(parse("THROW GOBLIN"), Command::Throw("goblin".to_string()));
+        assert_eq!(parse("Hurl Orc"), Command::Throw("orc".to_string()));
     }
 }

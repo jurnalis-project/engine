@@ -2968,6 +2968,21 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
             // Target not found among visible entities; fall through to generic error
             vec!["You're not in combat.".to_string()]
         }
+        Command::Shoot(target) | Command::Throw(target) => {
+            // In exploration mode, provide contextual feedback for ranged attack attempts,
+            // mirroring the Command::Attack exploration handling.
+            let mut owned_candidates = room_feature_candidates(state);
+            owned_candidates.extend(npc_candidates(state));
+            owned_candidates.extend(room_item_candidates(state));
+            let candidates: Vec<(usize, &str)> = owned_candidates
+                .iter()
+                .map(|(id, name)| (*id, name.as_str()))
+                .collect();
+            if let ResolveResult::Found(_) = resolver::resolve_target(&target, &candidates) {
+                return handle_scenery_interaction(state, &target, "attack");
+            }
+            vec!["You're not in combat.".to_string()]
+        }
         Command::Approach(_)
         | Command::Retreat
         | Command::Dodge
@@ -6553,6 +6568,479 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                 knock_prone,
             );
             lines.extend(shove_lines);
+        }
+        Command::Shoot(target_name) => {
+            // Explicit ranged attack with an AMMUNITION weapon.
+            // Validates main-hand weapon has AMMUNITION; otherwise rejects.
+            let owned_candidates = build_combat_npc_candidates(&combat, state);
+            let candidates: Vec<(usize, &str)> = owned_candidates
+                .iter()
+                .map(|(id, name)| (*id, name.as_str()))
+                .collect();
+
+            match resolver::resolve_target(&target_name, &candidates) {
+                ResolveResult::Found(id) => {
+                    let npc_id = id as u32;
+
+                    if combat.action_used {
+                        state.active_combat = Some(combat);
+                        return vec!["You've already used your action this turn. You can still move (approach/retreat).".to_string()];
+                    }
+
+                    // Validate the weapon is an AMMUNITION weapon.
+                    let weapon_id = state.character.equipped.main_hand;
+                    let weapon_props = weapon_id
+                        .and_then(|id| state.world.items.get(&id))
+                        .and_then(|item| match &item.item_type {
+                            state::ItemType::Weapon { properties, .. } => Some(*properties),
+                            state::ItemType::MagicWeapon { properties, .. } => Some(*properties),
+                            _ => None,
+                        })
+                        .unwrap_or(0);
+                    if weapon_props & equipment::AMMUNITION == 0 {
+                        let weapon_name = weapon_id
+                            .and_then(|id| state.world.items.get(&id))
+                            .map(|i| i.name.clone())
+                            .unwrap_or_else(|| "your bare hands".to_string());
+                        state.active_combat = Some(combat);
+                        return vec![format!(
+                            "You can't shoot with {}. Use a bow or crossbow.",
+                            weapon_name
+                        )];
+                    }
+
+                    let distance = *combat.distances.get(&npc_id).unwrap_or(&30);
+
+                    // Ammo check
+                    let ammo_weapon_name = weapon_id
+                        .and_then(|id| state.world.items.get(&id))
+                        .map(|item| item.name.clone());
+                    if let Some(ref wname) = ammo_weapon_name {
+                        let ammo_key = ammo_type_for_weapon(wname);
+                        if let Some(&count) = state.character.ammo.get(&ammo_key) {
+                            if count == 0 {
+                                state.active_combat = Some(combat);
+                                return vec!["You have no ammunition for this weapon.".to_string()];
+                            }
+                            *state.character.ammo.get_mut(&ammo_key).unwrap() -= 1;
+                        }
+                    }
+
+                    // Range check
+                    if let Some(weapon_item) = weapon_id.and_then(|id| state.world.items.get(&id)) {
+                        let (_range_normal, range_long) = match &weapon_item.item_type {
+                            state::ItemType::Weapon { range_normal, range_long, .. } => (*range_normal, *range_long),
+                            state::ItemType::MagicWeapon { range_normal, range_long, .. } => (*range_normal, *range_long),
+                            _ => (0, 0),
+                        };
+                        if range_long > 0 && distance > range_long as u32 {
+                            let msg = format!(
+                                "The target is out of range of your {}.",
+                                weapon_item.name
+                            );
+                            state.active_combat = Some(combat);
+                            return vec![msg];
+                        }
+                    }
+
+                    let target_ac = state
+                        .world
+                        .npcs
+                        .get(&npc_id)
+                        .and_then(|n| n.combat_stats.as_ref())
+                        .map(|s| s.ac)
+                        .unwrap_or(10);
+                    let target_dodging = combat.npc_dodging.get(&npc_id).copied().unwrap_or(false);
+                    let off_hand_free = state.character.equipped.off_hand.is_none();
+                    let hostile_within_5ft = combat::has_living_hostile_within(state, &combat, 5);
+
+                    let target_conditions: &[crate::conditions::ActiveCondition] = state
+                        .world
+                        .npcs
+                        .get(&npc_id)
+                        .map(|n| n.conditions.as_slice())
+                        .unwrap_or(&[]);
+
+                    let npc_name = state
+                        .world
+                        .npcs
+                        .get(&npc_id)
+                        .map(|n| n.name.clone())
+                        .unwrap_or_else(|| "the enemy".to_string());
+
+                    if !crate::conditions::can_attack_target(&state.character.conditions, &npc_name)
+                    {
+                        state.active_combat = Some(combat);
+                        return vec![format!(
+                            "You can't bring yourself to attack {} -- you are Charmed by them.",
+                            npc_name
+                        )];
+                    }
+
+                    if combat.npc_cover.get(&npc_id) == Some(&crate::types::Cover::Total) {
+                        state.active_combat = Some(combat);
+                        return vec![format!(
+                            "{} has total cover and cannot be directly targeted.",
+                            npc_name
+                        )];
+                    }
+
+                    let grappled_disadv = crate::conditions::grappled_attack_disadvantage(
+                        &state.character.conditions,
+                        &npc_name,
+                    );
+
+                    let vex_advantage = combat::consume_vex_advantage(&mut combat, npc_id);
+
+                    let mut result = combat::resolve_player_attack(
+                        &mut rng,
+                        &state.character,
+                        target_ac,
+                        target_dodging,
+                        weapon_id,
+                        &state.world.items,
+                        distance,
+                        off_hand_free,
+                        hostile_within_5ft,
+                        target_conditions,
+                        grappled_disadv,
+                        vex_advantage,
+                        combat
+                            .npc_cover
+                            .get(&npc_id)
+                            .unwrap_or(&crate::types::Cover::None),
+                    );
+                    if vex_advantage {
+                        lines.push("(Advantage from Vex mastery.)".to_string());
+                    }
+                    let (atk_b, dmg_b) = magic_weapon_bonuses(state, weapon_id);
+                    apply_magic_weapon_bonuses(&mut result, atk_b, dmg_b);
+
+                    apply_sneak_attack(
+                        &mut rng,
+                        state,
+                        &mut result,
+                        &mut lines,
+                        weapon_id,
+                        distance,
+                    );
+
+                    let npc_name = state
+                        .world
+                        .npcs
+                        .get(&npc_id)
+                        .map(|n| n.name.clone())
+                        .unwrap_or_else(|| "the enemy".to_string());
+
+                    // Shoot narration: flavored for ranged AMMUNITION weapons
+                    if result.hit {
+                        if result.natural_20 {
+                            lines.push(format!(
+                                "You loose a shot at {} -- CRITICAL HIT! {} {} damage!",
+                                npc_name, result.damage, result.damage_type
+                            ));
+                        } else {
+                            lines.push(format!(
+                                "You take aim and shoot {} with {} ({} vs AC {}) -- hit for {} {} damage.",
+                                npc_name,
+                                result.weapon_name,
+                                combat::format_attack_roll_details(
+                                    &result,
+                                    result.total_attack - result.attack_roll,
+                                ),
+                                target_ac,
+                                result.damage,
+                                result.damage_type
+                            ));
+                        }
+                    } else if result.natural_1 {
+                        lines.push(format!(
+                            "You take aim at {} -- natural 1, the shot goes wide!",
+                            npc_name
+                        ));
+                    } else {
+                        lines.push(format!(
+                            "You shoot at {} with {} ({} vs AC {}) -- miss.",
+                            npc_name,
+                            result.weapon_name,
+                            combat::format_attack_roll_details(
+                                &result,
+                                result.total_attack - result.attack_roll,
+                            ),
+                            target_ac
+                        ));
+                    }
+
+                    if result.hit {
+                        if let Some(npc) = state.world.npcs.get_mut(&npc_id) {
+                            let _dealt = combat::apply_damage_to_npc(
+                                npc,
+                                result.damage,
+                                result.damage_type,
+                                &mut lines,
+                            );
+                            if let Some(stats) = npc.combat_stats.as_ref() {
+                                if stats.current_hp <= 0 {
+                                    lines.push(format!("{} is slain!", npc_name));
+                                }
+                            }
+                        }
+                    }
+
+                    apply_mainhand_mastery_effects(
+                        &mut rng,
+                        state,
+                        &mut combat,
+                        &mut lines,
+                        &result,
+                        npc_id,
+                        weapon_id,
+                        distance,
+                    );
+
+                    combat.action_used = true;
+                }
+                ResolveResult::Ambiguous(matches) => {
+                    state.active_combat = Some(combat);
+                    return emit_disambiguation(state, "shoot", &matches);
+                }
+                ResolveResult::NotFound => {
+                    state.active_combat = Some(combat);
+                    return vec![format!("There's no \"{}\" to shoot.", target_name)];
+                }
+            }
+        }
+        Command::Throw(target_name) => {
+            // Explicit thrown attack. Forces ranged mode for THROWN weapons
+            // even within melee range (5 ft).
+            let owned_candidates = build_combat_npc_candidates(&combat, state);
+            let candidates: Vec<(usize, &str)> = owned_candidates
+                .iter()
+                .map(|(id, name)| (*id, name.as_str()))
+                .collect();
+
+            match resolver::resolve_target(&target_name, &candidates) {
+                ResolveResult::Found(id) => {
+                    let npc_id = id as u32;
+
+                    if combat.action_used {
+                        state.active_combat = Some(combat);
+                        return vec!["You've already used your action this turn. You can still move (approach/retreat).".to_string()];
+                    }
+
+                    // Validate the weapon has the THROWN property.
+                    let weapon_id = state.character.equipped.main_hand;
+                    let weapon_props = weapon_id
+                        .and_then(|id| state.world.items.get(&id))
+                        .and_then(|item| match &item.item_type {
+                            state::ItemType::Weapon { properties, .. } => Some(*properties),
+                            state::ItemType::MagicWeapon { properties, .. } => Some(*properties),
+                            _ => None,
+                        })
+                        .unwrap_or(0);
+                    if weapon_props & equipment::THROWN == 0 {
+                        let weapon_name = weapon_id
+                            .and_then(|id| state.world.items.get(&id))
+                            .map(|i| i.name.clone())
+                            .unwrap_or_else(|| "your bare hands".to_string());
+                        state.active_combat = Some(combat);
+                        return vec![format!(
+                            "You can't throw {}. It doesn't have the Thrown property.",
+                            weapon_name
+                        )];
+                    }
+
+                    let distance = *combat.distances.get(&npc_id).unwrap_or(&30);
+
+                    // Range check using the thrown weapon's range values.
+                    if let Some(weapon_item) = weapon_id.and_then(|id| state.world.items.get(&id)) {
+                        let (_range_normal, range_long) = match &weapon_item.item_type {
+                            state::ItemType::Weapon { range_normal, range_long, .. } => (*range_normal, *range_long),
+                            state::ItemType::MagicWeapon { range_normal, range_long, .. } => (*range_normal, *range_long),
+                            _ => (0, 0),
+                        };
+                        if range_long > 0 && distance > range_long as u32 {
+                            let msg = format!(
+                                "The target is out of range for throwing your {}.",
+                                weapon_item.name
+                            );
+                            state.active_combat = Some(combat);
+                            return vec![msg];
+                        }
+                    }
+
+                    let target_ac = state
+                        .world
+                        .npcs
+                        .get(&npc_id)
+                        .and_then(|n| n.combat_stats.as_ref())
+                        .map(|s| s.ac)
+                        .unwrap_or(10);
+                    let target_dodging = combat.npc_dodging.get(&npc_id).copied().unwrap_or(false);
+                    let off_hand_free = state.character.equipped.off_hand.is_none();
+                    let hostile_within_5ft = combat::has_living_hostile_within(state, &combat, 5);
+
+                    let target_conditions: &[crate::conditions::ActiveCondition] = state
+                        .world
+                        .npcs
+                        .get(&npc_id)
+                        .map(|n| n.conditions.as_slice())
+                        .unwrap_or(&[]);
+
+                    let npc_name = state
+                        .world
+                        .npcs
+                        .get(&npc_id)
+                        .map(|n| n.name.clone())
+                        .unwrap_or_else(|| "the enemy".to_string());
+
+                    if !crate::conditions::can_attack_target(&state.character.conditions, &npc_name)
+                    {
+                        state.active_combat = Some(combat);
+                        return vec![format!(
+                            "You can't bring yourself to attack {} -- you are Charmed by them.",
+                            npc_name
+                        )];
+                    }
+
+                    if combat.npc_cover.get(&npc_id) == Some(&crate::types::Cover::Total) {
+                        state.active_combat = Some(combat);
+                        return vec![format!(
+                            "{} has total cover and cannot be directly targeted.",
+                            npc_name
+                        )];
+                    }
+
+                    let grappled_disadv = crate::conditions::grappled_attack_disadvantage(
+                        &state.character.conditions,
+                        &npc_name,
+                    );
+
+                    let vex_advantage = combat::consume_vex_advantage(&mut combat, npc_id);
+
+                    // For Throw, we force ranged mode by passing the distance as
+                    // max(distance, 6) so is_ranged_attack sees > 5ft even at melee range.
+                    // This ensures STR-based thrown modifier is used and ranged disadvantage
+                    // rules apply correctly.
+                    let effective_distance_for_ranged = if distance <= 5 { 6 } else { distance };
+
+                    let mut result = combat::resolve_player_attack(
+                        &mut rng,
+                        &state.character,
+                        target_ac,
+                        target_dodging,
+                        weapon_id,
+                        &state.world.items,
+                        effective_distance_for_ranged,
+                        off_hand_free,
+                        hostile_within_5ft,
+                        target_conditions,
+                        grappled_disadv,
+                        vex_advantage,
+                        combat
+                            .npc_cover
+                            .get(&npc_id)
+                            .unwrap_or(&crate::types::Cover::None),
+                    );
+                    if vex_advantage {
+                        lines.push("(Advantage from Vex mastery.)".to_string());
+                    }
+                    let (atk_b, dmg_b) = magic_weapon_bonuses(state, weapon_id);
+                    apply_magic_weapon_bonuses(&mut result, atk_b, dmg_b);
+
+                    apply_sneak_attack(
+                        &mut rng,
+                        state,
+                        &mut result,
+                        &mut lines,
+                        weapon_id,
+                        effective_distance_for_ranged,
+                    );
+
+                    let npc_name = state
+                        .world
+                        .npcs
+                        .get(&npc_id)
+                        .map(|n| n.name.clone())
+                        .unwrap_or_else(|| "the enemy".to_string());
+
+                    // Throw narration: flavored for thrown weapons
+                    if result.hit {
+                        if result.natural_20 {
+                            lines.push(format!(
+                                "You hurl your {} at {} -- CRITICAL HIT! {} {} damage!",
+                                result.weapon_name, npc_name, result.damage, result.damage_type
+                            ));
+                        } else {
+                            lines.push(format!(
+                                "You hurl your {} at {} ({} vs AC {}) -- hit for {} {} damage.",
+                                result.weapon_name,
+                                npc_name,
+                                combat::format_attack_roll_details(
+                                    &result,
+                                    result.total_attack - result.attack_roll,
+                                ),
+                                target_ac,
+                                result.damage,
+                                result.damage_type
+                            ));
+                        }
+                    } else if result.natural_1 {
+                        lines.push(format!(
+                            "You throw your {} at {} -- natural 1, it goes wide!",
+                            result.weapon_name, npc_name
+                        ));
+                    } else {
+                        lines.push(format!(
+                            "You throw your {} at {} ({} vs AC {}) -- miss.",
+                            result.weapon_name,
+                            npc_name,
+                            combat::format_attack_roll_details(
+                                &result,
+                                result.total_attack - result.attack_roll,
+                            ),
+                            target_ac
+                        ));
+                    }
+
+                    if result.hit {
+                        if let Some(npc) = state.world.npcs.get_mut(&npc_id) {
+                            let _dealt = combat::apply_damage_to_npc(
+                                npc,
+                                result.damage,
+                                result.damage_type,
+                                &mut lines,
+                            );
+                            if let Some(stats) = npc.combat_stats.as_ref() {
+                                if stats.current_hp <= 0 {
+                                    lines.push(format!("{} is slain!", npc_name));
+                                }
+                            }
+                        }
+                    }
+
+                    apply_mainhand_mastery_effects(
+                        &mut rng,
+                        state,
+                        &mut combat,
+                        &mut lines,
+                        &result,
+                        npc_id,
+                        weapon_id,
+                        distance,
+                    );
+
+                    combat.action_used = true;
+                }
+                ResolveResult::Ambiguous(matches) => {
+                    state.active_combat = Some(combat);
+                    return emit_disambiguation(state, "throw", &matches);
+                }
+                ResolveResult::NotFound => {
+                    state.active_combat = Some(combat);
+                    return vec![format!("There's no \"{}\" to throw at.", target_name)];
+                }
+            }
         }
         Command::Unknown(s) => {
             state.active_combat = Some(combat);
