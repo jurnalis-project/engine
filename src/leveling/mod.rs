@@ -5,7 +5,7 @@
 // combat/, narration/, parser/, world/, or equipment/. Cross-module wiring
 // (combat-victory XP awards, objective bonuses, narration) lives in lib.rs.
 
-use crate::character::class::Class;
+use crate::character::class::{self, Class};
 use crate::character::Character;
 use crate::types::Ability;
 
@@ -179,6 +179,8 @@ pub struct LevelUpReport {
     pub hp_gained: i32,
     pub asi_granted: bool,
     pub new_spell_tier_unlocked: Option<usize>, // spell level index (0 = level 1 spell)
+    /// Human-readable names of class features unlocked at this level.
+    pub new_features: &'static [&'static str],
 }
 
 /// Apply a single level-up to the character. Used internally by `award_xp`,
@@ -238,7 +240,10 @@ pub fn perform_level_up(character: &mut Character) -> LevelUpReport {
     character.class_features.action_surge_available = true;
     character.class_features.arcane_recovery_used_today = false;
 
-    // 6. Increment the level last so the report reflects the new level.
+    // 6. Look up class features unlocked at this level.
+    let new_features = class::new_class_features_at_level(character.class, new_level);
+
+    // 7. Increment the level last so the report reflects the new level.
     character.level = new_level;
 
     LevelUpReport {
@@ -246,6 +251,7 @@ pub fn perform_level_up(character: &mut Character) -> LevelUpReport {
         hp_gained: hp_gain,
         asi_granted,
         new_spell_tier_unlocked,
+        new_features,
     }
 }
 
@@ -294,6 +300,9 @@ pub fn award_xp(character: &mut Character, amount: u32, source: Option<&str>) ->
                 "You unlock level {} spell slots!",
                 tier + 1,
             ));
+        }
+        for feature in report.new_features {
+            lines.push(format!("Class feature unlocked: {}.", feature));
         }
     }
 
@@ -585,6 +594,66 @@ mod tests {
                 .any(|l| l.contains("50 XP for completing the objective")),
             "Expected objective source label, got: {:?}",
             lines2
+        );
+    }
+
+    // ---- Class feature announcements on level-up ----
+
+    #[test]
+    fn level_up_fighter_reports_new_features_at_level_2() {
+        let mut c = fighter_con13();
+        // Level 1 -> 2: Fighter gets Action Surge
+        let report = perform_level_up(&mut c);
+        assert_eq!(c.level, 2);
+        assert!(
+            report.new_features.contains(&"Action Surge"),
+            "Fighter L2 should report Action Surge, got {:?}",
+            report.new_features,
+        );
+    }
+
+    #[test]
+    fn level_up_fighter_no_features_at_level_7() {
+        let mut c = fighter_con13();
+        c.level = 6;
+        let report = perform_level_up(&mut c);
+        assert_eq!(c.level, 7);
+        assert!(
+            report.new_features.is_empty(),
+            "Fighter L7 should report no new features, got {:?}",
+            report.new_features,
+        );
+    }
+
+    #[test]
+    fn award_xp_narrates_class_features_on_level_up() {
+        let mut c = fighter_con13();
+        // Award enough XP to reach level 2 (threshold = 300)
+        let lines = award_xp(&mut c, 300, None);
+        assert_eq!(c.level, 2);
+        assert!(
+            lines.iter().any(|l| l.contains("Action Surge")),
+            "Level-up narration should mention Action Surge, got: {:?}",
+            lines,
+        );
+    }
+
+    #[test]
+    fn award_xp_narrates_multiple_features_across_multiple_levels() {
+        let mut c = fighter_con13();
+        // Award enough XP to reach level 5 (threshold = 6500)
+        // L2: Action Surge, L3: Martial Archetype, L5: Extra Attack
+        let lines = award_xp(&mut c, 6_500, None);
+        assert_eq!(c.level, 5);
+        assert!(
+            lines.iter().any(|l| l.contains("Action Surge")),
+            "Should mention Action Surge, got: {:?}",
+            lines,
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("Extra Attack")),
+            "Should mention Extra Attack, got: {:?}",
+            lines,
         );
     }
 
