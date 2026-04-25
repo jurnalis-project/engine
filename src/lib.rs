@@ -571,6 +571,23 @@ fn combat_unknown_command_hint(verb: &str) -> &'static str {
 
 fn handle_creation(state: &mut GameState, input: &str, step: CreationStep) -> Vec<String> {
     let input = input.trim();
+
+    // Intercept help / ? / commands before per-step matching so help is
+    // available at every stage of character creation.
+    let lower = input.to_lowercase();
+    if lower == "help" || lower == "?" || lower == "commands" {
+        return narration::templates::render_help(
+            None,
+            narration::templates::HelpPhase::CharacterCreation,
+        );
+    }
+    if let Some(topic) = lower.strip_prefix("help ") {
+        return narration::templates::render_help(
+            Some(topic),
+            narration::templates::HelpPhase::CharacterCreation,
+        );
+    }
+
     match step {
         CreationStep::ChooseRace => {
             let input_lower = input.to_lowercase();
@@ -19614,6 +19631,96 @@ mod tests {
             text2.contains("GAME OVER"),
             "After nat-1 death, process_input should show GAME OVER. Got: {}",
             text2
+        );
+    }
+
+    // ---- Context-sensitive help during character creation (#238) ----
+
+    #[test]
+    fn test_help_during_choose_race_returns_creation_help() {
+        let output = new_game(42, false);
+        let output = process_input(&output.state_json, "help");
+        let joined = output.text.join("\n").to_lowercase();
+
+        assert!(
+            joined.contains("character creation"),
+            "Expected creation help overview during ChooseRace. Got:\n{}",
+            joined,
+        );
+        // State should remain on ChooseRace (help doesn't advance creation).
+        let state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert!(
+            matches!(
+                state.game_phase,
+                GamePhase::CharacterCreation(CreationStep::ChooseRace)
+            ),
+            "Expected ChooseRace phase after help. Got: {:?}",
+            state.game_phase,
+        );
+    }
+
+    #[test]
+    fn test_help_question_mark_during_choose_class() {
+        let output = new_game(42, false);
+        let output = process_input(&output.state_json, "1"); // Human
+        let output = process_input(&output.state_json, "?");
+        let joined = output.text.join("\n").to_lowercase();
+
+        assert!(
+            joined.contains("character creation"),
+            "Expected creation help for '?' during ChooseClass. Got:\n{}",
+            joined,
+        );
+        let state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert!(
+            matches!(
+                state.game_phase,
+                GamePhase::CharacterCreation(CreationStep::ChooseClass)
+            ),
+            "Expected ChooseClass phase after '?'. Got: {:?}",
+            state.game_phase,
+        );
+    }
+
+    #[test]
+    fn test_help_topic_during_creation() {
+        let output = new_game(42, false);
+        let output = process_input(&output.state_json, "help race");
+        let joined = output.text.join("\n").to_lowercase();
+
+        assert!(
+            joined.contains("race"),
+            "Expected race topic help. Got:\n{}",
+            joined,
+        );
+        assert!(
+            joined.contains("character creation"),
+            "Expected creation-phase race help. Got:\n{}",
+            joined,
+        );
+    }
+
+    #[test]
+    fn test_help_during_choose_background() {
+        let output = new_game(42, false);
+        let output = process_input(&output.state_json, "1"); // Human
+        let output = process_input(&output.state_json, "1"); // Barbarian
+        let output = process_input(&output.state_json, "help");
+        let joined = output.text.join("\n").to_lowercase();
+
+        assert!(
+            joined.contains("character creation"),
+            "Expected creation help during ChooseBackground. Got:\n{}",
+            joined,
+        );
+        let state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert!(
+            matches!(
+                state.game_phase,
+                GamePhase::CharacterCreation(CreationStep::ChooseBackground)
+            ),
+            "Expected ChooseBackground phase after help. Got: {:?}",
+            state.game_phase,
         );
     }
 }
