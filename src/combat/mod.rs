@@ -174,6 +174,12 @@ pub struct CombatState {
     /// new round.
     #[serde(default)]
     pub npc_reactions_used: std::collections::HashSet<NpcId>,
+    // ---- Reckless Attack (Barbarian level 2, SRD 2024) ---------------------
+    /// Set when the player declares Reckless Attack; cleared at the start of
+    /// the player's next turn in `advance_turn`. While true, NPC attack rolls
+    /// against the player are made with advantage.
+    #[serde(default)]
+    pub player_reckless: bool,
 }
 
 /// Outcome of a single Death Saving Throw or damage-while-dying event.
@@ -407,6 +413,12 @@ impl CombatState {
                     // consistent with the combat-local flags above.
                     state.character.class_features.sneak_attack_used_this_turn = false;
                     state.character.class_features.cunning_action_used = false;
+                    // Barbarian Reckless Attack: both the combat-local flag
+                    // (NPC advantage window) and the class-feature turn-scoped
+                    // flag (once-per-turn declaration cap) reset at the start
+                    // of the player's next turn per SRD 2024.
+                    self.player_reckless = false;
+                    state.character.class_features.reckless_this_turn = false;
                     // SRD 2024: a grapple ends immediately if the grappler
                     // becomes incapacitated. We check at the start of the
                     // player's turn, which is the earliest moment we can
@@ -668,6 +680,7 @@ pub fn start_combat(
         player_cover: Cover::None,
         npc_cover: assign_npc_cover(rng, hostile_npc_ids, location_type),
         npc_reactions_used: std::collections::HashSet::new(),
+        player_reckless: false,
     }
 }
 
@@ -1119,9 +1132,16 @@ pub fn resolve_npc_attack(
     player_conditions: &[ActiveCondition],
     extra_disadvantage: bool,
     player_cover: &Cover,
+    player_reckless: bool,
 ) -> AttackResult {
     let mut disadvantage = false;
     let mut advantage = false;
+
+    // Reckless Attack: NPC attacks against a reckless player have advantage
+    // per SRD 2024 Barbarian level 2.
+    if player_reckless {
+        advantage = true;
+    }
 
     if player_dodging {
         disadvantage = true;
@@ -1232,6 +1252,7 @@ pub fn resolve_opportunity_attack(
     state: &GameState,
     player_ac: i32,
     distance: u32,
+    player_reckless: bool,
 ) -> Option<(String, AttackResult)> {
     let npc = state.world.npcs.get(&npc_id)?;
     let stats = npc.combat_stats.as_ref()?;
@@ -1259,6 +1280,7 @@ pub fn resolve_opportunity_attack(
         &state.character.conditions,
         extra_disadvantage,
         &Cover::None, // opportunity attacks don't check cover (player is fleeing)
+        player_reckless,
     );
     Some((npc.name.clone(), result))
 }
@@ -1326,6 +1348,7 @@ fn resolve_npc_attack_action(
             player_conditions,
             iter_disadv,
             &combat.player_cover,
+            combat.player_reckless,
         );
         if result.hit {
             let was_dying = state.character.current_hp <= 0;
@@ -1878,7 +1901,7 @@ pub fn fire_opportunity_attacks(
         combat.npc_reactions_used.insert(npc_id);
 
         if let Some((npc_name, result)) =
-            resolve_opportunity_attack(rng, npc_id, state, player_ac, old_distance)
+            resolve_opportunity_attack(rng, npc_id, state, player_ac, old_distance, combat.player_reckless)
         {
             if result.hit {
                 let was_dying = state.character.current_hp <= 0;
@@ -3540,6 +3563,7 @@ mod tests {
                 &[],
                 false,
                 &Cover::None,
+                false,
             );
             if result.hit {
                 hits += 1;
@@ -3577,6 +3601,7 @@ mod tests {
                 &[],
                 false,
                 &Cover::None,
+                false,
             );
             if result.natural_20 {
                 assert!(result.hit, "Natural 20 should always hit");
@@ -3611,6 +3636,7 @@ mod tests {
                 &[],
                 false,
                 &Cover::None,
+                false,
             );
             if result.natural_1 {
                 assert!(!result.hit, "Natural 1 should always miss");
@@ -3647,6 +3673,7 @@ mod tests {
                 &[],
                 false,
                 &Cover::None,
+                false,
             );
             if result.natural_20 {
                 crit_damages.push(result.damage);
@@ -3688,6 +3715,7 @@ mod tests {
                 &[],
                 false,
                 &Cover::None,
+                false,
             );
             let normal = resolve_npc_attack(
                 &mut rng2,
@@ -3699,6 +3727,7 @@ mod tests {
                 &[],
                 false,
                 &Cover::None,
+                false,
             );
             if dodge.hit {
                 dodge_hits += 1;
@@ -4339,6 +4368,7 @@ mod tests {
             player_cover: Cover::None,
             npc_cover: HashMap::new(),
             npc_reactions_used: std::collections::HashSet::new(),
+            player_reckless: false,
         };
 
         // Kill the first goblin (the one with stats)
@@ -6648,6 +6678,7 @@ mod tests {
                 &[],
                 false,
                 &Cover::None,
+                false,
             );
             let mut rng2 = StdRng::seed_from_u64(seed);
             let result_half = resolve_npc_attack(
@@ -6660,6 +6691,7 @@ mod tests {
                 &[],
                 false,
                 &Cover::Half,
+                false,
             );
             // Effective AC for Half cover is 10+2=12. Effective AC for None is 10.
             assert_eq!(
@@ -6687,6 +6719,7 @@ mod tests {
             &[],
             false,
             &Cover::ThreeQuarters,
+            false,
         );
         assert_eq!(
             result.target_ac, 15,
@@ -6709,6 +6742,7 @@ mod tests {
             &[],
             false,
             &Cover::None,
+            false,
         );
         assert_eq!(result.target_ac, 14, "No cover: effective AC unchanged");
     }
@@ -7266,6 +7300,7 @@ mod tests {
             player_cover: Cover::None,
             npc_cover: HashMap::new(),
             npc_reactions_used: std::collections::HashSet::new(),
+            player_reckless: false,
         };
         let lines = resolve_npc_turn(&mut rng, 0, &mut state, &mut combat);
         // The grappled NPC should NOT have moved (distance unchanged).
@@ -7342,6 +7377,7 @@ mod tests {
             player_cover: Cover::None,
             npc_cover: HashMap::new(),
             npc_reactions_used: std::collections::HashSet::new(),
+            player_reckless: false,
         };
         // Approach the Orc (NPC 1). Normal approach would cost 1 ft per 1 ft moved.
         // With dragging, it costs 2 ft per 1 ft, so 30 ft of movement lets us move only 15 ft.
@@ -7400,6 +7436,7 @@ mod tests {
             player_cover: Cover::None,
             npc_cover: HashMap::new(),
             npc_reactions_used: std::collections::HashSet::new(),
+            player_reckless: false,
         };
         // Retreat should move the player away. With drag cost, effective distance moved
         // is halved. But the grappled NPC's distance should increase (player moves away
