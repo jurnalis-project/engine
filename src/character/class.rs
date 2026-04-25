@@ -425,6 +425,139 @@ impl Class {
     }
 }
 
+/// Returns the human-readable names of class features unlocked at the given
+/// level for the given class, per SRD 5.2.1. Returns an empty slice for levels
+/// where no new features are gained (e.g., levels that only grant ASI/feat).
+///
+/// This is a read-only lookup table; it does NOT mutate state.
+pub fn new_class_features_at_level(class: Class, level: u32) -> &'static [&'static str] {
+    match (class, level) {
+        // ---- Barbarian ----
+        (Class::Barbarian, 1)  => &["Rage", "Unarmored Defense"],
+        (Class::Barbarian, 2)  => &["Reckless Attack", "Danger Sense"],
+        (Class::Barbarian, 3)  => &["Primal Path"],
+        (Class::Barbarian, 5)  => &["Extra Attack", "Fast Movement"],
+        (Class::Barbarian, 7)  => &["Feral Instinct"],
+        (Class::Barbarian, 9)  => &["Brutal Critical"],
+        (Class::Barbarian, 11) => &["Relentless Rage"],
+        (Class::Barbarian, 13) => &["Brutal Critical (2 dice)"],
+        (Class::Barbarian, 15) => &["Persistent Rage"],
+        (Class::Barbarian, 17) => &["Brutal Critical (3 dice)"],
+        (Class::Barbarian, 18) => &["Indomitable Might"],
+        (Class::Barbarian, 20) => &["Primal Champion"],
+
+        // ---- Bard ----
+        (Class::Bard, 1)  => &["Spellcasting", "Bardic Inspiration"],
+        (Class::Bard, 2)  => &["Jack of All Trades", "Song of Rest"],
+        (Class::Bard, 3)  => &["Bard College", "Expertise"],
+        (Class::Bard, 5)  => &["Font of Inspiration"],
+        (Class::Bard, 6)  => &["Countercharm"],
+        (Class::Bard, 10) => &["Magical Secrets"],
+        (Class::Bard, 14) => &["Magical Secrets (2nd)"],
+        (Class::Bard, 18) => &["Magical Secrets (3rd)"],
+        (Class::Bard, 20) => &["Superior Inspiration"],
+
+        // ---- Cleric ----
+        (Class::Cleric, 1)  => &["Spellcasting", "Divine Domain"],
+        (Class::Cleric, 2)  => &["Channel Divinity", "Turn Undead"],
+        (Class::Cleric, 5)  => &["Destroy Undead"],
+        (Class::Cleric, 10) => &["Divine Intervention"],
+        (Class::Cleric, 17) => &["Destroy Undead (CR 4)"],
+        (Class::Cleric, 20) => &["Divine Intervention (auto)"],
+
+        // ---- Druid ----
+        (Class::Druid, 1)  => &["Spellcasting", "Druidic"],
+        (Class::Druid, 2)  => &["Wild Shape", "Druid Circle"],
+        (Class::Druid, 18) => &["Timeless Body", "Beast Spells"],
+        (Class::Druid, 20) => &["Archdruid"],
+
+        // ---- Fighter ----
+        (Class::Fighter, 1)  => &["Fighting Style", "Second Wind"],
+        (Class::Fighter, 2)  => &["Action Surge"],
+        (Class::Fighter, 3)  => &["Martial Archetype"],
+        (Class::Fighter, 5)  => &["Extra Attack"],
+        (Class::Fighter, 9)  => &["Indomitable"],
+        (Class::Fighter, 11) => &["Extra Attack (2)"],
+        (Class::Fighter, 13) => &["Indomitable (2 uses)"],
+        (Class::Fighter, 17) => &["Action Surge (2 uses)", "Indomitable (3 uses)"],
+        (Class::Fighter, 20) => &["Extra Attack (3)"],
+
+        // ---- Monk ----
+        (Class::Monk, 1)  => &["Unarmored Defense", "Martial Arts"],
+        (Class::Monk, 2)  => &["Ki", "Unarmored Movement"],
+        (Class::Monk, 3)  => &["Monastic Tradition", "Deflect Missiles"],
+        (Class::Monk, 4)  => &["Slow Fall"],
+        (Class::Monk, 5)  => &["Extra Attack", "Stunning Strike"],
+        (Class::Monk, 6)  => &["Ki-Empowered Strikes"],
+        (Class::Monk, 7)  => &["Evasion", "Stillness of Mind"],
+        (Class::Monk, 9)  => &["Unarmored Movement Improvement"],
+        (Class::Monk, 10) => &["Purity of Body"],
+        (Class::Monk, 13) => &["Tongue of the Sun and Moon"],
+        (Class::Monk, 14) => &["Diamond Soul"],
+        (Class::Monk, 15) => &["Timeless Body"],
+        (Class::Monk, 18) => &["Empty Body"],
+        (Class::Monk, 20) => &["Perfect Self"],
+
+        // ---- Paladin ----
+        (Class::Paladin, 1)  => &["Divine Sense", "Lay on Hands"],
+        (Class::Paladin, 2)  => &["Fighting Style", "Spellcasting", "Divine Smite"],
+        (Class::Paladin, 3)  => &["Divine Health", "Sacred Oath"],
+        (Class::Paladin, 5)  => &["Extra Attack"],
+        (Class::Paladin, 6)  => &["Aura of Protection"],
+        (Class::Paladin, 10) => &["Aura of Courage"],
+        (Class::Paladin, 11) => &["Improved Divine Smite"],
+        (Class::Paladin, 14) => &["Cleansing Touch"],
+
+        // ---- Ranger ----
+        (Class::Ranger, 1)  => &["Favored Enemy", "Natural Explorer"],
+        (Class::Ranger, 2)  => &["Fighting Style", "Spellcasting"],
+        (Class::Ranger, 3)  => &["Ranger Archetype", "Primeval Awareness"],
+        (Class::Ranger, 5)  => &["Extra Attack"],
+        (Class::Ranger, 8)  => &["Land's Stride"],
+        (Class::Ranger, 10) => &["Hide in Plain Sight"],
+        (Class::Ranger, 14) => &["Vanish"],
+        (Class::Ranger, 18) => &["Feral Senses"],
+        (Class::Ranger, 20) => &["Foe Slayer"],
+
+        // ---- Rogue ----
+        (Class::Rogue, 1)  => &["Expertise", "Sneak Attack", "Thieves' Cant"],
+        (Class::Rogue, 2)  => &["Cunning Action"],
+        (Class::Rogue, 3)  => &["Roguish Archetype"],
+        (Class::Rogue, 5)  => &["Uncanny Dodge"],
+        (Class::Rogue, 7)  => &["Evasion"],
+        (Class::Rogue, 11) => &["Reliable Talent"],
+        (Class::Rogue, 14) => &["Blindsense"],
+        (Class::Rogue, 15) => &["Slippery Mind"],
+        (Class::Rogue, 18) => &["Elusive"],
+        (Class::Rogue, 20) => &["Stroke of Luck"],
+
+        // ---- Sorcerer ----
+        (Class::Sorcerer, 1)  => &["Spellcasting", "Sorcerous Origin"],
+        (Class::Sorcerer, 2)  => &["Font of Magic"],
+        (Class::Sorcerer, 3)  => &["Metamagic"],
+        (Class::Sorcerer, 20) => &["Sorcerous Restoration"],
+
+        // ---- Warlock ----
+        (Class::Warlock, 1)  => &["Pact Magic", "Otherworldly Patron"],
+        (Class::Warlock, 2)  => &["Eldritch Invocations"],
+        (Class::Warlock, 3)  => &["Pact Boon"],
+        (Class::Warlock, 11) => &["Mystic Arcanum (6th)"],
+        (Class::Warlock, 13) => &["Mystic Arcanum (7th)"],
+        (Class::Warlock, 15) => &["Mystic Arcanum (8th)"],
+        (Class::Warlock, 17) => &["Mystic Arcanum (9th)"],
+        (Class::Warlock, 20) => &["Eldritch Master"],
+
+        // ---- Wizard ----
+        (Class::Wizard, 1)  => &["Spellcasting", "Arcane Recovery"],
+        (Class::Wizard, 2)  => &["Arcane Tradition"],
+        (Class::Wizard, 18) => &["Spell Mastery"],
+        (Class::Wizard, 20) => &["Signature Spells"],
+
+        // All other (class, level) combos have no new features.
+        _ => &[],
+    }
+}
+
 /// Returns true when the character qualifies for the SRD 5.2.1 Danger Sense
 /// feature: Barbarian class at level 2 or higher. Danger Sense grants advantage
 /// on DEX saving throws unless the character is Incapacitated (the caller must
@@ -831,6 +964,84 @@ mod tests {
             if *class != Class::Barbarian {
                 assert!(!character_has_danger_sense(*class, 5));
             }
+        }
+    }
+
+    // ---- new_class_features_at_level (SRD class feature table) ----
+
+    #[test]
+    fn test_fighter_level_1_features() {
+        let feats = new_class_features_at_level(Class::Fighter, 1);
+        assert!(feats.contains(&"Fighting Style"), "Fighter L1 should include Fighting Style");
+        assert!(feats.contains(&"Second Wind"), "Fighter L1 should include Second Wind");
+    }
+
+    #[test]
+    fn test_fighter_level_2_features() {
+        let feats = new_class_features_at_level(Class::Fighter, 2);
+        assert!(feats.contains(&"Action Surge"), "Fighter L2 should include Action Surge");
+    }
+
+    #[test]
+    fn test_fighter_level_5_features() {
+        let feats = new_class_features_at_level(Class::Fighter, 5);
+        assert!(feats.contains(&"Extra Attack"), "Fighter L5 should include Extra Attack");
+    }
+
+    #[test]
+    fn test_barbarian_level_1_features() {
+        let feats = new_class_features_at_level(Class::Barbarian, 1);
+        assert!(feats.contains(&"Rage"), "Barbarian L1 should include Rage");
+        assert!(feats.contains(&"Unarmored Defense"), "Barbarian L1 should include Unarmored Defense");
+    }
+
+    #[test]
+    fn test_barbarian_level_2_features() {
+        let feats = new_class_features_at_level(Class::Barbarian, 2);
+        assert!(feats.contains(&"Reckless Attack"), "Barbarian L2 should include Reckless Attack");
+        assert!(feats.contains(&"Danger Sense"), "Barbarian L2 should include Danger Sense");
+    }
+
+    #[test]
+    fn test_rogue_level_1_features() {
+        let feats = new_class_features_at_level(Class::Rogue, 1);
+        assert!(feats.contains(&"Expertise"), "Rogue L1 should include Expertise");
+        assert!(feats.contains(&"Sneak Attack"), "Rogue L1 should include Sneak Attack");
+        assert!(feats.contains(&"Thieves' Cant"), "Rogue L1 should include Thieves' Cant");
+    }
+
+    #[test]
+    fn test_wizard_level_1_features() {
+        let feats = new_class_features_at_level(Class::Wizard, 1);
+        assert!(feats.contains(&"Arcane Recovery"), "Wizard L1 should include Arcane Recovery");
+        assert!(feats.contains(&"Spellcasting"), "Wizard L1 should include Spellcasting");
+    }
+
+    #[test]
+    fn test_paladin_level_2_features() {
+        let feats = new_class_features_at_level(Class::Paladin, 2);
+        assert!(feats.contains(&"Divine Smite"), "Paladin L2 should include Divine Smite");
+    }
+
+    #[test]
+    fn test_monk_level_2_features() {
+        let feats = new_class_features_at_level(Class::Monk, 2);
+        assert!(feats.contains(&"Ki"), "Monk L2 should include Ki");
+        assert!(feats.contains(&"Unarmored Movement"), "Monk L2 should include Unarmored Movement");
+    }
+
+    #[test]
+    fn test_no_features_at_non_feature_level() {
+        // Level 7 Fighter has no new features in SRD
+        let feats = new_class_features_at_level(Class::Fighter, 7);
+        assert!(feats.is_empty(), "Fighter L7 should have no new features, got {:?}", feats);
+    }
+
+    #[test]
+    fn test_all_classes_level_1_have_at_least_one_feature() {
+        for class in Class::all() {
+            let feats = new_class_features_at_level(*class, 1);
+            assert!(!feats.is_empty(), "{:?} should have at least one level-1 feature", class);
         }
     }
 
