@@ -7821,13 +7821,17 @@ fn sneak_attack_weapon_eligible(
 }
 
 /// Apply a Rogue's Sneak Attack bonus damage if the player is a Rogue,
-/// the attack hit, the weapon qualifies (Finesse or ranged), and the
-/// attacker had advantage on the roll. Consumes the once-per-turn flag.
+/// the attack hit, the weapon qualifies (Finesse or ranged), and at least
+/// one of the two SRD trigger conditions is satisfied:
 ///
-/// Per the handoff, the engine has no ally-adjacency concept, so the
-/// "ally adjacent to target" alternative trigger is skipped for now —
-/// eligibility reduces to the advantage path, which is the SRD-aligned
-/// conservative MVP (no false positives).
+///   1. The attacker had Advantage on the attack roll.
+///   2. An ally is within 5 feet of the target AND the attacker does NOT
+///      have Disadvantage. The 1D combat engine has no ally-adjacency
+///      concept, so condition 2 is approximated as: no Disadvantage on
+///      the roll (allies can be assumed potentially adjacent in melee).
+///
+/// Sneak Attack is BLOCKED when the attacker had Disadvantage regardless
+/// of the trigger path — that is the SRD rule.
 ///
 /// Mutates `result.damage` in place so downstream damage application uses
 /// the boosted total. Appends a narration line like
@@ -7849,10 +7853,9 @@ fn apply_sneak_attack(
     if state.character.class_features.sneak_attack_used_this_turn {
         return;
     }
-    if !result.attacker_had_advantage {
-        // MVP: require advantage. The SRD's "ally adjacent to target"
-        // alternative is not yet modelled (no ally concept in the 1D
-        // combat engine). See docs/specs/srd-classes.md.
+    // SRD trigger: advantage path OR no-disadvantage path (ally-adjacency
+    // approximation). Disadvantage always blocks Sneak Attack.
+    if !result.attacker_had_advantage && result.disadvantage {
         return;
     }
     if !sneak_attack_weapon_eligible(state, weapon_id, distance) {
@@ -16653,12 +16656,13 @@ mod tests {
         );
     }
 
-    // ---- Rogue: Sneak Attack (gh issue #85) ----
+    // ---- Rogue: Sneak Attack (gh issue #85, gh issue #226) ----
     //
     // These tests exercise the orchestrator's Sneak Attack dispatch after a
     // successful player attack. Eligibility requires: Rogue class + Finesse
-    // (or ranged) weapon + attacker had advantage + not already used this
-    // turn. See `apply_sneak_attack` in lib.rs and `docs/specs/srd-classes.md`.
+    // (or ranged) weapon + (advantage OR no-disadvantage) + not already used
+    // this turn. See `apply_sneak_attack` in lib.rs and
+    // `docs/specs/srd-classes.md`.
 
     /// Build a `create_test_combat_state` base then reshape it into a Rogue
     /// wielding a Shortsword (Finesse + Light). The goblin is given a Prone
@@ -16749,11 +16753,13 @@ mod tests {
     }
 
     #[test]
-    fn test_rogue_sneak_attack_does_not_fire_without_advantage() {
-        // Same Rogue + Shortsword but remove Prone so no advantage source.
+    fn test_rogue_sneak_attack_fires_on_finesse_hit_no_advantage_no_disadvantage() {
+        // Rogue with Shortsword (Finesse), no advantage source (remove Prone),
+        // and no disadvantage source. Per SRD two-path rule (issue #226) the
+        // ally-adjacency path fires: no disadvantage means SA applies.
         let mut base = rogue_sneak_attack_setup();
         if let Some(npc) = base.world.npcs.get_mut(&100) {
-            npc.conditions.clear();
+            npc.conditions.clear(); // remove Prone so no advantage
         }
         for seed in 0..40u64 {
             let mut s = base.clone();
@@ -16761,10 +16767,56 @@ mod tests {
             s.rng_counter = 0;
             let state_json = serde_json::to_string(&s).unwrap();
             let output = process_input(&state_json, "attack test goblin");
-            // Whether the attack hits or misses, Sneak Attack must not fire.
+            if !output.text.iter().any(|t| t.contains("hit for")) {
+                continue;
+            }
+            // Hit landed with no advantage and no disadvantage -- SA must fire.
+            assert!(
+                output.text.iter().any(|t| t.contains("Sneak Attack")),
+                "SA should fire on a Finesse hit with no advantage and no disadvantage \
+                 (seed {}). Got: {:?}",
+                seed,
+                output.text
+            );
+            let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+            assert!(
+                new_state
+                    .character
+                    .class_features
+                    .sneak_attack_used_this_turn,
+                "sneak_attack_used_this_turn should be set after SA fires (no-adv path)"
+            );
+            return;
+        }
+        panic!("Did not land a Rogue hit in 40 seeds; fixture may need adjustment.");
+    }
+
+    #[test]
+    fn test_rogue_sneak_attack_does_not_fire_with_disadvantage() {
+        // Rogue with Shortsword (Finesse) but the player is Poisoned, which
+        // imposes Disadvantage on attack rolls. SA must NOT fire even though
+        // the weapon qualifies — disadvantage blocks both trigger paths.
+        let mut base = rogue_sneak_attack_setup();
+        if let Some(npc) = base.world.npcs.get_mut(&100) {
+            npc.conditions.clear(); // no Prone, so no advantage either
+        }
+        // Poison the player to impose Disadvantage on their attack rolls.
+        base.character
+            .conditions
+            .push(crate::conditions::ActiveCondition::new(
+                crate::conditions::ConditionType::Poisoned,
+                crate::conditions::ConditionDuration::Permanent,
+            ));
+        for seed in 0..40u64 {
+            let mut s = base.clone();
+            s.rng_seed = seed;
+            s.rng_counter = 0;
+            let state_json = serde_json::to_string(&s).unwrap();
+            let output = process_input(&state_json, "attack test goblin");
+            // Whether the attack hits or misses, SA must not fire.
             assert!(
                 !output.text.iter().any(|t| t.contains("Sneak Attack")),
-                "SA should not fire without advantage (seed {}). Got: {:?}",
+                "SA should not fire when attacker has Disadvantage (seed {}). Got: {:?}",
                 seed,
                 output.text
             );
@@ -16774,7 +16826,7 @@ mod tests {
                     .character
                     .class_features
                     .sneak_attack_used_this_turn,
-                "SA flag should remain unset when advantage is absent"
+                "SA flag should remain unset when attacker has Disadvantage"
             );
         }
     }

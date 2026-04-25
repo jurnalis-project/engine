@@ -698,9 +698,9 @@ pub struct AttackResult {
     pub weapon_name: String,
     pub disadvantage: bool,
     /// True when the attack was rolled with advantage (after advantage/
-    /// disadvantage cancellation). Surfaced so the orchestrator can gate
-    /// Rogue Sneak Attack eligibility (which requires advantage, or an
-    /// ally adjacent to the target).
+    /// disadvantage cancellation). Used by the orchestrator to evaluate
+    /// Rogue Sneak Attack trigger path 1 (attacker has Advantage).
+    /// See `apply_sneak_attack` in lib.rs for the full two-path logic.
     pub attacker_had_advantage: bool,
 }
 
