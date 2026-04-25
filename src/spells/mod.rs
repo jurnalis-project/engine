@@ -859,6 +859,18 @@ pub enum CastOutcome {
     },
     /// Dispel Magic: nothing to dispel.
     DispelMagicNothing,
+    /// Scorching Ray: three individual spell attacks, each dealing 2d6 fire on hit.
+    ScorchingRay {
+        rays: Vec<ScorchingRayHit>,
+        total_damage: i32,
+    },
+}
+
+/// Per-ray result for Scorching Ray.
+#[derive(Debug, Clone)]
+pub struct ScorchingRayHit {
+    pub attack: SpellAttackResult,
+    pub damage: i32,
 }
 
 /// Per-target result for AoE save-half spells (Fireball, Lightning Bolt).
@@ -1120,6 +1132,31 @@ pub fn resolve_eldritch_blast(
         0
     };
     CastOutcome::EldritchBlast { attack, damage }
+}
+
+/// Resolve Scorching Ray (level 2). Three ranged spell attacks; each hit
+/// deals 2d6 fire damage. All rays target the same creature (NPC AI).
+pub fn resolve_scorching_ray(
+    rng: &mut impl Rng,
+    caster_ability_score: i32,
+    caster_proficiency_bonus: i32,
+    target_ac: i32,
+) -> CastOutcome {
+    let mut rays = Vec::new();
+    let mut total_damage = 0;
+    for _ in 0..3 {
+        let attack = roll_spell_attack(rng, caster_ability_score, caster_proficiency_bonus, target_ac);
+        let damage = if attack.hit {
+            let rolls = roll_dice(rng, 2, 6);
+            let base: i32 = rolls.iter().sum();
+            if attack.natural_20 { base * 2 } else { base }
+        } else {
+            0
+        };
+        total_damage += damage;
+        rays.push(ScorchingRayHit { attack, damage });
+    }
+    CastOutcome::ScorchingRay { rays, total_damage }
 }
 
 /// Resolve Fireball or Lightning Bolt (level 3). All targets make a DEX save;
@@ -2232,5 +2269,35 @@ mod tests {
         } else {
             panic!("Expected MassHealingWordResult outcome");
         }
+    }
+
+    #[test]
+    fn test_scorching_ray_produces_three_rays() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let outcome = resolve_scorching_ray(&mut rng, 16, 2, 12);
+        match outcome {
+            CastOutcome::ScorchingRay { rays, total_damage } => {
+                assert_eq!(rays.len(), 3, "Scorching Ray should produce 3 ray results");
+                for ray in &rays {
+                    if ray.attack.hit {
+                        assert!(ray.damage >= 2 && ray.damage <= 24,
+                            "Hit ray damage should be 2d6 (or 4d6 on crit), got {}", ray.damage);
+                    } else {
+                        assert_eq!(ray.damage, 0, "Missed ray should deal 0 damage");
+                    }
+                }
+                let expected_total: i32 = rays.iter().map(|r| r.damage).sum();
+                assert_eq!(total_damage, expected_total,
+                    "total_damage should equal sum of ray damages");
+            }
+            _ => panic!("Expected ScorchingRay outcome"),
+        }
+    }
+
+    #[test]
+    fn test_scorching_ray_spell_def_exists() {
+        let spell = find_spell("Scorching Ray").expect("Scorching Ray must be in SPELLS catalog");
+        assert_eq!(spell.level, 2);
+        assert!(matches!(spell.casting, CastingMode::SpellAttack));
     }
 }

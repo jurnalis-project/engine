@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use crate::types::{Ability, Alignment};
-use crate::state::{CombatStats, NpcAttack, DamageType};
+use crate::state::{CombatStats, NpcAttack, NpcSpell, DamageType};
 use crate::conditions::ConditionType;
 
 /// SRD creature type. See `docs/reference/monsters.md` for the canonical list.
@@ -87,6 +87,9 @@ pub struct MonsterDef {
     /// Free-form special traits surfaced to narration. `(name, description)` pairs.
     /// No mechanical effect in the MVP; informational only.
     pub special_traits: &'static [(&'static str, &'static str)],
+    /// Spells known by this NPC archetype. `(name, level)` pairs. Empty for
+    /// non-spellcasters. Used to initialize `CombatStats.spells` at spawn time.
+    pub spells: &'static [(&'static str, u32)],
 }
 
 pub struct MonsterAttackDef {
@@ -105,6 +108,7 @@ pub struct MonsterAttackDef {
 const NO_DAMAGE_TYPES: &[DamageType] = &[];
 const NO_CONDITIONS: &[ConditionType] = &[];
 const NO_TRAITS: &[(&str, &str)] = &[];
+const NO_SPELLS: &[(&str, u32)] = &[];
 
 // SRD monster table. The first 12 entries are the original "core" set with
 // canonical CRs from `docs/specs/leveling-and-xp.md`; entries beyond that
@@ -131,6 +135,7 @@ pub const SRD_MONSTERS: &[MonsterDef] = &[
         special_traits: &[
             ("Agile", "The rat doesn't provoke an Opportunity Attack when it moves out of an enemy's reach."),
         ],
+        spells: NO_SPELLS,
     },
     MonsterDef {
         name: "Kobold", max_hp: 5, ac: 12, speed: 30,
@@ -154,6 +159,7 @@ pub const SRD_MONSTERS: &[MonsterDef] = &[
             ("Pack Tactics", "Advantage on attack rolls vs a creature if at least one ally is within 5 ft and not Incapacitated."),
             ("Sunlight Sensitivity", "Disadvantage on attack rolls and ability checks while in sunlight."),
         ],
+        spells: NO_SPELLS,
     },
     MonsterDef {
         name: "Goblin", max_hp: 7, ac: 15, speed: 30,
@@ -182,6 +188,7 @@ pub const SRD_MONSTERS: &[MonsterDef] = &[
         special_traits: &[
             ("Nimble Escape", "The goblin can take the Disengage or Hide action as a Bonus Action."),
         ],
+        spells: NO_SPELLS,
     },
     MonsterDef {
         name: "Skeleton", max_hp: 13, ac: 13, speed: 30,
@@ -208,6 +215,7 @@ pub const SRD_MONSTERS: &[MonsterDef] = &[
         languages: &["Common"],
         multiattack: 1,
         special_traits: NO_TRAITS,
+        spells: NO_SPELLS,
     },
     MonsterDef {
         name: "Zombie", max_hp: 22, ac: 8, speed: 20,
@@ -230,6 +238,7 @@ pub const SRD_MONSTERS: &[MonsterDef] = &[
         special_traits: &[
             ("Undead Fortitude", "If damage reduces the zombie to 0 HP, it makes a CON save (DC 5 + damage taken) unless the damage is Radiant or from a Critical Hit. On a success, it drops to 1 HP instead."),
         ],
+        spells: NO_SPELLS,
     },
     MonsterDef {
         name: "Guard", max_hp: 11, ac: 16, speed: 30,
@@ -250,6 +259,7 @@ pub const SRD_MONSTERS: &[MonsterDef] = &[
         languages: &["Common"],
         multiattack: 1,
         special_traits: NO_TRAITS,
+        spells: NO_SPELLS,
     },
     MonsterDef {
         name: "Bandit", max_hp: 11, ac: 12, speed: 30,
@@ -276,6 +286,7 @@ pub const SRD_MONSTERS: &[MonsterDef] = &[
         languages: &["Common"],
         multiattack: 1,
         special_traits: NO_TRAITS,
+        spells: NO_SPELLS,
     },
     MonsterDef {
         name: "Orc", max_hp: 15, ac: 13, speed: 30,
@@ -304,6 +315,7 @@ pub const SRD_MONSTERS: &[MonsterDef] = &[
         special_traits: &[
             ("Aggressive", "As a Bonus Action, the orc moves up to its Speed toward a hostile creature it can see."),
         ],
+        spells: NO_SPELLS,
     },
     MonsterDef {
         name: "Hobgoblin", max_hp: 11, ac: 18, speed: 30,
@@ -332,6 +344,7 @@ pub const SRD_MONSTERS: &[MonsterDef] = &[
         special_traits: &[
             ("Pack Tactics", "Advantage on attack rolls vs a creature if at least one ally is within 5 ft and not Incapacitated."),
         ],
+        spells: NO_SPELLS,
     },
     MonsterDef {
         name: "Bugbear", max_hp: 27, ac: 16, speed: 30,
@@ -360,6 +373,7 @@ pub const SRD_MONSTERS: &[MonsterDef] = &[
         special_traits: &[
             ("Brute", "A melee weapon deals one extra die of damage when the bugbear hits with it (already included in damage)."),
         ],
+        spells: NO_SPELLS,
     },
     MonsterDef {
         name: "Ghoul", max_hp: 22, ac: 12, speed: 30,
@@ -390,6 +404,7 @@ pub const SRD_MONSTERS: &[MonsterDef] = &[
         languages: &["Common"],
         multiattack: 2,
         special_traits: NO_TRAITS,
+        spells: NO_SPELLS,
     },
     MonsterDef {
         name: "Ogre", max_hp: 59, ac: 11, speed: 40,
@@ -416,6 +431,7 @@ pub const SRD_MONSTERS: &[MonsterDef] = &[
         languages: &["Common", "Giant"],
         multiattack: 1,
         special_traits: NO_TRAITS,
+        spells: NO_SPELLS,
     },
     // ---- New entries (monster-stat-blocks feature, 2026-04-15) ----
     MonsterDef {
@@ -439,6 +455,7 @@ pub const SRD_MONSTERS: &[MonsterDef] = &[
         special_traits: &[
             ("Pack Tactics", "Advantage on attack rolls vs a creature if at least one ally is within 5 ft and not Incapacitated."),
         ],
+        spells: NO_SPELLS,
     },
     MonsterDef {
         name: "Bat", max_hp: 1, ac: 12, speed: 5,
@@ -461,6 +478,7 @@ pub const SRD_MONSTERS: &[MonsterDef] = &[
         special_traits: &[
             ("Echolocation", "While unable to hear, the bat has no Blindsight."),
         ],
+        spells: NO_SPELLS,
     },
     MonsterDef {
         name: "Spider", max_hp: 1, ac: 12, speed: 20,
@@ -486,6 +504,7 @@ pub const SRD_MONSTERS: &[MonsterDef] = &[
             ("Spider Climb", "Can climb difficult surfaces, including ceilings, without an ability check."),
             ("Web Walker", "Ignores movement restrictions caused by webs."),
         ],
+        spells: NO_SPELLS,
     },
     MonsterDef {
         name: "Boar", max_hp: 11, ac: 11, speed: 40,
@@ -509,6 +528,7 @@ pub const SRD_MONSTERS: &[MonsterDef] = &[
             ("Charge", "If the boar moves 20+ feet straight toward a target and hits with a Tusk on the same turn, the target takes an extra 3 (1d6) Slashing damage."),
             ("Relentless", "If the boar takes 7 damage or less that would reduce it to 0 HP, it is reduced to 1 HP instead. (Recharges after a Short or Long Rest.)"),
         ],
+        spells: NO_SPELLS,
     },
     MonsterDef {
         name: "Black Bear", max_hp: 19, ac: 11, speed: 30,
@@ -529,6 +549,7 @@ pub const SRD_MONSTERS: &[MonsterDef] = &[
         languages: &[],
         multiattack: 2,
         special_traits: NO_TRAITS,
+        spells: NO_SPELLS,
     },
     MonsterDef {
         name: "Goblin Boss", max_hp: 21, ac: 17, speed: 30,
@@ -557,6 +578,39 @@ pub const SRD_MONSTERS: &[MonsterDef] = &[
         special_traits: &[
             ("Nimble Escape", "Can take the Disengage or Hide action as a Bonus Action."),
             ("Redirect Attack", "Reaction: when an attack would hit the boss, swap places with a Small/Medium ally within 5 ft and the ally becomes the target instead."),
+        ],
+        spells: NO_SPELLS,
+    },
+    // ---- NPC spellcaster archetype (feat/npc-spellcasting, 2026-04-26) ----
+    MonsterDef {
+        name: "Dark Mage",
+        // CR 2; ~32 HP (5d8+5), low AC (robes), high INT.
+        max_hp: 32, ac: 12, speed: 30,
+        str_: 9, dex: 14, con: 12, int: 16, wis: 12, cha: 11,
+        proficiency_bonus: 2,
+        cr: 2.0,
+        attacks: &[MonsterAttackDef {
+            // Melee fallback: Dagger (used when player is adjacent and no spell slots remain)
+            name: "Dagger", hit_bonus: 4, damage_dice: 1, damage_die: 4, damage_bonus: 2,
+            damage_type: DamageType::Piercing, reach: 5, range_normal: 20, range_long: 60,
+        }],
+        creature_type: CreatureType::Humanoid,
+        size: Size::Medium,
+        alignment: Alignment::NeutralEvil,
+        damage_resistances: NO_DAMAGE_TYPES,
+        damage_immunities: NO_DAMAGE_TYPES,
+        condition_immunities: NO_CONDITIONS,
+        senses: &["Passive Perception 11"],
+        languages: &["Common", "Draconic"],
+        multiattack: 1,
+        special_traits: &[
+            ("Spellcasting", "The mage is a 3rd-level spellcaster. INT is the spellcasting ability (spell save DC 13, +5 to hit). Cantrips (at will): Fire Bolt. 1st level (4 slots): Magic Missile. 2nd level (2 slots): Scorching Ray."),
+        ],
+        // Fire Bolt (cantrip), Magic Missile (L1), Scorching Ray (L2)
+        spells: &[
+            ("Fire Bolt", 0),
+            ("Magic Missile", 1),
+            ("Scorching Ray", 2),
         ],
     },
 ];
@@ -610,18 +664,43 @@ pub fn monster_to_combat_stats(def: &MonsterDef) -> CombatStats {
         special_traits: def.special_traits.iter()
             .map(|(n, d)| (n.to_string(), d.to_string()))
             .collect(),
-        spells: Vec::new(),
+        spells: def.spells.iter()
+            .map(|(name, level)| NpcSpell { name: name.to_string(), level: *level })
+            .collect(),
+        spell_slots: {
+            // Build initial spell slots from the spells list: count non-cantrip spells
+            // to determine how many slots of each level to grant.
+            // Dark Mage archetype: 4x L1, 2x L2.
+            let mut slots = HashMap::new();
+            for (_name, level) in def.spells {
+                if *level > 0 {
+                    // Grant slots per level: L1 = 4, L2 = 2 (SRD 3rd-level spellcaster).
+                    let count = match level {
+                        1 => 4u32,
+                        2 => 2u32,
+                        3 => 2u32,
+                        _ => 1u32,
+                    };
+                    slots.entry(*level).or_insert(count);
+                }
+            }
+            slots
+        },
     }
 }
 
 /// HP target window for a given depth tier. Depth is a location index proxy
 /// (0 = entrance, increasing with distance from spawn). See
 /// `docs/specs/world-generation.md` for the authoritative definition.
+///
+/// Tier 2 extends to HP 35 (from 25) so that the Dark Mage archetype (HP 32,
+/// CR 2) can appear at depth 9+. The Ogre (HP 59) is above the window and
+/// continues to be selected by the defensive fallback when no match exists.
 fn hp_window_for_depth(depth: usize) -> (i32, i32) {
     match depth {
         0..=3 => (5, 12),
         4..=8 => (10, 18),
-        _ => (15, 25),
+        _ => (15, 35),
     }
 }
 
@@ -722,14 +801,14 @@ mod tests {
 
     #[test]
     fn test_select_monster_for_depth_tier_2_hp_range() {
-        // Depth 9+ should bias toward HP 15-25.
+        // Depth 9+ should bias toward HP 15-35 (extended from 15-25 to include Dark Mage at HP 32).
         for depth in [9usize, 12, 20, 100] {
             for seed in 0..32u64 {
                 let mut rng = StdRng::seed_from_u64(seed);
                 let def = select_monster_for_depth(&mut rng, depth);
                 assert!(
-                    def.max_hp >= 15 && def.max_hp <= 25,
-                    "depth {} seed {}: picked {} with HP {}, expected 15-25",
+                    def.max_hp >= 15 && def.max_hp <= 35,
+                    "depth {} seed {}: picked {} with HP {}, expected 15-35",
                     depth, seed, def.name, def.max_hp
                 );
             }
@@ -972,6 +1051,94 @@ mod tests {
         assert_eq!(find_monster("Bugbear").unwrap().cr, 1.0);
         assert_eq!(find_monster("Ghoul").unwrap().cr, 1.0);
         assert_eq!(find_monster("Ogre").unwrap().cr, 2.0);
+    }
+
+    #[test]
+    fn test_dark_mage_present_in_srd_monsters() {
+        let mage = find_monster("Dark Mage").expect("Dark Mage must be in SRD_MONSTERS");
+        assert_eq!(mage.max_hp, 32);
+        assert_eq!(mage.ac, 12);
+        assert_eq!(mage.cr, 2.0);
+        assert_eq!(mage.int, 16, "Dark Mage must have INT 16");
+        assert_eq!(mage.proficiency_bonus, 2);
+        assert_eq!(mage.creature_type, CreatureType::Humanoid);
+        assert_eq!(mage.alignment, Alignment::NeutralEvil);
+    }
+
+    #[test]
+    fn test_dark_mage_has_spells() {
+        let mage = find_monster("Dark Mage").unwrap();
+        assert!(!mage.spells.is_empty(), "Dark Mage must have spells");
+        assert!(mage.spells.iter().any(|(name, _)| *name == "Fire Bolt"), "Dark Mage must know Fire Bolt");
+        assert!(mage.spells.iter().any(|(name, _)| *name == "Magic Missile"), "Dark Mage must know Magic Missile");
+        assert!(mage.spells.iter().any(|(name, _)| *name == "Scorching Ray"), "Dark Mage must know Scorching Ray");
+    }
+
+    #[test]
+    fn test_dark_mage_spell_level_assignments() {
+        let mage = find_monster("Dark Mage").unwrap();
+        let fire_bolt = mage.spells.iter().find(|(name, _)| *name == "Fire Bolt").unwrap();
+        let magic_missile = mage.spells.iter().find(|(name, _)| *name == "Magic Missile").unwrap();
+        let scorching_ray = mage.spells.iter().find(|(name, _)| *name == "Scorching Ray").unwrap();
+        assert_eq!(fire_bolt.1, 0, "Fire Bolt is a cantrip (level 0)");
+        assert_eq!(magic_missile.1, 1, "Magic Missile is level 1");
+        assert_eq!(scorching_ray.1, 2, "Scorching Ray is level 2");
+    }
+
+    #[test]
+    fn test_monster_to_combat_stats_populates_spells() {
+        let mage = find_monster("Dark Mage").unwrap();
+        let stats = monster_to_combat_stats(mage);
+        assert_eq!(stats.spells.len(), 3, "Dark Mage CombatStats should have 3 spells");
+        assert!(stats.spells.iter().any(|s| s.name == "Fire Bolt"));
+        assert!(stats.spells.iter().any(|s| s.name == "Magic Missile"));
+        assert!(stats.spells.iter().any(|s| s.name == "Scorching Ray"));
+    }
+
+    #[test]
+    fn test_monster_to_combat_stats_populates_spell_slots() {
+        let mage = find_monster("Dark Mage").unwrap();
+        let stats = monster_to_combat_stats(mage);
+        // Level 1: 4 slots; Level 2: 2 slots (SRD 3rd-level spellcaster)
+        assert_eq!(stats.spell_slots.get(&1).copied().unwrap_or(0), 4,
+            "Dark Mage should have 4 L1 slots");
+        assert_eq!(stats.spell_slots.get(&2).copied().unwrap_or(0), 2,
+            "Dark Mage should have 2 L2 slots");
+        // No L3 slots (only 3rd-level caster with L1/L2 spells)
+        assert!(stats.spell_slots.get(&3).is_none() || *stats.spell_slots.get(&3).unwrap() == 0,
+            "Dark Mage should have no L3 slots");
+    }
+
+    #[test]
+    fn test_non_spellcaster_has_empty_spells() {
+        for monster_name in &["Rat", "Goblin", "Orc", "Ogre", "Skeleton", "Zombie"] {
+            let m = find_monster(monster_name).unwrap();
+            assert!(m.spells.is_empty(),
+                "{} should have no spells", monster_name);
+            let stats = monster_to_combat_stats(m);
+            assert!(stats.spells.is_empty(),
+                "{} CombatStats should have no spells", monster_name);
+            assert!(stats.spell_slots.is_empty(),
+                "{} CombatStats should have no spell slots", monster_name);
+        }
+    }
+
+    #[test]
+    fn test_dark_mage_spawns_at_deep_dungeon_tiers() {
+        // Dark Mage (HP 32) should appear in tier-2 selections (depth 9+)
+        // now that the window extends to HP 35.
+        use rand::SeedableRng;
+        use rand::rngs::StdRng;
+        let mut found_dark_mage = false;
+        for seed in 0..200u64 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let def = select_monster_for_depth(&mut rng, 15);
+            if def.name == "Dark Mage" {
+                found_dark_mage = true;
+                break;
+            }
+        }
+        assert!(found_dark_mage, "Dark Mage should appear in deep dungeon (depth 9+) selections");
     }
 
 }

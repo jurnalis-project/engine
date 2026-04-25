@@ -194,7 +194,7 @@ mod tests {
                 let (lo, hi) = match depth {
                     0..=3 => (5, 12),
                     4..=8 => (10, 18),
-                    _ => (15, 25),
+                    _ => (15, 35), // extended to 35 to include Dark Mage (HP 32, CR 2)
                 };
                 assert!(
                     stats.max_hp >= lo && stats.max_hp <= hi,

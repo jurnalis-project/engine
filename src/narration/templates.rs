@@ -183,6 +183,18 @@ pub const CAST_DISPEL_MAGIC_SUCCESS: &str =
 pub const CAST_DISPEL_MAGIC_NOTHING: &str =
     "There is nothing to dispel.";
 
+// -- NPC spellcasting templates --
+pub const NPC_CAST_FIRE_BOLT_HIT: &str = "{caster} hurls a bolt of fire at you ({roll}+{mod}={total} vs AC {ac}) -- hit for {damage} fire damage!";
+pub const NPC_CAST_FIRE_BOLT_CRIT: &str = "{caster} hurls a bolt of fire at you -- CRITICAL HIT! {damage} fire damage!";
+pub const NPC_CAST_FIRE_BOLT_MISS: &str = "{caster} hurls a bolt of fire at you ({roll}+{mod}={total} vs AC {ac}) -- the bolt flies wide.";
+pub const NPC_CAST_FIRE_BOLT_NAT1: &str = "A bolt of fire from {caster} fizzles -- natural 1!";
+pub const NPC_CAST_MAGIC_MISSILE: &str = "{caster} conjures three darts of force that streak toward you -- {d1}, {d2}, and {d3} force damage ({total} total)!";
+pub const NPC_CAST_SCORCHING_RAY_INTRO: &str = "{caster} unleashes three rays of fire at you!";
+pub const NPC_CAST_SCORCHING_RAY_HIT: &str = "  Ray {n}: {roll}+{mod}={total} vs AC {ac} -- hit for {damage} fire damage!";
+pub const NPC_CAST_SCORCHING_RAY_CRIT: &str = "  Ray {n}: CRITICAL HIT! {damage} fire damage!";
+pub const NPC_CAST_SCORCHING_RAY_MISS: &str = "  Ray {n}: {roll}+{mod}={total} vs AC {ac} -- miss.";
+pub const NPC_CAST_SCORCHING_RAY_TOTAL: &str = "  Total fire damage: {total}.";
+
 // -- Ritual-cast templates --
 pub const CAST_NOT_A_RITUAL: &str = "{spell} doesn't have the Ritual tag — cast it normally.";
 pub const CAST_RITUAL_INTRO: &str = "You begin a ritual casting of {spell}. (No spell slot consumed. Takes longer than normal in-world.)";

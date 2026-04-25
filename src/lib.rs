@@ -3389,8 +3389,8 @@ fn process_npc_turns(state: &mut GameState, rng: &mut StdRng) -> Vec<String> {
             // -------- Reaction trigger: Counterspell (pre-cast) --------
             // If this NPC has spells and is about to cast, check whether
             // the player can Counterspell. If eligible, pause for a prompt.
-            // If not eligible, resolve the NPC spell as Flavor immediately.
-            if let Some((spell_name, spell_level)) = npc_spell_to_cast(state, npc_id) {
+            // If not eligible, resolve the NPC spell with actual effects.
+            if let Some((spell_name, spell_level)) = npc_spell_to_cast(state, &combat, npc_id) {
                 let caster_name = state
                     .world
                     .npcs
@@ -3413,8 +3413,11 @@ fn process_npc_turns(state: &mut GameState, rng: &mut StdRng) -> Vec<String> {
                     return lines;
                 }
 
-                // Player is not eligible -- NPC spell resolves as Flavor.
-                lines.push(format!("{} casts {}!", caster_name, spell_name));
+                // Player is not eligible for Counterspell -- NPC spell resolves with damage.
+                // Consume slot first.
+                consume_npc_spell_slot(state, npc_id, spell_level);
+                let spell_lines = resolve_npc_spell(rng, state, &mut combat, npc_id, &spell_name, spell_level);
+                lines.extend(spell_lines);
                 combat.advance_turn(state);
                 state.active_combat = Some(combat);
                 continue;
@@ -3575,16 +3578,104 @@ fn should_trigger_opportunity_attack(
     Some((distance, predicted_distance))
 }
 
-/// Return the first spell an NPC wants to cast this turn, if any.
-/// MVP AI: pick the first spell from the NPC's `spells` list.
-fn npc_spell_to_cast(state: &GameState, npc_id: types::NpcId) -> Option<(String, u32)> {
+/// Return the spell an NPC wants to cast this turn, if any.
+///
+/// AI logic (distance/HP based):
+/// - If the NPC has no slots left (all leveled spells exhausted) and the only
+///   remaining spells are cantrips, pick the cantrip.
+/// - If HP is above 50% and a L2 slot is available, prefer Scorching Ray (L2)
+///   for burst damage.
+/// - Otherwise, if a L1 slot is available, prefer Magic Missile (L1).
+/// - Fall back to Fire Bolt (cantrip, always available).
+/// - If no ranged spell is suitable at current distance (<= 5 ft and distance
+///   check prefers melee), return None to allow normal melee attack.
+///
+/// Slot consumption happens in `process_npc_turns` after the Counterspell
+/// window is resolved, ensuring the slot is only consumed when the spell
+/// actually resolves.
+fn npc_spell_to_cast(state: &GameState, combat: &combat::CombatState, npc_id: types::NpcId) -> Option<(String, u32)> {
     let npc = state.world.npcs.get(&npc_id)?;
     let stats = npc.combat_stats.as_ref()?;
     if stats.current_hp <= 0 || stats.spells.is_empty() {
         return None;
     }
-    let spell = stats.spells.first()?;
-    Some((spell.name.clone(), spell.level))
+
+    // Helper: does NPC know this spell?
+    let has_spell = |name: &str| stats.spells.iter().any(|s| s.name == name);
+    // Helper: does NPC have remaining slots for this level?
+    // If spell_slots is empty (e.g. older saves or manually constructed test NPCs),
+    // treat all spells as available (unlimited). This ensures backward compatibility
+    // with saves created before slot tracking was added.
+    let has_slot = |level: u32| -> bool {
+        if level == 0 { return true; } // cantrips unlimited
+        if stats.spell_slots.is_empty() { return true; } // no tracking = unlimited
+        stats.spell_slots.get(&level).copied().unwrap_or(0) > 0
+    };
+
+    let distance = *combat.distances.get(&npc_id).unwrap_or(&30);
+    let hp_pct = stats.current_hp as f32 / stats.max_hp.max(1) as f32;
+
+    // At very close range with no slots, just melee — don't waste AI on
+    // a cantrip if the melee weapon would deal comparable damage in reach.
+    // But if the NPC has a spell to cast and range >= 10, prefer spell.
+    // Also prefer spells when HP is high (conserve melee for desperation).
+
+    // L2: Scorching Ray — prefer when HP > 50% and L2 slot available.
+    if hp_pct > 0.5 && has_spell("Scorching Ray") && has_slot(2) && distance >= 10 {
+        return Some(("Scorching Ray".to_string(), 2));
+    }
+
+    // L1: Magic Missile — auto-hit makes it reliable; use when L1 slot available.
+    if has_spell("Magic Missile") && has_slot(1) && distance >= 10 {
+        return Some(("Magic Missile".to_string(), 1));
+    }
+
+    // Cantrip: Fire Bolt — always available, ranged spell attack.
+    if has_spell("Fire Bolt") && distance >= 10 {
+        return Some(("Fire Bolt".to_string(), 0));
+    }
+
+    // Fall back to L2 / L1 even at close range if nothing else available.
+    if hp_pct > 0.5 && has_spell("Scorching Ray") && has_slot(2) {
+        return Some(("Scorching Ray".to_string(), 2));
+    }
+    if has_spell("Magic Missile") && has_slot(1) {
+        return Some(("Magic Missile".to_string(), 1));
+    }
+    if has_spell("Fire Bolt") {
+        return Some(("Fire Bolt".to_string(), 0));
+    }
+
+    // Final fallback: pick the first available spell from the list (generic AI
+    // for NPCs with spells outside the known archetype, such as test helpers).
+    for spell in &stats.spells {
+        if has_slot(spell.level) {
+            return Some((spell.name.clone(), spell.level));
+        }
+    }
+
+    None
+}
+
+/// Consume one NPC spell slot of the given level. Returns true if successful,
+/// false if no slot was available (cantrips always succeed).
+fn consume_npc_spell_slot(state: &mut GameState, npc_id: types::NpcId, level: u32) -> bool {
+    if level == 0 { return true; } // cantrips are unlimited
+    let npc = match state.world.npcs.get_mut(&npc_id) {
+        Some(n) => n,
+        None => return false,
+    };
+    let stats = match npc.combat_stats.as_mut() {
+        Some(s) => s,
+        None => return false,
+    };
+    let slot = match stats.spell_slots.get_mut(&level) {
+        Some(s) => s,
+        None => return false,
+    };
+    if *slot == 0 { return false; }
+    *slot -= 1;
+    true
 }
 
 /// Return true when the player is eligible for the Counterspell reaction
@@ -3791,13 +3882,17 @@ fn resolve_reaction_decision(state: &mut GameState, rng: &mut StdRng, accept: bo
                 // Consume reaction + 3rd-level spell slot.
                 if !spells::consume_spell_slot(3, &mut state.character.spell_slots_remaining) {
                     lines.push("You reach for Counterspell but have no 3rd-level slot left.".to_string());
-                    // Let the NPC spell resolve as Flavor.
-                    lines.push(format!("{} casts {}!", caster_name, spell_name));
+                    // NPC slot is consumed and spell resolves with actual effects.
+                    consume_npc_spell_slot(state, caster_npc_id, spell_level);
+                    let spell_lines = resolve_npc_spell(rng, state, &mut combat, caster_npc_id, &spell_name, spell_level);
+                    lines.extend(spell_lines);
                     combat.advance_turn(state);
                     state.active_combat = Some(combat);
                     return lines;
                 }
                 combat.reaction_used = true;
+                // Consume NPC slot regardless (the spell was cast, just countered).
+                consume_npc_spell_slot(state, caster_npc_id, spell_level);
 
                 if spell_level <= 3 {
                     // Auto-cancel: spells of level 3 or lower are automatically countered.
@@ -3836,15 +3931,18 @@ fn resolve_reaction_decision(state: &mut GameState, rng: &mut StdRng, accept: bo
                             dc,
                             caster_name,
                         ));
-                        // NPC spell resolves as Flavor.
-                        lines.push(format!("{} casts {}!", caster_name, spell_name));
+                        // Counterspell failed: NPC spell resolves with actual effects.
+                        let spell_lines = resolve_npc_spell(rng, state, &mut combat, caster_npc_id, &spell_name, spell_level);
+                        lines.extend(spell_lines);
                         combat.advance_turn(state);
                     }
                 }
             } else {
-                // Player declines Counterspell. NPC spell resolves as Flavor.
+                // Player declines Counterspell. NPC slot consumed, spell resolves with damage.
                 lines.push("You decline to use Counterspell.".to_string());
-                lines.push(format!("{} casts {}!", caster_name, spell_name));
+                consume_npc_spell_slot(state, caster_npc_id, spell_level);
+                let spell_lines = resolve_npc_spell(rng, state, &mut combat, caster_npc_id, &spell_name, spell_level);
+                lines.extend(spell_lines);
                 combat.advance_turn(state);
             }
         }
@@ -3968,6 +4066,150 @@ fn resolve_single_npc_attack(
             player_ac
         ));
     }
+    lines
+}
+
+/// Resolve an NPC spell cast against the player with actual mechanical effects
+/// (hit rolls + damage). Called after Counterspell check resolves (either the
+/// player declines, the check fails, or Counterspell is not available).
+///
+/// Supported spells: Fire Bolt (cantrip), Magic Missile (L1), Scorching Ray (L2).
+/// Unknown spells fall back to flavor-only narration.
+fn resolve_npc_spell(
+    rng: &mut StdRng,
+    state: &mut GameState,
+    _combat: &mut combat::CombatState,
+    npc_id: types::NpcId,
+    spell_name: &str,
+    _spell_level: u32,
+) -> Vec<String> {
+    use narration::templates as T;
+
+    let mut lines = Vec::new();
+
+    // Extract NPC stats needed for spell resolution.
+    let (caster_name, int_score, proficiency_bonus) = {
+        let npc = match state.world.npcs.get(&npc_id) {
+            Some(n) => n,
+            None => return lines,
+        };
+        let stats = match npc.combat_stats.as_ref() {
+            Some(s) => s,
+            None => return lines,
+        };
+        let int = *stats.ability_scores.get(&types::Ability::Intelligence).unwrap_or(&10);
+        (npc.name.clone(), int, stats.proficiency_bonus)
+    };
+
+    let player_ac = equipment::calculate_ac(&state.character, &state.world.items);
+
+    match spell_name {
+        "Fire Bolt" => {
+            let outcome = spells::resolve_fire_bolt(rng, int_score, proficiency_bonus, player_ac);
+            if let spells::CastOutcome::FireBolt { attack, damage } = outcome {
+                if attack.hit {
+                    if attack.natural_20 {
+                        lines.push(
+                            T::NPC_CAST_FIRE_BOLT_CRIT
+                                .replace("{caster}", &caster_name)
+                                .replace("{damage}", &damage.to_string()),
+                        );
+                    } else {
+                        lines.push(
+                            T::NPC_CAST_FIRE_BOLT_HIT
+                                .replace("{caster}", &caster_name)
+                                .replace("{roll}", &attack.roll.to_string())
+                                .replace("{mod}", &attack.modifier.to_string())
+                                .replace("{total}", &attack.total.to_string())
+                                .replace("{ac}", &player_ac.to_string())
+                                .replace("{damage}", &damage.to_string()),
+                        );
+                    }
+                    state.character.current_hp -= damage;
+                    check_player_concentration_on_damage(rng, state, damage, &mut lines);
+                } else if attack.natural_1 {
+                    lines.push(
+                        T::NPC_CAST_FIRE_BOLT_NAT1
+                            .replace("{caster}", &caster_name),
+                    );
+                } else {
+                    lines.push(
+                        T::NPC_CAST_FIRE_BOLT_MISS
+                            .replace("{caster}", &caster_name)
+                            .replace("{roll}", &attack.roll.to_string())
+                            .replace("{mod}", &attack.modifier.to_string())
+                            .replace("{total}", &attack.total.to_string())
+                            .replace("{ac}", &player_ac.to_string()),
+                    );
+                }
+            }
+        }
+        "Magic Missile" => {
+            let outcome = spells::resolve_magic_missile(rng);
+            if let spells::CastOutcome::MagicMissile { darts, total_damage } = outcome {
+                let d1 = darts.first().copied().unwrap_or(0);
+                let d2 = darts.get(1).copied().unwrap_or(0);
+                let d3 = darts.get(2).copied().unwrap_or(0);
+                lines.push(
+                    T::NPC_CAST_MAGIC_MISSILE
+                        .replace("{caster}", &caster_name)
+                        .replace("{d1}", &d1.to_string())
+                        .replace("{d2}", &d2.to_string())
+                        .replace("{d3}", &d3.to_string())
+                        .replace("{total}", &total_damage.to_string()),
+                );
+                state.character.current_hp -= total_damage;
+                check_player_concentration_on_damage(rng, state, total_damage, &mut lines);
+            }
+        }
+        "Scorching Ray" => {
+            let outcome = spells::resolve_scorching_ray(rng, int_score, proficiency_bonus, player_ac);
+            if let spells::CastOutcome::ScorchingRay { rays, total_damage } = outcome {
+                lines.push(T::NPC_CAST_SCORCHING_RAY_INTRO.replace("{caster}", &caster_name));
+                for (i, ray) in rays.iter().enumerate() {
+                    let n = i + 1;
+                    if ray.attack.hit {
+                        if ray.attack.natural_20 {
+                            lines.push(
+                                T::NPC_CAST_SCORCHING_RAY_CRIT
+                                    .replace("{n}", &n.to_string())
+                                    .replace("{damage}", &ray.damage.to_string()),
+                            );
+                        } else {
+                            lines.push(
+                                T::NPC_CAST_SCORCHING_RAY_HIT
+                                    .replace("{n}", &n.to_string())
+                                    .replace("{roll}", &ray.attack.roll.to_string())
+                                    .replace("{mod}", &ray.attack.modifier.to_string())
+                                    .replace("{total}", &ray.attack.total.to_string())
+                                    .replace("{ac}", &player_ac.to_string())
+                                    .replace("{damage}", &ray.damage.to_string()),
+                            );
+                        }
+                    } else {
+                        lines.push(
+                            T::NPC_CAST_SCORCHING_RAY_MISS
+                                .replace("{n}", &n.to_string())
+                                .replace("{roll}", &ray.attack.roll.to_string())
+                                .replace("{mod}", &ray.attack.modifier.to_string())
+                                .replace("{total}", &ray.attack.total.to_string())
+                                .replace("{ac}", &player_ac.to_string()),
+                        );
+                    }
+                }
+                if total_damage > 0 {
+                    lines.push(T::NPC_CAST_SCORCHING_RAY_TOTAL.replace("{total}", &total_damage.to_string()));
+                    state.character.current_hp -= total_damage;
+                    check_player_concentration_on_damage(rng, state, total_damage, &mut lines);
+                }
+            }
+        }
+        _ => {
+            // Unsupported spell: flavor-only narration.
+            lines.push(format!("{} casts {}!", caster_name, spell_name));
+        }
+    }
+
     lines
 }
 

@@ -236,6 +236,12 @@ pub struct CombatStats {
     /// Counterspell reaction eligibility. Defaults to empty for older saves.
     #[serde(default)]
     pub spells: Vec<NpcSpell>,
+    /// Remaining spell slots per spell level (level → remaining count). Only
+    /// populated for spellcasting NPCs; empty for all others. Level 0
+    /// (cantrips) is never inserted — cantrips have unlimited uses.
+    /// `#[serde(default)]` for backwards compatibility with older saves.
+    #[serde(default)]
+    pub spell_slots: HashMap<u32, u32>,
 }
 
 impl Default for CombatStats {
@@ -260,6 +266,7 @@ impl Default for CombatStats {
             multiattack: default_multiattack(),
             special_traits: Vec::new(),
             spells: Vec::new(),
+            spell_slots: HashMap::new(),
         }
     }
 }
@@ -1130,5 +1137,35 @@ mod tests {
         assert_eq!(loaded.spells[0].name, "Fireball");
         assert_eq!(loaded.spells[0].level, 3);
         assert_eq!(loaded.spells[1].name, "Hold Person");
+    }
+
+    #[test]
+    fn test_combat_stats_spell_slots_defaults_empty() {
+        // Older saves without `spell_slots` should deserialize to empty HashMap.
+        let json = r#"{
+            "max_hp": 32,
+            "current_hp": 32,
+            "ac": 12,
+            "speed": 30,
+            "ability_scores": {},
+            "attacks": [],
+            "proficiency_bonus": 2,
+            "spells": [{"name": "Fire Bolt", "level": 0}]
+        }"#;
+        let stats: CombatStats = serde_json::from_str(json).unwrap();
+        assert!(stats.spell_slots.is_empty(),
+            "Missing spell_slots field should default to empty HashMap");
+    }
+
+    #[test]
+    fn test_combat_stats_spell_slots_roundtrips() {
+        let mut stats = CombatStats::default();
+        stats.spell_slots.insert(1, 4);
+        stats.spell_slots.insert(2, 2);
+        let json = serde_json::to_string(&stats).unwrap();
+        let loaded: CombatStats = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded.spell_slots.get(&1).copied(), Some(4));
+        assert_eq!(loaded.spell_slots.get(&2).copied(), Some(2));
+        assert_eq!(loaded.spell_slots.get(&3), None);
     }
 }
