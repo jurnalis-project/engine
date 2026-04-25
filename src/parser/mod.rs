@@ -93,6 +93,13 @@ pub enum Command {
     /// Take cover: grants the player Half cover until their next turn (or until
     /// they leave cover). Usable only in combat. See `docs/specs/cover-rules.md`.
     TakeCover,
+    /// Take full cover: grants Three-Quarters cover (+5 AC, +5 DEX saves).
+    /// Requires heavy cover features in the room. Falls back to Half if
+    /// unavailable. Costs an action. See `docs/specs/cover-rules.md`.
+    TakeFullCover,
+    /// Leave cover: resets player cover to None. Free action (no action cost).
+    /// See `docs/specs/cover-rules.md`.
+    LeaveCover,
     /// Use a tool on a target. Parsed from "use <tool> on <target>".
     /// Orchestrator checks inventory, proficiency, and makes an ability check.
     UseTool { tool: String, target: String },
@@ -144,6 +151,7 @@ pub fn parse(input: &str) -> Command {
         let three = format!("{} {} {}", words[0], words[1], words[2]);
         let rest_after_three: String = if words.len() > 3 { words[3..].join(" ") } else { String::new() };
         match three.as_str() {
+            "take full cover" => return Command::TakeFullCover,
             "off hand attack" => {
                 return if rest_after_three.is_empty() {
                     Command::Unknown("Off-hand attack what?".to_string())
@@ -166,6 +174,7 @@ pub fn parse(input: &str) -> Command {
 
         match two.as_str() {
             "take cover" => return Command::TakeCover,
+            "leave cover" => return Command::LeaveCover,
             "look at" | "check out" => {
                 return if rest.is_empty() { Command::Look(None) } else { Command::Look(Some(rest)) };
             }
@@ -1618,5 +1627,27 @@ mod tests {
     fn test_throw_case_insensitive() {
         assert_eq!(parse("THROW GOBLIN"), Command::Throw("goblin".to_string()));
         assert_eq!(parse("Hurl Orc"), Command::Throw("orc".to_string()));
+    }
+
+    // ---- Cover commands ----
+
+    #[test]
+    fn test_leave_cover_command() {
+        assert_eq!(parse("leave cover"), Command::LeaveCover);
+        assert_eq!(parse("Leave Cover"), Command::LeaveCover);
+        assert_eq!(parse("LEAVE COVER"), Command::LeaveCover);
+    }
+
+    #[test]
+    fn test_take_full_cover_command() {
+        assert_eq!(parse("take full cover"), Command::TakeFullCover);
+        assert_eq!(parse("Take Full Cover"), Command::TakeFullCover);
+        assert_eq!(parse("TAKE FULL COVER"), Command::TakeFullCover);
+    }
+
+    #[test]
+    fn test_take_cover_still_works() {
+        assert_eq!(parse("take cover"), Command::TakeCover);
+        assert_eq!(parse("Take Cover"), Command::TakeCover);
     }
 }

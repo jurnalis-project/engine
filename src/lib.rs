@@ -3022,6 +3022,8 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
         | Command::Disengage
         | Command::Dash
         | Command::TakeCover
+        | Command::TakeFullCover
+        | Command::LeaveCover
         | Command::EndTurn
         | Command::OffHandAttack(_)
         | Command::BonusDash
@@ -4657,6 +4659,56 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
             lines.push(
                 "You take cover behind the nearest obstacle, gaining +2 AC and +2 to DEX saving throws (Half Cover).".to_string()
             );
+        }
+        Command::TakeFullCover => {
+            if combat.action_used {
+                state.active_combat = Some(combat);
+                return vec!["You've already used your action this turn.".to_string()];
+            }
+            // Check if room has heavy cover features (portcullis, pillar,
+            // thick tree, arrow slit, etc.). If yes, grant ThreeQuarters;
+            // otherwise fall back to Half.
+            let has_heavy_cover = state
+                .world
+                .locations
+                .get(&state.current_location)
+                .map(|loc| {
+                    loc.room_features.iter().any(|f| {
+                        let name = f.name.to_lowercase();
+                        name.contains("pillar")
+                            || name.contains("portcullis")
+                            || name.contains("column")
+                            || name.contains("statue")
+                            || name.contains("altar")
+                            || name.contains("well")
+                            || name.contains("forge")
+                            || name.contains("bookshelf")
+                    })
+                })
+                .unwrap_or(false);
+
+            if has_heavy_cover {
+                combat.player_cover = crate::types::Cover::ThreeQuarters;
+                combat.action_used = true;
+                lines.push(
+                    "You hunker down behind a substantial obstacle, gaining +5 AC and +5 to DEX saving throws (Three-Quarters Cover).".to_string()
+                );
+            } else {
+                combat.player_cover = crate::types::Cover::Half;
+                combat.action_used = true;
+                lines.push(
+                    "There's nothing large enough for full cover here. You take cover behind the nearest obstacle, gaining +2 AC and +2 to DEX saving throws (Half Cover).".to_string()
+                );
+            }
+        }
+        Command::LeaveCover => {
+            // Free action per SRD -- no action cost.
+            if combat.player_cover == crate::types::Cover::None {
+                state.active_combat = Some(combat);
+                return vec!["You're not behind cover.".to_string()];
+            }
+            combat.player_cover = crate::types::Cover::None;
+            lines.push("You leave your cover, exposing yourself to attacks.".to_string());
         }
         Command::BonusDash => {
             // SRD 5.1: bonus-action Dash is Rogue Cunning Action only.
