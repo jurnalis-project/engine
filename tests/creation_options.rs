@@ -95,14 +95,16 @@ fn test_creation_options_background_returns_all() {
 // ---------- OriginFeat -------------------------------------------------------
 
 #[test]
-fn test_creation_options_origin_feat_returns_nine() {
+fn test_creation_options_origin_feat_returns_ten() {
     let state = fresh_state();
     let options = creation_options(&state, CreationField::OriginFeat);
-    assert_eq!(options.len(), 9);
+    assert_eq!(options.len(), 10);
     assert_eq!(options[0].id, "1");
     assert_eq!(options[0].label, "Alert");
     assert_eq!(options[8].id, "9");
     assert_eq!(options[8].label, "Tavern Brawler");
+    assert_eq!(options[9].id, "10");
+    assert_eq!(options[9].label, "Tough");
 }
 
 // ---------- BackgroundAbilityPattern -----------------------------------------

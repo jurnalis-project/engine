@@ -80,7 +80,7 @@ use parser::Command;
 use state::SAVE_VERSION;
 use types::{Ability, Alignment, Skill};
 
-/// The 9 SRD origin feats, in the order shown on the ChooseOriginFeat menu.
+/// The 10 SRD origin feats, in the order shown on the ChooseOriginFeat menu.
 /// Mirrors the catalog order in `character::feat::FEATS` for the origin tier.
 const ORIGIN_FEAT_NAMES: &[&str] = &[
     "Alert",
@@ -92,6 +92,7 @@ const ORIGIN_FEAT_NAMES: &[&str] = &[
     "Savage Attacker",
     "Skilled",
     "Tavern Brawler",
+    "Tough",
 ];
 
 /// The 10 SRD alignment options, in the canonical order shown on the
@@ -15259,6 +15260,32 @@ mod tests {
         );
     }
 
+    // ---- Farmer background default origin feat regression (#230) ----
+
+    /// Bug #230: Farmer background's `origin_feat()` returns "Tough", but
+    /// "Tough" was missing from `ORIGIN_FEAT_NAMES` and categorized as
+    /// `FeatCategory::General` instead of `FeatCategory::Origin`. The lookup
+    /// fell through to `.unwrap_or("Alert")`, silently assigning the wrong feat.
+    #[test]
+    fn farmer_default_origin_feat_is_tough() {
+        let output = new_game(42, false);
+        // ChooseRace: Human (1)
+        let output = process_input(&output.state_json, "1");
+        // ChooseClass: Fighter
+        let output = process_input(&output.state_json, "Fighter");
+        // ChooseBackground: Farmer (6th in alphabetical list)
+        let output = process_input(&output.state_json, "6");
+        // ChooseOriginFeat: accept default (empty input)
+        let output = process_input(&output.state_json, "");
+
+        let state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(
+            state.character.origin_feat,
+            Some("Tough".to_string()),
+            "Farmer default origin feat must be Tough, not Alert (bug #230)"
+        );
+    }
+
     // ---- handle_choose_asi: spec acceptance criteria ----
 
     fn asi_state() -> GameState {
@@ -15341,22 +15368,19 @@ mod tests {
     }
 
     #[test]
-    fn choose_asi_tough_adds_to_general_feats_and_applies_hp() {
+    fn choose_asi_tough_rejected_as_origin_feat() {
+        // Tough is an Origin feat (not General), so it cannot be taken via ASI.
         let mut state = asi_state();
-        let hp_before = state.character.max_hp;
-        let level = state.character.level;
-        handle_choose_asi(&mut state, "Tough");
+        let result = handle_choose_asi(&mut state, "Tough");
         assert!(
-            state.character.general_feats.contains(&"Tough".to_string()),
-            "Tough should appear in general_feats"
+            result.iter().any(|l| l.contains("origin feat")),
+            "Tough (origin feat) should be rejected in ASI phase. Got: {:?}",
+            result
         );
         assert_eq!(
-            state.character.max_hp,
-            hp_before + 2 * level as i32,
-            "Tough should add 2 * level HP"
+            state.character.asi_credits, 1,
+            "ASI credits should not be consumed when feat is rejected"
         );
-        assert_eq!(state.character.asi_credits, 0);
-        assert!(matches!(state.game_phase, GamePhase::Exploration));
     }
 
     #[test]

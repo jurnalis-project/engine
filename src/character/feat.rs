@@ -163,7 +163,7 @@ pub const FEATS: &[FeatDef] = &[
     FeatDef {
         name: "Tough",
         description: "Your hit point maximum increases by 2 per character level.",
-        category: FeatCategory::General,
+        category: FeatCategory::Origin,
         effects: &[FeatEffect::HpBonusPerLevel(2)],
     },
     FeatDef {
@@ -218,7 +218,7 @@ mod tests {
 
     #[test]
     fn test_feat_catalog_has_expected_count() {
-        // 9 origin + 7 general + 6 fighting-style = 22
+        // 10 origin + 6 general + 6 fighting-style = 22
         assert_eq!(FEATS.len(), 22);
     }
 
@@ -261,7 +261,7 @@ mod tests {
     #[test]
     fn test_origin_feats_have_origin_category() {
         for name in ["Alert", "Crafter", "Healer", "Lucky", "Magic Initiate",
-                     "Musician", "Savage Attacker", "Skilled", "Tavern Brawler"] {
+                     "Musician", "Savage Attacker", "Skilled", "Tavern Brawler", "Tough"] {
             let f = FeatDef::lookup(name).unwrap_or_else(|| panic!("{} not found", name));
             assert_eq!(f.category, FeatCategory::Origin, "{} should be Origin", name);
         }
@@ -270,7 +270,7 @@ mod tests {
     #[test]
     fn test_general_feats_have_general_category() {
         for name in ["Ability Score Improvement", "Grappler", "Great Weapon Master",
-                     "Sharpshooter", "Sentinel", "Tough", "War Caster"] {
+                     "Sharpshooter", "Sentinel", "War Caster"] {
             let f = FeatDef::lookup(name).unwrap_or_else(|| panic!("{} not found", name));
             assert_eq!(f.category, FeatCategory::General, "{} should be General", name);
         }
