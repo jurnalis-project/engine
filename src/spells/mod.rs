@@ -1070,7 +1070,12 @@ pub fn resolve_eldritch_blast(
 
 /// Format the player's known spells and remaining spell slots for display.
 /// Returns lines suitable for the `spells` command output.
+///
+/// The `class_name` parameter controls slot labeling: Warlocks use "Pact
+/// Slot(s)" instead of the generic "Level N" labels, matching SRD 5.1 Pact
+/// Magic terminology.
 pub fn format_known_spells(
+    class_name: &str,
     known_spells: &[String],
     spell_slots_remaining: &[i32],
     spell_slots_max: &[i32],
@@ -1078,6 +1083,8 @@ pub fn format_known_spells(
     if known_spells.is_empty() {
         return vec!["You don't know any spells.".to_string()];
     }
+
+    let is_warlock = class_name.eq_ignore_ascii_case("warlock");
 
     let mut lines = Vec::new();
     lines.push("=== Known Spells ===".to_string());
@@ -1117,10 +1124,21 @@ pub fn format_known_spells(
     // Spell slots
     if !spell_slots_max.is_empty() {
         lines.push(String::new());
-        lines.push("Spell Slots:".to_string());
-        for (i, (remaining, max)) in spell_slots_remaining.iter().zip(spell_slots_max.iter()).enumerate() {
-            if *max > 0 {
-                lines.push(format!("  Level {}: {}/{}", i + 1, remaining, max));
+        if is_warlock {
+            // Warlock Pact Magic: all slots are the same level, label them
+            // as "Pact Slot(s)" per SRD 5.1.
+            let total_slots: i32 = spell_slots_max.iter().sum();
+            let total_remaining: i32 = spell_slots_remaining.iter().sum();
+            if total_slots > 0 {
+                let slot_word = if total_slots == 1 { "Pact Slot" } else { "Pact Slots" };
+                lines.push(format!("{}: {}/{}", slot_word, total_remaining, total_slots));
+            }
+        } else {
+            lines.push("Spell Slots:".to_string());
+            for (i, (remaining, max)) in spell_slots_remaining.iter().zip(spell_slots_max.iter()).enumerate() {
+                if *max > 0 {
+                    lines.push(format!("  Level {}: {}/{}", i + 1, remaining, max));
+                }
             }
         }
     }
@@ -1393,7 +1411,7 @@ mod tests {
         let slots_remaining = vec![2];
         let slots_max = vec![2];
 
-        let lines = format_known_spells(&known, &slots_remaining, &slots_max);
+        let lines = format_known_spells("wizard", &known, &slots_remaining, &slots_max);
         let text = lines.join("\n");
 
         assert!(text.contains("Known Spells"));
@@ -1408,7 +1426,7 @@ mod tests {
 
     #[test]
     fn test_format_known_spells_empty() {
-        let lines = format_known_spells(&[], &[], &[]);
+        let lines = format_known_spells("wizard", &[], &[], &[]);
         assert_eq!(lines, vec!["You don't know any spells."]);
     }
 
@@ -1421,7 +1439,7 @@ mod tests {
         let slots_remaining = vec![1];
         let slots_max = vec![2];
 
-        let lines = format_known_spells(&known, &slots_remaining, &slots_max);
+        let lines = format_known_spells("wizard", &known, &slots_remaining, &slots_max);
         let text = lines.join("\n");
 
         assert!(text.contains("Level 1: 1/2"));
@@ -1616,12 +1634,55 @@ mod tests {
             "Hunter's Mark".to_string(),
             "Detect Magic".to_string(),
         ];
-        let lines = format_known_spells(&known, &[2, 0], &[2, 0]);
+        let lines = format_known_spells("ranger", &known, &[2, 0], &[2, 0]);
         let text = lines.join("\n");
         // Hunter's Mark is concentration but not ritual -> "[C]"
         assert!(text.contains("Hunter's Mark [C]"), "Expected 'Hunter's Mark [C]' in:\n{}", text);
         // Detect Magic is both -> "[C,R]"
         assert!(text.contains("Detect Magic [C,R]"), "Expected 'Detect Magic [C,R]' in:\n{}", text);
+    }
+
+    // ---- Warlock Pact Magic label ----
+
+    #[test]
+    fn test_format_known_spells_warlock_pact_slot_label() {
+        let known = vec![
+            "Eldritch Blast".to_string(),
+            "Charm Person".to_string(),
+        ];
+        let slots_remaining = vec![1];
+        let slots_max = vec![1];
+        let lines = format_known_spells("warlock", &known, &slots_remaining, &slots_max);
+        let text = lines.join("\n");
+        // Warlock slots should be labeled "Pact Slot(s)" not "Level N"
+        assert!(
+            text.contains("Pact Slot"),
+            "Warlock slot section should use 'Pact Slot' label, got:\n{}",
+            text
+        );
+        assert!(
+            !text.contains("Level 1:"),
+            "Warlock slot section should NOT use generic 'Level N' label, got:\n{}",
+            text
+        );
+    }
+
+    #[test]
+    fn test_format_known_spells_non_warlock_keeps_level_label() {
+        let known = vec![
+            "Fire Bolt".to_string(),
+            "Magic Missile".to_string(),
+        ];
+        let slots_remaining = vec![2];
+        let slots_max = vec![2];
+        let lines = format_known_spells("wizard", &known, &slots_remaining, &slots_max);
+        let text = lines.join("\n");
+        // Non-warlock should still use "Level 1:" label
+        assert!(
+            text.contains("Level 1: 2/2"),
+            "Non-warlock should use 'Level N' label, got:\n{}",
+            text
+        );
     }
 
     // ---- Concentration ----

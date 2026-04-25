@@ -2684,6 +2684,7 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
         Command::Objective => render_objective(state),
         Command::Map => render_map(state),
         Command::Spells => spells::format_known_spells(
+            &state.character.class.to_string(),
             &state.character.known_spells,
             &state.character.spell_slots_remaining,
             &state.character.spell_slots_max,
@@ -3856,7 +3857,7 @@ fn append_player_turn_prompt(
                 .to_string(),
         );
         // Build a concise spell slot status line
-        let slot_summary = format_spell_slot_summary(&state.character.spell_slots_remaining, &state.character.spell_slots_max);
+        let slot_summary = format_spell_slot_summary(&state.character.class.to_string(), &state.character.spell_slots_remaining, &state.character.spell_slots_max);
         lines.push(format!(
             "Spells: {} | Use 'spells' for full list.",
             slot_summary
@@ -3871,9 +3872,29 @@ fn append_player_turn_prompt(
 }
 
 /// Format a concise spell slot summary for the combat prompt.
-/// Example: "2/2 L1 slots" or "1/2 L1, 0/1 L2" or "cantrips only"
-fn format_spell_slot_summary(remaining: &[i32], max: &[i32]) -> String {
+///
+/// For Warlocks, all pact magic slots are at a single level and are labeled
+/// "Pact Slot(s)" instead of the generic "L1, L2" format. For all other
+/// casters, the format is "1/2 L1, 0/1 L2".
+///
+/// Example outputs:
+/// - Wizard: "2/2 L1" or "1/2 L1, 0/1 L2"
+/// - Warlock: "1/1 Pact Slot" or "2/2 Pact Slots"
+/// - Cantrip-only: "cantrips only"
+fn format_spell_slot_summary(class_name: &str, remaining: &[i32], max: &[i32]) -> String {
     if max.is_empty() || max.iter().all(|&m| m == 0) {
+        return "cantrips only".to_string();
+    }
+
+    let is_warlock = class_name.eq_ignore_ascii_case("warlock");
+
+    if is_warlock {
+        let total_slots: i32 = max.iter().sum();
+        let total_remaining: i32 = remaining.iter().sum();
+        if total_slots > 0 {
+            let slot_word = if total_slots == 1 { "Pact Slot" } else { "Pact Slots" };
+            return format!("{}/{} {}", total_remaining, total_slots, slot_word);
+        }
         return "cantrips only".to_string();
     }
 
@@ -4042,6 +4063,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
         }
         Command::Spells => {
             return spells::format_known_spells(
+                &state.character.class.to_string(),
                 &state.character.known_spells,
                 &state.character.spell_slots_remaining,
                 &state.character.spell_slots_max,
@@ -12578,6 +12600,35 @@ mod tests {
         assert!(
             joined.contains("spells") || joined.contains("slots") || joined.contains("l1"),
             "Wizard combat prompt should show spell slot status, got: {:?}",
+            output.text
+        );
+    }
+
+    #[test]
+    fn test_warlock_combat_prompt_shows_pact_slot_label() {
+        // Issue #234: Warlock combat prompt should label slots as "Pact Slot(s)"
+        let mut state = create_test_combat_state();
+        // Replace character with warlock
+        state.character.class = Class::Warlock;
+        state.character.known_spells = vec![
+            "Eldritch Blast".to_string(),
+            "Charm Person".to_string(),
+        ];
+        state.character.spell_slots_max = vec![1];
+        state.character.spell_slots_remaining = vec![1];
+
+        force_player_turn(&mut state);
+
+        if let Some(ref mut combat) = state.active_combat {
+            combat.distances.insert(100, 30);
+        }
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "approach test goblin");
+
+        let joined = output.text.join("\n");
+        assert!(
+            joined.contains("Pact Slot"),
+            "Warlock combat prompt should show 'Pact Slot' label, got: {:?}",
             output.text
         );
     }
