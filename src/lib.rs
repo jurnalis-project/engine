@@ -3306,29 +3306,22 @@ fn should_trigger_shield_reaction(
     has_ranged_in_range
 }
 
-/// Return Some((old_distance, new_distance)) if the given NPC is about to move out
-/// of the player's melee reach without disengaging AND the player is eligible for
-/// an opportunity-attack reaction.
-/// Decide whether an NPC's upcoming movement should trigger a player
-/// opportunity attack prompt.
+/// Return `Some((old_distance, new_distance))` if the given NPC is about to
+/// move out of the player's melee reach without disengaging AND the player is
+/// eligible for an opportunity-attack reaction.
 ///
-/// The gate is the player's equipped weapon reach — either 5 ft by default
+/// The gate is the player's equipped weapon reach -- either 5 ft by default
 /// or 10 ft when the main-hand weapon has the REACH property (see
 /// [`combat::player_melee_reach`]). An OA is offered only when:
 ///  1. The player has a reaction available and can take reactions.
 ///  2. The NPC is alive.
 ///  3. The NPC is currently within the player's melee reach (`old_distance`).
-///  4. The NPC's next action would move it beyond the player's reach
+///  4. The NPC's retreat AI predicts it will move beyond the player's reach
 ///     (`new_distance > player_reach`).
+///  5. The NPC is NOT disengaging (either pre-marked or predicted to
+///     Disengage because its speed is insufficient to escape reach).
 ///
 /// Returns `Some((old_distance, new_distance))` when the OA should fire.
-///
-/// **Current NPC AI note:** the stock `resolve_npc_turn` always moves
-/// *toward* the player — it never triggers an OA. This gate is still wired
-/// so that a future retreat/kite AI (issue #43) will fire the prompt
-/// correctly without further plumbing. The reach check guarantees the
-/// prompt never fires for a target that was already beyond the player's
-/// threatened area.
 fn should_trigger_opportunity_attack(
     combat: &combat::CombatState,
     state: &GameState,
@@ -14235,15 +14228,11 @@ mod tests {
         );
     }
 
-    // ---- Reach OA gating (scope item #3) ----
+    // ---- Reach OA gating ----
     //
-    // The `should_trigger_opportunity_attack` predicate short-circuits to
-    // `None` under the stock AI (NPCs always move toward the player), so a
-    // behavioural end-to-end test can't observe an OA firing today. What we
-    // CAN verify is the reach gate: the predicate must reject NPCs that sit
-    // beyond the player's weapon reach, and accept those within it. These
-    // tests pin that gate so the machinery is ready for a future retreat
-    // AI (issue #43) without silently regressing.
+    // The `should_trigger_opportunity_attack` predicate rejects NPCs that
+    // sit beyond the player's weapon reach. These tests pin the reach
+    // gate independently of the retreat-AI prediction.
 
     #[test]
     fn test_oa_gate_rejects_npc_beyond_unarmed_reach() {
