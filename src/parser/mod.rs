@@ -417,7 +417,7 @@ pub fn parse(input: &str) -> Command {
         }
         "retreat" => Command::Retreat,
         "dodge" => Command::Dodge,
-        "disengage" | "withdraw" => Command::Disengage,
+        "disengage" | "withdraw" | "flee" => Command::Disengage,
         "dash" | "run" | "sprint" => Command::Dash,
         "yes" | "y" => Command::ReactionYes,
         "no" => Command::ReactionNo,
@@ -1017,6 +1017,7 @@ mod tests {
     fn test_disengage_command() {
         assert_eq!(parse("disengage"), Command::Disengage);
         assert_eq!(parse("withdraw"), Command::Disengage);
+        assert_eq!(parse("flee"), Command::Disengage);
     }
 
     #[test]
