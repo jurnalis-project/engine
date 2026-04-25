@@ -115,6 +115,8 @@ pub enum Command {
     /// Force open a room feature. Parsed from "force <target>" or "break down <target>".
     Force(String),
     // --- Trade commands ---
+    /// Browse a merchant's available wares and prices. No argument.
+    Browse,
     /// Buy an item from a merchant NPC. Argument is the item name.
     Buy(String),
     /// Sell an item to a merchant NPC. Argument is the item name from inventory.
@@ -171,6 +173,7 @@ pub fn parse(input: &str) -> Command {
                 return if rest.is_empty() { Command::Search(None) } else { Command::Search(Some(rest)) };
             }
             "look around" => return Command::Look(None),
+            "list wares" | "look wares" => return Command::Browse,
             "go to" => {
                 return parse_direction(&rest).map(Command::Go)
                     .unwrap_or(Command::Unknown(input.to_string()));
@@ -557,6 +560,7 @@ pub fn parse(input: &str) -> Command {
             }
         }
         // ---- Trade commands ----
+        "browse" | "shop" | "wares" => Command::Browse,
         "buy" | "purchase" => {
             if args.is_empty() {
                 Command::Unknown("Buy what?".to_string())
@@ -1508,6 +1512,40 @@ mod tests {
             Command::Unknown(s) => assert!(s.to_lowercase().contains("what"), "Got: {}", s),
             other => panic!("Expected Unknown, got {:?}", other),
         }
+    }
+
+    // ---- Browse command ----
+
+    #[test]
+    fn test_browse_command() {
+        assert_eq!(parse("browse"), Command::Browse);
+    }
+
+    #[test]
+    fn test_browse_alias_shop() {
+        assert_eq!(parse("shop"), Command::Browse);
+    }
+
+    #[test]
+    fn test_browse_alias_wares() {
+        assert_eq!(parse("wares"), Command::Browse);
+    }
+
+    #[test]
+    fn test_browse_phrase_list_wares() {
+        assert_eq!(parse("list wares"), Command::Browse);
+    }
+
+    #[test]
+    fn test_browse_phrase_look_wares() {
+        assert_eq!(parse("look wares"), Command::Browse);
+    }
+
+    #[test]
+    fn test_browse_case_insensitive() {
+        assert_eq!(parse("BROWSE"), Command::Browse);
+        assert_eq!(parse("Shop"), Command::Browse);
+        assert_eq!(parse("List Wares"), Command::Browse);
     }
 
     #[test]

@@ -3138,6 +3138,7 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
         Command::Unattune(target) => handle_unattune_command(state, &target),
         Command::ListAttunements => handle_list_attunements(state),
         Command::UseTool { tool, target } => handle_use_tool_command(state, &tool, &target),
+        Command::Browse => handle_browse_command(state),
         Command::Buy(item_name) => handle_buy_command(state, &item_name, &mut rng),
         Command::Sell(item_name) => handle_sell_command(state, &item_name),
         Command::Unknown(s) => {
@@ -8909,6 +8910,60 @@ fn get_purchasable_wares() -> Vec<(&'static str, u32)> {
     wares.push(("Rations", 50)); // 5 sp = 50 cp (per day)
     wares.push(("Healing Potion", 5000)); // 50 gp per SRD
     wares
+}
+
+/// Handle the Browse command: list a merchant's available wares and prices.
+fn handle_browse_command(state: &GameState) -> Vec<String> {
+    let merchant = match find_merchant_in_room(state) {
+        Some(m) => m.clone(),
+        None => return vec!["There's no merchant here to browse wares from.".to_string()],
+    };
+
+    let wares = get_purchasable_wares();
+
+    let mut lines = vec![format!("{}'s wares:", merchant.name), String::new()];
+
+    // Group by category
+    let weapons: Vec<_> = wares.iter()
+        .filter(|(name, _)| equipment::SRD_WEAPONS.iter().any(|w| w.name == *name))
+        .collect();
+    let armor: Vec<_> = wares.iter()
+        .filter(|(name, _)| equipment::SRD_ARMOR.iter().any(|a| a.name == *name))
+        .collect();
+    let supplies: Vec<_> = wares.iter()
+        .filter(|(name, _)| {
+            !equipment::SRD_WEAPONS.iter().any(|w| w.name == *name)
+                && !equipment::SRD_ARMOR.iter().any(|a| a.name == *name)
+        })
+        .collect();
+
+    if !weapons.is_empty() {
+        lines.push("  Weapons:".to_string());
+        for (name, cost_cp) in &weapons {
+            lines.push(format!("    {} — {}", name, format_price(*cost_cp)));
+        }
+        lines.push(String::new());
+    }
+
+    if !armor.is_empty() {
+        lines.push("  Armor:".to_string());
+        for (name, cost_cp) in &armor {
+            lines.push(format!("    {} — {}", name, format_price(*cost_cp)));
+        }
+        lines.push(String::new());
+    }
+
+    if !supplies.is_empty() {
+        lines.push("  Supplies:".to_string());
+        for (name, cost_cp) in &supplies {
+            lines.push(format!("    {} — {}", name, format_price(*cost_cp)));
+        }
+        lines.push(String::new());
+    }
+
+    lines.push("(Use 'buy <item>' to purchase.)".to_string());
+
+    lines
 }
 
 /// Handle the Buy command: purchase an item from a merchant NPC.
