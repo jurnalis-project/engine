@@ -68,6 +68,8 @@ pub struct ClassFeatureState {
     pub cunning_action_used: bool,
     #[serde(default)]
     pub sneak_attack_used_this_turn: bool,
+    #[serde(default)]
+    pub reckless_this_turn: bool,
 
     // ---- Concentration (spells) ----
     /// Name of the spell the character is currently concentrating on, or
@@ -101,6 +103,7 @@ impl Default for ClassFeatureState {
             ki_points_remaining: 0,
             cunning_action_used: false,
             sneak_attack_used_this_turn: false,
+            reckless_this_turn: false,
             concentration_spell: None,
             mage_armor_until_minutes: None,
         }

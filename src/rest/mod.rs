@@ -510,6 +510,7 @@ mod tests {
             player_cover: crate::types::Cover::None,
             npc_cover: std::collections::HashMap::new(),
             npc_reactions_used: std::collections::HashSet::new(),
+            player_reckless: false,
         });
         assert_eq!(check_rest_allowed(&state), Err(RestDenial::InCombat));
     }
@@ -781,6 +782,7 @@ mod tests {
             player_cover: crate::types::Cover::None,
             npc_cover: std::collections::HashMap::new(),
             npc_reactions_used: std::collections::HashSet::new(),
+            player_reckless: false,
         });
         state.character.current_hp = 1;
         let before_time = state.in_world_minutes;
