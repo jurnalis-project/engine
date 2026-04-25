@@ -5050,7 +5050,11 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
             }
         }
         Command::EndTurn => {
-            lines.push("You end your turn.".to_string());
+            if !combat.action_used && !combat.bonus_action_used {
+                lines.push(narration::templates::END_TURN_WAIT.to_string());
+            } else {
+                lines.push(narration::templates::END_TURN.to_string());
+            }
             should_end_turn = true;
         }
         Command::ReactionYes | Command::ReactionNo => {
@@ -11856,8 +11860,8 @@ mod tests {
             "After NPC cycle, control should return to player"
         );
         assert!(
-            output.text.iter().any(|t| t.contains("You end your turn.")),
-            "Expected end-turn confirmation, got: {:?}",
+            output.text.iter().any(|t| t.contains("You wait, letting your turn pass without acting.")),
+            "Expected wait-flavored narration when no action was used, got: {:?}",
             output.text
         );
         assert!(
@@ -19643,21 +19647,9 @@ mod tests {
         let output = new_game(42, false);
         let output = process_input(&output.state_json, "help");
         let joined = output.text.join("\n").to_lowercase();
-
-        assert!(
-            joined.contains("character creation"),
-            "Expected creation help overview during ChooseRace. Got:\n{}",
-            joined,
-        );
+        assert!(joined.contains("character creation"), "Expected creation help overview during ChooseRace. Got:\n{}", joined);
         let state: GameState = serde_json::from_str(&output.state_json).unwrap();
-        assert!(
-            matches!(
-                state.game_phase,
-                GamePhase::CharacterCreation(CreationStep::ChooseRace)
-            ),
-            "Expected ChooseRace phase after help. Got: {:?}",
-            state.game_phase,
-        );
+        assert!(matches!(state.game_phase, GamePhase::CharacterCreation(CreationStep::ChooseRace)), "Expected ChooseRace phase after help. Got: {:?}", state.game_phase);
     }
 
     #[test]
@@ -19666,21 +19658,9 @@ mod tests {
         let output = process_input(&output.state_json, "1"); // Human
         let output = process_input(&output.state_json, "?");
         let joined = output.text.join("\n").to_lowercase();
-
-        assert!(
-            joined.contains("character creation"),
-            "Expected creation help for '?' during ChooseClass. Got:\n{}",
-            joined,
-        );
+        assert!(joined.contains("character creation"), "Expected creation help for '?' during ChooseClass. Got:\n{}", joined);
         let state: GameState = serde_json::from_str(&output.state_json).unwrap();
-        assert!(
-            matches!(
-                state.game_phase,
-                GamePhase::CharacterCreation(CreationStep::ChooseClass)
-            ),
-            "Expected ChooseClass phase after '?'. Got: {:?}",
-            state.game_phase,
-        );
+        assert!(matches!(state.game_phase, GamePhase::CharacterCreation(CreationStep::ChooseClass)), "Expected ChooseClass phase after '?'. Got: {:?}", state.game_phase);
     }
 
     #[test]
@@ -19688,17 +19668,8 @@ mod tests {
         let output = new_game(42, false);
         let output = process_input(&output.state_json, "help race");
         let joined = output.text.join("\n").to_lowercase();
-
-        assert!(
-            joined.contains("race"),
-            "Expected race topic help. Got:\n{}",
-            joined,
-        );
-        assert!(
-            joined.contains("character creation"),
-            "Expected creation-phase race help. Got:\n{}",
-            joined,
-        );
+        assert!(joined.contains("race"), "Expected race topic help. Got:\n{}", joined);
+        assert!(joined.contains("character creation"), "Expected creation-phase race help. Got:\n{}", joined);
     }
 
     #[test]
@@ -19708,21 +19679,9 @@ mod tests {
         let output = process_input(&output.state_json, "1"); // Barbarian
         let output = process_input(&output.state_json, "help");
         let joined = output.text.join("\n").to_lowercase();
-
-        assert!(
-            joined.contains("character creation"),
-            "Expected creation help during ChooseBackground. Got:\n{}",
-            joined,
-        );
+        assert!(joined.contains("character creation"), "Expected creation help during ChooseBackground. Got:\n{}", joined);
         let state: GameState = serde_json::from_str(&output.state_json).unwrap();
-        assert!(
-            matches!(
-                state.game_phase,
-                GamePhase::CharacterCreation(CreationStep::ChooseBackground)
-            ),
-            "Expected ChooseBackground phase after help. Got: {:?}",
-            state.game_phase,
-        );
+        assert!(matches!(state.game_phase, GamePhase::CharacterCreation(CreationStep::ChooseBackground)), "Expected ChooseBackground phase after help. Got: {:?}", state.game_phase);
     }
 
     // ---- Examine command tests (issue #236) ----
@@ -19731,42 +19690,22 @@ mod tests {
     fn test_examine_inventory_item_during_combat() {
         let mut state = create_test_combat_state();
         force_player_turn(&mut state);
-
         let state_json = serde_json::to_string(&state).unwrap();
         let output = process_input(&state_json, "examine longsword");
         let all_text = output.text.join("\n");
-
-        assert!(
-            !all_text.contains("You're in combat"),
-            "Targeted examine during combat should work, not show combat error. Got: {:?}",
-            output.text
-        );
-        assert!(
-            all_text.contains("Longsword"),
-            "Should show item name in inspection output. Got: {:?}",
-            output.text
-        );
+        assert!(!all_text.contains("You're in combat"), "Targeted examine during combat should work. Got: {:?}", output.text);
+        assert!(all_text.contains("Longsword"), "Should show item name. Got: {:?}", output.text);
     }
 
     #[test]
     fn test_examine_npc_during_combat() {
         let mut state = create_test_combat_state();
         force_player_turn(&mut state);
-
         let state_json = serde_json::to_string(&state).unwrap();
         let output = process_input(&state_json, "examine goblin");
         let all_text = output.text.join("\n");
-
-        assert!(
-            !all_text.contains("You're in combat"),
-            "Targeted examine of NPC during combat should work. Got: {:?}",
-            output.text
-        );
-        assert!(
-            all_text.contains("Goblin"),
-            "Should show NPC name in inspection output. Got: {:?}",
-            output.text
-        );
+        assert!(!all_text.contains("You're in combat"), "Targeted examine of NPC during combat should work. Got: {:?}", output.text);
+        assert!(all_text.contains("Goblin"), "Should show NPC name. Got: {:?}", output.text);
     }
 
     #[test]
@@ -19775,24 +19714,14 @@ mod tests {
         let state_json = serde_json::to_string(&state).unwrap();
         let output = process_input(&state_json, "examine xyzzyplugh");
         let all_text = output.text.join("\n");
-
-        assert!(
-            all_text.contains("You don't see any"),
-            "Unrecognised target should produce 'don't see' message. Got: {:?}",
-            output.text
-        );
-        assert!(
-            all_text.contains("xyzzyplugh"),
-            "Error message should echo the target name. Got: {:?}",
-            output.text
-        );
+        assert!(all_text.contains("You don't see any"), "Unrecognised target should produce 'don't see' message. Got: {:?}", output.text);
+        assert!(all_text.contains("xyzzyplugh"), "Error message should echo the target name. Got: {:?}", output.text);
     }
 
     #[test]
     fn test_examine_floor_item() {
         let mut state = create_test_exploration_state();
         let loc_id = state.current_location;
-
         let floor_item_id = 777;
         state.world.items.insert(floor_item_id, state::Item {
             id: floor_item_id,
@@ -19804,45 +19733,58 @@ mod tests {
             charges_remaining: None,
         });
         state.world.locations.get_mut(&loc_id).unwrap().items.push(floor_item_id);
-
         let state_json = serde_json::to_string(&state).unwrap();
         let output = process_input(&state_json, "examine ruby");
         let all_text = output.text.join("\n");
-
-        assert!(
-            all_text.contains("Ruby Gemstone"),
-            "Should show floor item name. Got: {:?}",
-            output.text
-        );
-        assert!(
-            all_text.contains("crimson gem"),
-            "Should show floor item description. Got: {:?}",
-            output.text
-        );
+        assert!(all_text.contains("Ruby Gemstone"), "Should show floor item name. Got: {:?}", output.text);
+        assert!(all_text.contains("crimson gem"), "Should show floor item description. Got: {:?}", output.text);
     }
 
     #[test]
     fn test_examine_room_feature() {
         let mut state = create_test_exploration_state();
         let loc = state.world.locations.get_mut(&state.current_location).unwrap();
-        loc.room_features = vec![state::RoomFeature {
-            name: "crystal fountain".to_string(),
-            description: "Water shimmers with an ethereal glow.".to_string(),
-        }];
-
+        loc.room_features = vec![state::RoomFeature { name: "crystal fountain".to_string(), description: "Water shimmers with an ethereal glow.".to_string() }];
         let state_json = serde_json::to_string(&state).unwrap();
         let output = process_input(&state_json, "examine fountain");
         let all_text = output.text.join("\n");
+        assert!(all_text.contains("crystal fountain"), "Should show room feature name. Got: {:?}", output.text);
+        assert!(all_text.contains("ethereal glow"), "Should show room feature description. Got: {:?}", output.text);
+    }
 
-        assert!(
-            all_text.contains("crystal fountain"),
-            "Should show room feature name. Got: {:?}",
-            output.text
-        );
-        assert!(
-            all_text.contains("ethereal glow"),
-            "Should show room feature description. Got: {:?}",
-            output.text
-        );
+    // ---- Wait / skip-turn narration tests (issue #237) ----
+
+    #[test]
+    fn test_wait_no_action_produces_wait_narration() {
+        let mut state = create_test_combat_state();
+        force_player_turn(&mut state);
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "wait");
+        let text = output.text.join("\n");
+        assert!(text.contains("wait"), "Expected wait-flavored narration when no action was used, got: {}", text);
+        assert!(!text.contains("You end your turn."), "Should NOT produce generic end-turn text when waiting without acting, got: {}", text);
+    }
+
+    #[test]
+    fn test_pass_no_action_produces_wait_narration() {
+        let mut state = create_test_combat_state();
+        force_player_turn(&mut state);
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "pass");
+        let text = output.text.join("\n");
+        assert!(text.contains("wait"), "Expected wait-flavored narration for 'pass' with no action used, got: {}", text);
+    }
+
+    #[test]
+    fn test_end_turn_after_action_produces_generic_narration() {
+        let mut state = create_test_combat_state();
+        force_player_turn(&mut state);
+        if let Some(ref mut combat) = state.active_combat {
+            combat.action_used = true;
+        }
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "end turn");
+        let text = output.text.join("\n");
+        assert!(text.contains("You end your turn."), "Expected generic end-turn text after action was used, got: {}", text);
     }
 }

@@ -171,6 +171,10 @@ pub const EXHAUSTION_GAINED_OTHER: &str =
 pub const EXHAUSTION_LETHAL_SELF: &str = "Your exhaustion reaches level 6. You collapse, lifeless.";
 pub const EXHAUSTION_LETHAL_OTHER: &str = "{target} collapses, lifeless from exhaustion.";
 
+// -- Turn-end templates --
+pub const END_TURN: &str = "You end your turn.";
+pub const END_TURN_WAIT: &str = "You wait, letting your turn pass without acting.";
+
 pub const HELP_TEXT: &str = "\
 Commands:
   look [target]     - Examine surroundings or a specific thing
@@ -412,6 +416,7 @@ fn topic_help(topic: &str, phase: HelpPhase) -> Vec<String> {
             "  cast <spell> [at <target>] - Cast a spell (if you have spells).".to_string(),
             "  spells - View your prepared spells and remaining slots.".to_string(),
             "  end turn - End your turn and advance initiative.".to_string(),
+            "    (also: wait, pass - skip your turn without acting)".to_string(),
             "  Bonus actions (one per turn):".to_string(),
             "    bonus dash / dash as bonus - Dash using your bonus action instead.".to_string(),
             "    offhand attack <target> / attack <target> off hand - Two-Weapon Fighting.".to_string(),
@@ -561,6 +566,23 @@ mod tests {
             .iter()
             .any(|line| line
                 .contains("movement, actions, inventory, equipment, spells, system, combat")));
+    }
+
+    #[test]
+    fn help_combat_mentions_wait_and_pass() {
+        let lines = render_help(Some("combat"), HelpPhase::Combat);
+        let joined = lines.join("\n").to_lowercase();
+
+        assert!(
+            joined.contains("wait"),
+            "Combat help should mention 'wait'. Got:\n{}",
+            joined,
+        );
+        assert!(
+            joined.contains("pass"),
+            "Combat help should mention 'pass'. Got:\n{}",
+            joined,
+        );
     }
 
     #[test]
