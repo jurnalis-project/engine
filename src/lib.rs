@@ -19049,7 +19049,6 @@ mod tests {
         println!("REST_FIXTURE:\n{}", rest_json);
     }
 
-<<<<<<< HEAD
     // Hypothesis: A merchant NPC that is initially Friendly loses its disposition
     // and becomes hostile (triggering combat) when the player revisits the room
     // via an alternate path. The bug occurs because the at-least-one-hostile
@@ -19379,6 +19378,9 @@ mod tests {
             nick_used_this_turn: false,
             death_save_successes: 0,
             death_save_failures: 0,
+            player_cover: crate::types::Cover::None,
+            npc_cover: HashMap::new(),
+            npc_reactions_used: std::collections::HashSet::new(),
         });
 
         // Drop the player to 0 HP (dying).
