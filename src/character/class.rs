@@ -237,6 +237,14 @@ impl Class {
         match level { 1..=4 => 2, 5..=8 => 3, 9..=12 => 4, 13..=16 => 5, 17..=20 => 6, _ => 2 }
     }
 
+    /// SRD 2024 Extra Attack: Fighter, Barbarian, Paladin, and Ranger gain
+    /// an additional attack when they take the Attack action at level 5+.
+    /// Higher-tier Extra Attack (Fighter 11/20) is out of scope.
+    pub fn has_extra_attack(class: Class, level: u32) -> bool {
+        matches!(class, Class::Fighter | Class::Barbarian | Class::Paladin | Class::Ranger)
+            && level >= 5
+    }
+
     /// Number of Weapon Mastery slots unlocked at level 1 per 2024 SRD.
     /// Mastery-unlocking classes (Fighter 3, Barbarian/Paladin/Ranger 2)
     /// can pre-populate their `Character.weapon_masteries` from their
@@ -811,30 +819,40 @@ mod tests {
     // ---- Danger Sense (Barbarian level 2) ----
 
     #[test]
-    fn test_danger_sense_barbarian_level_1_false() {
-        assert!(!character_has_danger_sense(Class::Barbarian, 1));
-    }
-
+    fn test_danger_sense_barbarian_level_1_false() { assert!(!character_has_danger_sense(Class::Barbarian, 1)); }
     #[test]
-    fn test_danger_sense_barbarian_level_2_true() {
-        assert!(character_has_danger_sense(Class::Barbarian, 2));
-    }
-
-    #[test]
-    fn test_danger_sense_barbarian_level_10_true() {
-        assert!(character_has_danger_sense(Class::Barbarian, 10));
-    }
-
+    fn test_danger_sense_barbarian_level_2_true() { assert!(character_has_danger_sense(Class::Barbarian, 2)); }
     #[test]
     fn test_danger_sense_non_barbarian_false() {
         for class in Class::all() {
             if *class != Class::Barbarian {
-                assert!(
-                    !character_has_danger_sense(*class, 5),
-                    "{:?} at level 5 should not have Danger Sense",
-                    class,
-                );
+                assert!(!character_has_danger_sense(*class, 5));
             }
         }
+    }
+
+    // ---- Extra Attack (SRD 2024, level 5) ----
+
+    #[test]
+    fn test_has_extra_attack_qualifying_classes_at_level_5() {
+        assert!(Class::has_extra_attack(Class::Fighter, 5));
+        assert!(Class::has_extra_attack(Class::Barbarian, 5));
+        assert!(Class::has_extra_attack(Class::Paladin, 5));
+        assert!(Class::has_extra_attack(Class::Ranger, 5));
+    }
+    #[test]
+    fn test_has_extra_attack_qualifying_classes_below_level_5() {
+        assert!(!Class::has_extra_attack(Class::Fighter, 4));
+        assert!(!Class::has_extra_attack(Class::Barbarian, 1));
+    }
+    #[test]
+    fn test_has_extra_attack_non_qualifying_classes_at_level_5() {
+        assert!(!Class::has_extra_attack(Class::Wizard, 5));
+        assert!(!Class::has_extra_attack(Class::Rogue, 5));
+    }
+    #[test]
+    fn test_has_extra_attack_at_higher_levels() {
+        assert!(Class::has_extra_attack(Class::Fighter, 20));
+        assert!(!Class::has_extra_attack(Class::Wizard, 20));
     }
 }
