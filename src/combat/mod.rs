@@ -2286,14 +2286,16 @@ pub fn release_grapple_on_npc(npc: &mut Npc, grappler_name: &str) {
 
 // ---------- Shove (2024 SRD) -------------------------------------------
 //
-// Shove: target makes a STR saving throw vs DC (8 + grappler STR mod + PB).
+// Shove: target makes a STR or DEX saving throw (it chooses which) vs
+// DC (8 + shover STR mod + PB). The engine picks whichever modifier is
+// higher on behalf of the NPC — same "best-of" pattern as grapple saves.
 // On failure:
 //   - push variant: narrative push 5 ft (distance +5 in 1D model).
 //   - knock prone: apply Prone condition to the NPC.
 // Target must not be more than one size category larger (same rule as grapple).
 
-/// Attempt to shove a target NPC. On a failed STR save the chosen effect is
-/// applied: push 5 ft away (narrative) or knock prone.
+/// Attempt to shove a target NPC. On a failed STR/DEX save the chosen effect
+/// is applied: push 5 ft away (narrative) or knock prone.
 ///
 /// Returns narration lines. Marks `combat.action_used` on the caller's behalf
 /// to mirror the grapple pattern — callers MUST restore `state.active_combat`
@@ -2337,21 +2339,42 @@ pub fn handle_shove(
         }
     };
     let npc_display = npc.name.clone();
+
+    // Per 2024 SRD the target picks whichever of STR or DEX gives the
+    // higher save total. We compute both and pick the better one.
     let npc_str = stats
         .ability_scores
         .get(&Ability::Strength)
         .copied()
         .unwrap_or(10);
+    let npc_dex = stats
+        .ability_scores
+        .get(&Ability::Dexterity)
+        .copied()
+        .unwrap_or(10);
     let npc_str_mod = Ability::modifier(npc_str);
+    let npc_dex_mod = Ability::modifier(npc_dex);
+    let (save_mod, save_ability) = if npc_str_mod >= npc_dex_mod {
+        (npc_str_mod, Ability::Strength)
+    } else {
+        (npc_dex_mod, Ability::Dexterity)
+    };
+    let ability_name = match save_ability {
+        Ability::Strength => "STR",
+        Ability::Dexterity => "DEX",
+        _ => "save",
+    };
+
     let roll = roll_d20(rng);
-    let npc_total = roll + npc_str_mod;
+    let npc_total = roll + save_mod;
 
     if npc_total >= dc {
         // NPC succeeds: resists the shove.
         lines.push(format!(
-            "{} resists the shove! (STR save: {} vs DC {})",
+            "{} resists the shove! ({} save: {} vs DC {})",
             npc_display,
-            format_roll(roll, npc_str_mod, npc_total),
+            ability_name,
+            format_roll(roll, save_mod, npc_total),
             dc
         ));
         return lines;
@@ -2368,16 +2391,18 @@ pub fn handle_shove(
         let applied = try_apply_condition_to_npc(npc_mut, new_cond);
         if applied {
             lines.push(format!(
-                "You knock {} prone! (STR save: {} vs DC {})",
+                "You knock {} prone! ({} save: {} vs DC {})",
                 npc_display,
-                format_roll(roll, npc_str_mod, npc_total),
+                ability_name,
+                format_roll(roll, save_mod, npc_total),
                 dc
             ));
         } else {
             lines.push(format!(
-                "{} fails the save but is immune to Prone. (STR save: {} vs DC {})",
+                "{} fails the save but is immune to Prone. ({} save: {} vs DC {})",
                 npc_display,
-                format_roll(roll, npc_str_mod, npc_total),
+                ability_name,
+                format_roll(roll, save_mod, npc_total),
                 dc
             ));
         }
@@ -2387,9 +2412,10 @@ pub fn handle_shove(
         let new_dist = current_dist.saturating_add(5);
         combat.distances.insert(target_id, new_dist);
         lines.push(format!(
-            "You shove {} back 5 feet! (STR save: {} vs DC {})",
+            "You shove {} back 5 feet! ({} save: {} vs DC {})",
             npc_display,
-            format_roll(roll, npc_str_mod, npc_total),
+            ability_name,
+            format_roll(roll, save_mod, npc_total),
             dc
         ));
     }
@@ -6215,34 +6241,33 @@ mod tests {
 
     // ---- Shove tests (2024 SRD) ----
 
-    /// Find a seed where the NPC fails its STR save against our test character.
+    /// Find a seed where the NPC fails its best-of(STR,DEX) save against our
+    /// test character. Goblin: STR 8 (mod -1), DEX 14 (mod +2) -> uses DEX +2.
+    /// PC DC = 8 + 3 (STR mod) + 2 (PB) = 13.
+    /// NPC fails on d20 + 2 < 13, i.e. d20 <= 10.
     fn find_shove_success_seed() -> u64 {
-        // test_character() has STR 17 (16 base + 1 human) at level 1:
-        //   STR mod = +3, PB = 2 -> DC = 13.
-        // goblin_stats has STR 8 -> mod -1.
-        // NPC fails on d20 + (-1) < 13, i.e. d20 <= 13.
-        // That is common; seed 0 should work.
         for seed in 0..1000u64 {
             let mut rng = StdRng::seed_from_u64(seed);
             let roll = roll_d20(&mut rng);
-            if roll - 1 < 13 {
-                // -1 is goblin's STR mod
+            if roll + 2 < 13 {
+                // +2 is goblin's DEX mod (best of STR -1 / DEX +2)
                 return seed;
             }
         }
-        panic!("Could not find a seed where goblin fails STR save");
+        panic!("Could not find a seed where goblin fails save");
     }
 
-    /// Find a seed where the NPC succeeds its STR save.
+    /// Find a seed where the NPC succeeds its best-of(STR,DEX) save.
+    /// Goblin uses DEX +2, DC = 13. Succeeds on d20 + 2 >= 13, i.e. d20 >= 11.
     fn find_shove_fail_seed() -> u64 {
         for seed in 0..1000u64 {
             let mut rng = StdRng::seed_from_u64(seed);
             let roll = roll_d20(&mut rng);
-            if roll - 1 >= 13 {
+            if roll + 2 >= 13 {
                 return seed;
             }
         }
-        panic!("Could not find a seed where goblin succeeds STR save");
+        panic!("Could not find a seed where goblin succeeds save");
     }
 
     #[test]
@@ -6323,6 +6348,64 @@ mod tests {
         assert!(
             !conditions::has_condition(&state.world.npcs[&0].conditions, ConditionType::Prone),
             "No Prone should be applied when NPC resists"
+        );
+    }
+
+    #[test]
+    fn test_shove_npc_uses_dex_when_higher() {
+        // Goblin: STR 8 (mod -1), DEX 14 (mod +2). Should pick DEX.
+        let seed = find_shove_success_seed();
+        let mut rng = StdRng::seed_from_u64(seed);
+        let mut state = test_state_with_goblin();
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        combat.distances.insert(0, 5);
+
+        let mut rng2 = StdRng::seed_from_u64(seed);
+        let lines = handle_shove(&mut state, &mut combat, &mut rng2, 0, "goblin", false);
+
+        let joined = lines.join(" ");
+        assert!(
+            joined.contains("DEX save"),
+            "Goblin (DEX +2 > STR -1) should use DEX save, got: {:?}",
+            lines
+        );
+    }
+
+    #[test]
+    fn test_shove_npc_uses_str_when_higher() {
+        // Create an NPC whose STR is higher than DEX.
+        let seed = 0u64;
+        let mut rng = StdRng::seed_from_u64(seed);
+        let mut state = test_state_with_goblin();
+
+        // Override the goblin's stats: STR 16 (mod +3), DEX 8 (mod -1).
+        if let Some(stats) = state.world.npcs.get_mut(&0).unwrap().combat_stats.as_mut() {
+            stats.ability_scores.insert(Ability::Strength, 16);
+            stats.ability_scores.insert(Ability::Dexterity, 8);
+        }
+
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        combat.distances.insert(0, 5);
+
+        // DC is 13, NPC STR mod is +3. Find a seed where d20 + 3 < 13 (d20 <= 9).
+        let mut test_seed = 0u64;
+        for s in 0..1000u64 {
+            let mut r = StdRng::seed_from_u64(s);
+            let roll = roll_d20(&mut r);
+            if roll + 3 < 13 {
+                test_seed = s;
+                break;
+            }
+        }
+
+        let mut rng2 = StdRng::seed_from_u64(test_seed);
+        let lines = handle_shove(&mut state, &mut combat, &mut rng2, 0, "goblin", false);
+
+        let joined = lines.join(" ");
+        assert!(
+            joined.contains("STR save"),
+            "NPC with STR +3 > DEX -1 should use STR save, got: {:?}",
+            lines
         );
     }
 
