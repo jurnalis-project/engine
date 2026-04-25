@@ -11712,6 +11712,137 @@ mod tests {
     }
 
     #[test]
+    fn test_collect_npc_barks_excludes_dead_npcs() {
+        let mut state = create_test_exploration_state();
+        let loc_id = state.current_location;
+        let live_id = 100;
+        let dead_id = 101;
+
+        state.world.npcs.insert(
+            live_id,
+            state::Npc {
+                id: live_id,
+                name: "Aldric the Bold".to_string(),
+                role: state::NpcRole::Guard,
+                disposition: state::Disposition::Neutral,
+                dialogue_tags: vec![],
+                location: loc_id,
+                combat_stats: None,
+                conditions: vec![],
+            },
+        );
+        state.world.npcs.insert(
+            dead_id,
+            state::Npc {
+                id: dead_id,
+                name: "Fallen Theron".to_string(),
+                role: state::NpcRole::Adventurer,
+                disposition: state::Disposition::Hostile,
+                dialogue_tags: vec![],
+                location: loc_id,
+                combat_stats: Some(state::CombatStats {
+                    current_hp: 0,
+                    max_hp: 20,
+                    ..state::CombatStats::default()
+                }),
+                conditions: vec![],
+            },
+        );
+
+        if let Some(loc) = state.world.locations.get_mut(&loc_id) {
+            loc.npcs.push(live_id);
+            loc.npcs.push(dead_id);
+        }
+
+        let loc = state.world.locations.get(&loc_id).unwrap();
+        let mut rng = StdRng::seed_from_u64(42);
+        let barks = collect_npc_barks(&mut rng, loc, &state);
+
+        assert_eq!(barks.len(), 1, "Expected 1 bark (dead NPC excluded), got: {:?}", barks);
+        assert_eq!(barks[0].0, "Aldric the Bold");
+    }
+
+    #[test]
+    fn test_collect_npc_barks_deterministic() {
+        let mut state = create_test_exploration_state();
+        let loc_id = state.current_location;
+        let npc_id = 200;
+
+        state.world.npcs.insert(
+            npc_id,
+            state::Npc {
+                id: npc_id,
+                name: "Brenna the Wise".to_string(),
+                role: state::NpcRole::Merchant,
+                disposition: state::Disposition::Friendly,
+                dialogue_tags: vec![],
+                location: loc_id,
+                combat_stats: None,
+                conditions: vec![],
+            },
+        );
+
+        if let Some(loc) = state.world.locations.get_mut(&loc_id) {
+            loc.npcs.push(npc_id);
+        }
+
+        let loc = state.world.locations.get(&loc_id).unwrap();
+        let mut rng1 = StdRng::seed_from_u64(99);
+        let barks1 = collect_npc_barks(&mut rng1, loc, &state);
+
+        let mut rng2 = StdRng::seed_from_u64(99);
+        let barks2 = collect_npc_barks(&mut rng2, loc, &state);
+
+        assert_eq!(barks1, barks2, "Barks should be deterministic with same seed");
+    }
+
+    #[test]
+    fn test_collect_npc_barks_uses_role_templates() {
+        let mut state = create_test_exploration_state();
+        let loc_id = state.current_location;
+
+        let roles = [
+            (300, "Guard Npc", state::NpcRole::Guard),
+            (301, "Merchant Npc", state::NpcRole::Merchant),
+            (302, "Hermit Npc", state::NpcRole::Hermit),
+            (303, "Adventurer Npc", state::NpcRole::Adventurer),
+        ];
+
+        for (id, name, role) in &roles {
+            state.world.npcs.insert(
+                *id,
+                state::Npc {
+                    id: *id,
+                    name: name.to_string(),
+                    role: *role,
+                    disposition: state::Disposition::Neutral,
+                    dialogue_tags: vec![],
+                    location: loc_id,
+                    combat_stats: None,
+                    conditions: vec![],
+                },
+            );
+            if let Some(loc) = state.world.locations.get_mut(&loc_id) {
+                loc.npcs.push(*id);
+            }
+        }
+
+        let loc = state.world.locations.get(&loc_id).unwrap();
+        let mut rng = StdRng::seed_from_u64(42);
+        let barks = collect_npc_barks(&mut rng, loc, &state);
+
+        assert_eq!(barks.len(), 4);
+        for (name, bark) in &barks {
+            assert!(
+                bark.starts_with('"') && bark.ends_with('"'),
+                "Bark for {} should be in quotes: {}",
+                name,
+                bark
+            );
+        }
+    }
+
+    #[test]
     fn test_talk_surfaces_find_item_objective_context() {
         let mut state = create_test_exploration_state();
         let loc_id = state.current_location;
