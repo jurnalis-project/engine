@@ -206,8 +206,9 @@ Commands:
   help              - Show this help (also: ?, commands)
 
 Combat commands (available during combat):
-  attack <target>   - Attack an enemy
-                      (also: hit, strike, swing at, shoot)
+  attack <target>   - Attack an enemy (also: hit, strike, swing at)
+  shoot <target>    - Ranged attack with bow/crossbow (also: fire)
+  throw <target>    - Throw a weapon at target (also: hurl, toss, lob)
   approach <target> - Move toward an enemy
                       (also: advance, close, move to, move toward)
   retreat           - Move away from all enemies
@@ -403,7 +404,7 @@ fn topic_help(topic: &str, phase: HelpPhase) -> Vec<String> {
         ("combat", HelpPhase::Exploration) => vec![
             "Help: combat".to_string(),
             "Combat starts automatically when hostile NPCs are present.".to_string(),
-            "When combat starts, these commands unlock: attack, approach, retreat, dodge, disengage, dash, end turn.".to_string(),
+            "When combat starts, these commands unlock: attack, shoot, throw, approach, retreat, dodge, disengage, dash, end turn.".to_string(),
             "Use 'help actions' for action/bonus/reaction guidance and signature options like rage, grapple, and shove.".to_string(),
             "Spellcasters can also use: cast <spell> [at <target>], spells (to view available spells/slots).".to_string(),
             "Use 'help combat' again during battle for in-combat details.".to_string(),
@@ -411,6 +412,8 @@ fn topic_help(topic: &str, phase: HelpPhase) -> Vec<String> {
         ("combat", HelpPhase::Combat) => vec![
             "Help: combat".to_string(),
             "  attack <target> - Attack an enemy in range.".to_string(),
+            "  shoot <target> - Ranged attack with bow/crossbow (also: fire).".to_string(),
+            "  throw <target> - Throw a weapon at target (also: hurl, toss, lob).".to_string(),
             "  approach <target> - Move toward an enemy.".to_string(),
             "  retreat - Move away from all enemies.".to_string(),
             "  grapple <target> / shove <target> / shove prone <target> - Strength-based melee control options.".to_string(),
