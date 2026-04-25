@@ -713,18 +713,20 @@ pub struct AttackResult {
 pub fn format_attack_roll_details(result: &AttackResult, modifier: i32) -> String {
     match result.attack_roll_second {
         Some(other_roll) if result.disadvantage => format!(
-            "{} / {} -> {} ({})",
+            "{} / {} \u{2192} {} ({}) (disadvantage \u{2014} keeping {})",
             result.attack_roll_first,
             other_roll,
             result.attack_roll,
             format_roll(result.attack_roll, modifier, result.total_attack),
+            result.attack_roll,
         ),
         Some(other_roll) if result.attacker_had_advantage => format!(
-            "{} / {} -> {} ({})",
+            "{} / {} \u{2192} {} ({}) (advantage \u{2014} keeping {})",
             result.attack_roll_first,
             other_roll,
             result.attack_roll,
             format_roll(result.attack_roll, modifier, result.total_attack),
+            result.attack_roll,
         ),
         _ => format_roll(result.attack_roll, modifier, result.total_attack),
     }
@@ -4521,7 +4523,7 @@ mod tests {
             if all.contains("CRITICAL HIT") || all.contains("natural 1") {
                 continue;
             }
-            if all.contains(" -> ") && all.contains(" vs AC ") {
+            if all.contains(" \u{2192} ") && all.contains(" vs AC ") {
                 found_disadvantage_text = true;
                 break;
             }
@@ -4547,7 +4549,7 @@ mod tests {
             let lines = resolve_npc_turn(&mut test_rng, 0, &mut test_state, &mut test_combat);
             let all = lines.join("\n");
             assert!(
-                !all.contains(" -> "),
+                !all.contains(" \u{2192} "),
                 "Should not show dual-roll attack text when player is not dodging. Got: {}",
                 all
             );
@@ -4574,7 +4576,31 @@ mod tests {
 
         assert_eq!(
             format_attack_roll_details(&result, 3),
-            "17 / 4 -> 4 (4+3=7)"
+            "17 / 4 \u{2192} 4 (4+3=7) (disadvantage \u{2014} keeping 4)"
+        );
+    }
+
+    #[test]
+    fn test_format_attack_roll_details_shows_both_advantage_d20s() {
+        let result = AttackResult {
+            hit: true,
+            natural_20: false,
+            natural_1: false,
+            attack_roll_first: 14,
+            attack_roll_second: Some(8),
+            attack_roll: 14,
+            total_attack: 17,
+            target_ac: 15,
+            damage: 7,
+            damage_type: DamageType::Slashing,
+            weapon_name: "Longsword".to_string(),
+            disadvantage: false,
+            attacker_had_advantage: true,
+        };
+
+        assert_eq!(
+            format_attack_roll_details(&result, 3),
+            "14 / 8 \u{2192} 14 (14+3=17) (advantage \u{2014} keeping 14)"
         );
     }
 

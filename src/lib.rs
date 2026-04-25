@@ -12555,7 +12555,7 @@ mod tests {
             output
                 .text
                 .iter()
-                .any(|t| t.contains(" -> ") && t.contains("vs AC")),
+                .any(|t| t.contains(" \u{2192} ") && t.contains("vs AC")),
             "Expected dual-roll disadvantage details for ranged attack in melee. Got: {:?}",
             output.text
         );
@@ -12709,7 +12709,7 @@ mod tests {
         let output = process_input(&state_json, "attack test goblin");
 
         assert!(
-            output.text.iter().any(|t| t.contains(" -> ") && t.contains("vs AC")),
+            output.text.iter().any(|t| t.contains(" \u{2192} ") && t.contains("vs AC")),
             "Ranged attack while another hostile is within 5ft should show dual-roll disadvantage text. Got: {:?}",
             output.text
         );
