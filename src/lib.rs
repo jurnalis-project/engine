@@ -12715,6 +12715,309 @@ mod tests {
         );
     }
 
+    // ---- Shoot / Throw command tests (feat/ranged-attack-commands, issue #233) ----
+
+    #[test]
+    fn test_shoot_with_ammunition_weapon_produces_shoot_narration() {
+        let mut state = create_test_combat_state();
+        force_player_turn(&mut state);
+
+        // Set target at range (40 ft).
+        if let Some(ref mut combat) = state.active_combat {
+            combat.distances.insert(100, 40);
+        }
+
+        // Equip a shortbow (AMMUNITION weapon).
+        let bow_id = 301u32;
+        state.world.items.insert(
+            bow_id,
+            state::Item {
+                id: bow_id,
+                name: "Shortbow".to_string(),
+                description: "A shortbow.".to_string(),
+                item_type: state::ItemType::Weapon {
+                    damage_dice: 1,
+                    damage_die: 6,
+                    damage_type: state::DamageType::Piercing,
+                    properties: crate::equipment::AMMUNITION,
+                    category: state::WeaponCategory::Simple,
+                    versatile_die: 0,
+                    range_normal: 80,
+                    range_long: 320,
+                },
+                location: None,
+                carried_by_player: true,
+                charges_remaining: None,
+            },
+        );
+        state.character.inventory.push(bow_id);
+        state.character.equipped.main_hand = Some(bow_id);
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "shoot test goblin");
+        let text = output.text.join(" ");
+
+        // Should contain shoot-flavored narration, not generic "attack"
+        assert!(
+            text.contains("shoot") || text.contains("shot") || text.contains("aim"),
+            "Shoot command should produce ranged narration. Got: {:?}",
+            output.text
+        );
+    }
+
+    #[test]
+    fn test_shoot_with_non_ammunition_weapon_rejected() {
+        let mut state = create_test_combat_state();
+        force_player_turn(&mut state);
+
+        // Default weapon is a Longsword (no AMMUNITION).
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "shoot test goblin");
+        let text = output.text.join(" ");
+
+        assert!(
+            text.to_lowercase().contains("can't shoot") || text.to_lowercase().contains("bow"),
+            "Shoot with melee weapon should be rejected. Got: {:?}",
+            output.text
+        );
+    }
+
+    #[test]
+    fn test_throw_with_thrown_weapon_produces_throw_narration() {
+        let mut state = create_test_combat_state();
+        force_player_turn(&mut state);
+
+        // Set target at 20 ft.
+        if let Some(ref mut combat) = state.active_combat {
+            combat.distances.insert(100, 20);
+        }
+
+        // Equip a javelin (THROWN weapon).
+        let javelin_id = 302u32;
+        state.world.items.insert(
+            javelin_id,
+            state::Item {
+                id: javelin_id,
+                name: "Javelin".to_string(),
+                description: "A javelin.".to_string(),
+                item_type: state::ItemType::Weapon {
+                    damage_dice: 1,
+                    damage_die: 6,
+                    damage_type: state::DamageType::Piercing,
+                    properties: crate::equipment::THROWN,
+                    category: state::WeaponCategory::Simple,
+                    versatile_die: 0,
+                    range_normal: 30,
+                    range_long: 120,
+                },
+                location: None,
+                carried_by_player: true,
+                charges_remaining: None,
+            },
+        );
+        state.character.inventory.push(javelin_id);
+        state.character.equipped.main_hand = Some(javelin_id);
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "throw test goblin");
+        let text = output.text.join(" ");
+
+        assert!(
+            text.contains("hurl") || text.contains("throw"),
+            "Throw command should produce throw narration. Got: {:?}",
+            output.text
+        );
+    }
+
+    #[test]
+    fn test_throw_with_non_thrown_weapon_rejected() {
+        let mut state = create_test_combat_state();
+        force_player_turn(&mut state);
+
+        // Default weapon is a Longsword (no THROWN).
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "throw test goblin");
+        let text = output.text.join(" ");
+
+        assert!(
+            text.to_lowercase().contains("can't throw") || text.to_lowercase().contains("thrown"),
+            "Throw with non-thrown weapon should be rejected. Got: {:?}",
+            output.text
+        );
+    }
+
+    #[test]
+    fn test_throw_at_melee_range_still_uses_ranged_mode() {
+        // Key behavior: "throw" at distance 5 ft should force ranged mode
+        // (STR-based thrown modifier), not default to melee attack.
+        let mut state = create_test_combat_state();
+        force_player_turn(&mut state);
+
+        // Target at melee range (5 ft).
+        if let Some(ref mut combat) = state.active_combat {
+            combat.distances.insert(100, 5);
+        }
+
+        // Equip a dagger (THROWN + FINESSE + LIGHT).
+        let dagger_id = 303u32;
+        state.world.items.insert(
+            dagger_id,
+            state::Item {
+                id: dagger_id,
+                name: "Dagger".to_string(),
+                description: "A dagger.".to_string(),
+                item_type: state::ItemType::Weapon {
+                    damage_dice: 1,
+                    damage_die: 4,
+                    damage_type: state::DamageType::Piercing,
+                    properties: crate::equipment::THROWN
+                        | crate::equipment::FINESSE
+                        | crate::equipment::LIGHT,
+                    category: state::WeaponCategory::Simple,
+                    versatile_die: 0,
+                    range_normal: 20,
+                    range_long: 60,
+                },
+                location: None,
+                carried_by_player: true,
+                charges_remaining: None,
+            },
+        );
+        state.character.inventory.push(dagger_id);
+        state.character.equipped.main_hand = Some(dagger_id);
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "throw test goblin");
+        let text = output.text.join(" ");
+
+        // Should produce throw-specific narration, not generic melee "attack"
+        assert!(
+            text.contains("hurl") || text.contains("throw"),
+            "Throw at melee range should still use throw narration. Got: {:?}",
+            output.text
+        );
+        // Should NOT contain generic "You attack" phrasing
+        assert!(
+            !text.contains("You attack"),
+            "Throw should NOT use generic 'attack' narration. Got: {:?}",
+            output.text
+        );
+    }
+
+    #[test]
+    fn test_shoot_bare_target_not_found() {
+        let mut state = create_test_combat_state();
+        force_player_turn(&mut state);
+
+        // Equip a bow
+        let bow_id = 304u32;
+        state.world.items.insert(
+            bow_id,
+            state::Item {
+                id: bow_id,
+                name: "Shortbow".to_string(),
+                description: "A shortbow.".to_string(),
+                item_type: state::ItemType::Weapon {
+                    damage_dice: 1,
+                    damage_die: 6,
+                    damage_type: state::DamageType::Piercing,
+                    properties: crate::equipment::AMMUNITION,
+                    category: state::WeaponCategory::Simple,
+                    versatile_die: 0,
+                    range_normal: 80,
+                    range_long: 320,
+                },
+                location: None,
+                carried_by_player: true,
+                charges_remaining: None,
+            },
+        );
+        state.character.inventory.push(bow_id);
+        state.character.equipped.main_hand = Some(bow_id);
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "shoot nonexistent");
+        let text = output.text.join(" ");
+
+        assert!(
+            text.contains("no") && text.contains("shoot"),
+            "Shoot at nonexistent target should say target not found. Got: {:?}",
+            output.text
+        );
+    }
+
+    #[test]
+    fn test_throw_bare_target_not_found() {
+        let mut state = create_test_combat_state();
+        force_player_turn(&mut state);
+
+        // Equip a javelin
+        let javelin_id = 305u32;
+        state.world.items.insert(
+            javelin_id,
+            state::Item {
+                id: javelin_id,
+                name: "Javelin".to_string(),
+                description: "A javelin.".to_string(),
+                item_type: state::ItemType::Weapon {
+                    damage_dice: 1,
+                    damage_die: 6,
+                    damage_type: state::DamageType::Piercing,
+                    properties: crate::equipment::THROWN,
+                    category: state::WeaponCategory::Simple,
+                    versatile_die: 0,
+                    range_normal: 30,
+                    range_long: 120,
+                },
+                location: None,
+                carried_by_player: true,
+                charges_remaining: None,
+            },
+        );
+        state.character.inventory.push(javelin_id);
+        state.character.equipped.main_hand = Some(javelin_id);
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "throw nonexistent");
+        let text = output.text.join(" ");
+
+        assert!(
+            text.contains("no") && text.contains("throw"),
+            "Throw at nonexistent target should say target not found. Got: {:?}",
+            output.text
+        );
+    }
+
+    #[test]
+    fn test_shoot_exploration_not_in_combat() {
+        let state = create_test_exploration_state();
+        let state_json = serde_json::to_string(&state).unwrap();
+
+        let output = process_input(&state_json, "shoot goblin");
+        let text = output.text.join(" ");
+
+        assert!(
+            text.to_lowercase().contains("not in combat"),
+            "Shoot in exploration should say not in combat. Got: {:?}",
+            output.text
+        );
+    }
+
+    #[test]
+    fn test_throw_exploration_not_in_combat() {
+        let state = create_test_exploration_state();
+        let state_json = serde_json::to_string(&state).unwrap();
+
+        let output = process_input(&state_json, "throw goblin");
+        let text = output.text.join(" ");
+
+        assert!(
+            text.to_lowercase().contains("not in combat"),
+            "Throw in exploration should say not in combat. Got: {:?}",
+            output.text
+        );
+    }
+
     /// Regression test for issue #223: second enemy in multi-enemy room is
     /// untargetable after first is defeated.
     ///
