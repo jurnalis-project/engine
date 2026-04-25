@@ -3636,6 +3636,7 @@ fn resolve_single_npc_attack(
         &player_conditions,
         extra_disadvantage,
         &combat.player_cover,
+        combat.player_reckless,
     );
     if sapped {
         lines.push("(Disadvantage from Sap mastery.)".to_string());
@@ -6439,10 +6440,104 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
             combat.bonus_action_used = true;
             lines.push("You enter a rage! Your attacks deal bonus damage and you have resistance to physical damage.".to_string());
         }
-        Command::RecklessAttack(_target) => {
-            // Placeholder: will be implemented in a later TDD unit.
-            state.active_combat = Some(combat);
-            return vec!["Reckless Attack is not yet implemented.".to_string()];
+        Command::RecklessAttack(target_name) => {
+            if state.character.class != character::class::Class::Barbarian {
+                state.active_combat = Some(combat);
+                return vec!["Only Barbarians can use Reckless Attack.".to_string()];
+            }
+            if state.character.level < 2 {
+                state.active_combat = Some(combat);
+                return vec!["Reckless Attack requires Barbarian level 2+.".to_string()];
+            }
+            if combat.action_used && !combat.action_surge_active {
+                state.active_combat = Some(combat);
+                return vec!["You\'ve already used your action this turn.".to_string()];
+            }
+            if state.character.class_features.reckless_this_turn {
+                state.active_combat = Some(combat);
+                return vec!["You are already attacking recklessly this turn.".to_string()];
+            }
+
+            combat.player_reckless = true;
+            state.character.class_features.reckless_this_turn = true;
+            lines.push("You attack recklessly! (Advantage on this roll; NPCs gain advantage against you until your next turn.)".to_string());
+
+            let owned_candidates = combat.initiative_order.iter().filter_map(|(c, _)| {
+                if let combat::Combatant::Npc(id) = c {
+                    let npc = state.world.npcs.get(id)?;
+                    let stats = npc.combat_stats.as_ref()?;
+                    if stats.current_hp > 0 { Some((*id as usize, npc.name.clone())) } else { None }
+                } else { None }
+            }).collect::<Vec<_>>();
+            let candidates: Vec<(usize, &str)> = owned_candidates.iter().map(|(id, name)| (*id, name.as_str())).collect();
+
+            match resolver::resolve_target(&target_name, &candidates) {
+                ResolveResult::Found(id) => {
+                    let npc_id = id as u32;
+                    let distance = *combat.distances.get(&npc_id).unwrap_or(&30);
+                    let target_ac = state.world.npcs.get(&npc_id).and_then(|n| n.combat_stats.as_ref()).map(|s| s.ac).unwrap_or(10);
+                    let target_dodging = combat.npc_dodging.get(&npc_id).copied().unwrap_or(false);
+                    let weapon_id = state.character.equipped.main_hand;
+                    let off_hand_free = state.character.equipped.off_hand.is_none();
+                    let hostile_within_5ft = combat::has_living_hostile_within(state, &combat, 5);
+                    let target_conditions: &[crate::conditions::ActiveCondition] = state.world.npcs.get(&npc_id).map(|n| n.conditions.as_slice()).unwrap_or(&[]);
+                    let npc_name = state.world.npcs.get(&npc_id).map(|n| n.name.clone()).unwrap_or_else(|| "the enemy".to_string());
+
+                    if !crate::conditions::can_attack_target(&state.character.conditions, &npc_name) {
+                        state.active_combat = Some(combat);
+                        return vec![format!("You can\'t bring yourself to attack {} -- you are Charmed by them.", npc_name)];
+                    }
+                    if combat.npc_cover.get(&npc_id) == Some(&crate::types::Cover::Total) {
+                        state.active_combat = Some(combat);
+                        return vec![format!("{} has total cover and cannot be directly targeted.", npc_name)];
+                    }
+
+                    let grappled_disadv = crate::conditions::grappled_attack_disadvantage(&state.character.conditions, &npc_name);
+                    let vex_advantage = combat::consume_vex_advantage(&mut combat, npc_id);
+                    let npc_cover = combat.npc_cover.get(&npc_id).unwrap_or(&crate::types::Cover::None);
+
+                    // Reckless: force extra_advantage = true
+                    let mut result = combat::resolve_player_attack(
+                        &mut rng, &state.character, target_ac, target_dodging,
+                        weapon_id, &state.world.items, distance, off_hand_free,
+                        hostile_within_5ft, target_conditions, grappled_disadv,
+                        true, // extra_advantage (reckless)
+                        npc_cover,
+                    );
+                    let (atk_b, dmg_b) = magic_weapon_bonuses(state, weapon_id);
+                    apply_magic_weapon_bonuses(&mut result, atk_b, dmg_b);
+                    apply_sneak_attack(&mut rng, state, &mut result, &mut lines, weapon_id, distance);
+                    apply_divine_smite(&mut rng, state, &mut result, &mut lines, npc_id, distance);
+
+                    if result.hit {
+                        if result.natural_20 {
+                            lines.push(format!("You attack {} with {} recklessly -- CRITICAL HIT! {} {} damage!", npc_name, result.weapon_name, result.damage, result.damage_type));
+                        } else {
+                            lines.push(format!("You recklessly attack {} with {} ({} vs AC {}) -- hit for {} {} damage.", npc_name, result.weapon_name, combat::format_attack_roll_details(&result, result.total_attack - result.attack_roll), target_ac, result.damage, result.damage_type));
+                        }
+                        if let Some(npc) = state.world.npcs.get_mut(&npc_id) {
+                            combat::apply_damage_to_npc(npc, result.damage, result.damage_type, &mut lines);
+                            if let Some(stats) = npc.combat_stats.as_ref() {
+                                if stats.current_hp <= 0 { lines.push(format!("{} is slain!", npc_name)); }
+                            }
+                        }
+                    } else {
+                        lines.push(format!("You recklessly attack {} with {} ({} vs AC {}) -- miss.", npc_name, result.weapon_name, combat::format_attack_roll_details(&result, result.total_attack - result.attack_roll), target_ac));
+                    }
+                    apply_mainhand_mastery_effects(&mut rng, state, &mut combat, &mut lines, &result, npc_id, weapon_id, distance);
+                    if combat.action_surge_active { combat.action_surge_active = false; }
+                    combat.action_used = true;
+                    combat.attacks_made_this_turn += 1;
+                }
+                ResolveResult::Ambiguous(matches) => {
+                    state.active_combat = Some(combat);
+                    return emit_disambiguation(state, "attack", &matches);
+                }
+                ResolveResult::NotFound => {
+                    state.active_combat = Some(combat);
+                    return vec![format!("There\'s no \"{}\" to attack.", target_name)];
+                }
+            }
         }
         Command::BardicInspiration(target) => {
             if state.character.class != character::class::Class::Bard {
@@ -17477,6 +17572,7 @@ mod tests {
             player_cover: crate::types::Cover::None,
             npc_cover: std::collections::HashMap::new(),
             npc_reactions_used: std::collections::HashSet::new(),
+            player_reckless: false,
         });
         npc_id
     }
@@ -17557,6 +17653,7 @@ mod tests {
             player_cover: crate::types::Cover::None,
             npc_cover: std::collections::HashMap::new(),
             npc_reactions_used: std::collections::HashSet::new(),
+            player_reckless: false,
         });
         let _ = end_combat(&mut state, true);
         // Two goblins: 50 + 50 = 100 XP.
@@ -17628,6 +17725,7 @@ mod tests {
             player_cover: crate::types::Cover::None,
             npc_cover: std::collections::HashMap::new(),
             npc_reactions_used: std::collections::HashSet::new(),
+            player_reckless: false,
         });
         let _ = end_combat(&mut state, true);
         // No XP should be awarded — the hostile is still alive.
@@ -19898,6 +19996,7 @@ mod tests {
             player_cover: crate::types::Cover::None,
             npc_cover: std::collections::HashMap::new(),
             npc_reactions_used: std::collections::HashSet::new(),
+            player_reckless: false,
         });
 
         let lines = end_combat(&mut state, true);
@@ -20042,6 +20141,7 @@ mod tests {
             player_cover: crate::types::Cover::None,
             npc_cover: std::collections::HashMap::new(),
             npc_reactions_used: std::collections::HashSet::new(),
+            player_reckless: false,
         });
 
         // Try multiple seeds to get a hit (AC=1, nat 1 is the only miss)
@@ -21128,6 +21228,7 @@ mod tests {
             player_cover: crate::types::Cover::None,
             npc_cover: HashMap::new(),
             npc_reactions_used: std::collections::HashSet::new(),
+            player_reckless: false,
         };
 
         let mut discovered = std::collections::HashSet::new();
@@ -21563,6 +21664,7 @@ mod tests {
             player_cover: crate::types::Cover::None,
             npc_cover: HashMap::new(),
             npc_reactions_used: std::collections::HashSet::new(),
+            player_reckless: false,
         });
 
         // Drop the player to 0 HP (dying).
