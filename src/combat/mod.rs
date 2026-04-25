@@ -1359,6 +1359,21 @@ fn resolve_npc_attack_action(
     lines
 }
 
+/// Returns true when the NPC should retreat (kite) rather than approach the
+/// player. The condition is: HP below 30% of max AND the NPC has at least one
+/// ranged attack AND the NPC is not immobilized (Grappled/Restrained setting
+/// speed to zero).
+pub fn npc_wants_to_retreat(
+    stats: &CombatStats,
+    npc_conditions: &[crate::conditions::ActiveCondition],
+) -> bool {
+    let hp_threshold = stats.max_hp * 30 / 100;
+    let low_hp = stats.current_hp > 0 && stats.current_hp < hp_threshold.max(1);
+    let has_ranged = stats.attacks.iter().any(|a| a.range_long > 0);
+    let immobilized = conditions::speed_is_zero(npc_conditions);
+    low_hp && has_ranged && !immobilized
+}
+
 /// Determine NPC action. Returns narration lines and whether to end combat early.
 pub fn resolve_npc_turn(
     rng: &mut impl Rng,
@@ -1507,7 +1522,6 @@ pub fn resolve_npc_turn(
     }
 
     // Priority: melee if in range -> ranged if in range -> move toward player
-
     // Orchestrator-side grappled disadvantage: if the NPC is grappled by
     // someone other than the player, attacking the player is at disadvantage.
     let grappled = conditions::grappled_attack_disadvantage(&npc_conditions, &state.character.name);
@@ -1517,6 +1531,68 @@ pub fn resolve_npc_turn(
     if sapped_first_attack {
         lines.push("(Disadvantage from Sap mastery.)".to_string());
     }
+
+    // ---- Retreat / kite AI (issue #256) ----
+    // When the NPC's HP is below 30% of max AND it has at least one ranged
+    // attack AND it is not immobilized (speed 0 from Grappled etc.), it
+    // retreats: moves away from the player by its speed, then fires ranged.
+    //
+    // If the NPC is currently within the player's melee reach and would
+    // provoke an opportunity attack by moving away, it uses its action to
+    // Disengage first (setting `npc_disengaging`), sacrificing the ranged
+    // attack on this turn.
+    let npc_wants_retreat = npc_wants_to_retreat(
+        state.world.npcs.get(&npc_id).unwrap().combat_stats.as_ref().unwrap(),
+        &npc_conditions,
+    );
+    if npc_wants_retreat {
+        let slow_reduction = slow_speed_reduction(combat, npc_id).max(0) as u32;
+        let effective_speed = (npc_speed as u32).saturating_sub(slow_reduction);
+        if slow_reduction > 0 {
+            lines.push(format!(
+                "(Slow: {}'s Speed reduced by {} ft this turn.)",
+                npc_name, slow_reduction,
+            ));
+        }
+
+        // Check if NPC is within player's melee reach — if so, Disengage first.
+        let player_reach = player_melee_reach(&state.character, &state.world.items);
+        let used_disengage = distance <= player_reach;
+        if used_disengage {
+            combat.npc_disengaging.insert(npc_id, true);
+            lines.push(format!("{} disengages.", npc_name));
+        }
+
+        // Move away from the player.
+        let new_distance = distance.saturating_add(effective_speed);
+        combat.distances.insert(npc_id, new_distance);
+        lines.push(format!(
+            "{} retreats. ({}ft -> {}ft)",
+            npc_name, distance, new_distance,
+        ));
+
+        // If the NPC did NOT Disengage (action still available), fire ranged.
+        if !used_disengage {
+            let post_retreat_attack = resolve_npc_attack_action(
+                rng,
+                &npc_attacks,
+                npc_multiattack,
+                new_distance,
+                grappled,
+                sapped_first_attack,
+                &npc_name,
+                &npc_conditions,
+                &player_conditions,
+                state,
+                combat,
+            );
+            lines.extend(post_retreat_attack);
+        }
+
+        return lines;
+    }
+
+    // ---- Standard AI: melee if in range -> ranged if in range -> approach ----
 
     // Try to attack at the current distance; if not in range, move then
     // re-check. This mirrors SRD 5.1: movement and action are independent
@@ -7282,6 +7358,81 @@ mod tests {
         assert!(
             !conditions::has_condition(&npc.conditions, ConditionType::Grappled),
             "Grapple should auto-release when distance exceeds 5 ft after retreat"
+        );
+    }
+
+    // ---- NPC Retreat AI (issue #256) ----
+    // ---- NPC Retreat AI (issue #256) ----
+
+    #[test]
+    fn test_npc_retreats_when_low_hp_and_has_ranged() {
+        // An NPC at <30% HP with a ranged attack should move AWAY from the
+        // player instead of toward them.
+        let mut state = test_state_with_goblin();
+        // Give the goblin low HP (1 out of 7 = 14%, below 30%) and both
+        // melee + ranged attacks (goblin_stats() already has both).
+        if let Some(cs) = state.world.npcs.get_mut(&0).unwrap().combat_stats.as_mut() {
+            cs.current_hp = 1;
+        }
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let initial_distance = 10;
+        combat.distances.insert(0, initial_distance);
+
+        let lines = resolve_npc_turn(&mut rng, 0, &mut state, &mut combat);
+        let new_distance = *combat.distances.get(&0).unwrap();
+
+        assert!(
+            new_distance > initial_distance,
+            "Low-HP NPC with ranged attack should retreat (move away). \
+             Initial: {}, After: {}. Lines: {:?}",
+            initial_distance, new_distance, lines
+        );
+    }
+
+    #[test]
+    fn test_npc_does_not_retreat_when_hp_above_threshold() {
+        // An NPC at full HP should move toward the player, not retreat.
+        let mut state = test_state_with_goblin();
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let initial_distance = 20;
+        combat.distances.insert(0, initial_distance);
+
+        let lines = resolve_npc_turn(&mut rng, 0, &mut state, &mut combat);
+        let new_distance = *combat.distances.get(&0).unwrap();
+
+        assert!(
+            new_distance <= initial_distance,
+            "Full-HP NPC should approach (move toward) the player. \
+             Initial: {}, After: {}. Lines: {:?}",
+            initial_distance, new_distance, lines
+        );
+    }
+
+    #[test]
+    fn test_npc_does_not_retreat_without_ranged_attack() {
+        // An NPC at low HP but with only melee attacks should still approach.
+        let mut state = test_state_with_goblin();
+        if let Some(cs) = state.world.npcs.get_mut(&0).unwrap().combat_stats.as_mut() {
+            cs.current_hp = 1;
+            // Remove ranged attacks, keep only melee.
+            cs.attacks.retain(|a| a.reach > 0);
+        }
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let initial_distance = 20;
+        combat.distances.insert(0, initial_distance);
+
+        let lines = resolve_npc_turn(&mut rng, 0, &mut state, &mut combat);
+        let new_distance = *combat.distances.get(&0).unwrap();
+
+        assert!(
+            new_distance <= initial_distance,
+            "Low-HP NPC without ranged attack should still approach. \
+             Initial: {}, After: {}. Lines: {:?}",
+            initial_distance, new_distance, lines
+>>>>>>> 293bfcd (feat: add NPC retreat/kite AI when HP below 30% with ranged attack)
         );
     }
 }
