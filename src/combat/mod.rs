@@ -1480,6 +1480,9 @@ pub fn resolve_npc_turn(
         let player_size = crate::combat::monsters::Size::Medium;
         if !target_exceeds_grapple_size_limit(&npc_size, &player_size) {
             if let Some(result) = resolve_npc_grapple_attempt(rng, state, npc_id) {
+                if result.danger_sense_active {
+                    lines.push("(Danger Sense: advantage on DEX save)".to_string());
+                }
                 if result.success {
                     let save_name = match result.save_ability {
                         Ability::Strength => "STR",
@@ -2714,6 +2717,8 @@ pub struct NpcGrappleAttemptResult {
     pub dc: i32,
     /// Which ability the player used for the save (STR or DEX).
     pub save_ability: Ability,
+    /// True when Danger Sense granted advantage on this save.
+    pub danger_sense_active: bool,
 }
 
 /// NPC attempts to grapple the player. Rolls the player's save and, on
@@ -2762,7 +2767,20 @@ pub fn resolve_npc_grapple_attempt(
         (dex_mod, Ability::Dexterity)
     };
 
-    let d20 = roll_d20(rng);
+    // Danger Sense: Barbarian level 2+ gets advantage on DEX saves
+    // unless Incapacitated (SRD 5.2.1).
+    let danger_sense_active = save_ability == Ability::Dexterity
+        && crate::character::class::character_has_danger_sense(
+            state.character.class,
+            state.character.level,
+        )
+        && !conditions::is_incapacitated(&state.character.conditions);
+
+    let d20 = if danger_sense_active {
+        roll_d20(rng).max(roll_d20(rng))
+    } else {
+        roll_d20(rng)
+    };
     let save_total = d20 + save_mod;
 
     if save_total >= dc {
@@ -2773,6 +2791,7 @@ pub fn resolve_npc_grapple_attempt(
             player_save_total: save_total,
             dc,
             save_ability,
+            danger_sense_active,
         });
     }
 
@@ -2788,6 +2807,7 @@ pub fn resolve_npc_grapple_attempt(
         player_save_total: save_total,
         dc,
         save_ability,
+        danger_sense_active,
     })
 }
 
@@ -7439,6 +7459,134 @@ mod tests {
             "Low-HP NPC without ranged attack should still approach. \
              Initial: {}, After: {}. Lines: {:?}",
             initial_distance, new_distance, lines
+        );
+    }
+
+    // ---- Danger Sense on NPC grapple (Barbarian level 2) ----
+
+    #[test]
+    fn test_npc_grapple_danger_sense_advantage_improves_success_rate() {
+        // A level-2 Barbarian with higher DEX than STR should get Danger
+        // Sense advantage on the DEX save vs NPC grapple. Over many seeds
+        // the Barbarian should resist grapple more often than a Fighter
+        // with identical stats.
+        fn make_state(class: Class, level: u32) -> GameState {
+            let mut scores = HashMap::new();
+            // DEX > STR so the engine picks DEX for the save
+            scores.insert(Ability::Strength, 8);
+            scores.insert(Ability::Dexterity, 16);
+            scores.insert(Ability::Constitution, 14);
+            scores.insert(Ability::Intelligence, 10);
+            scores.insert(Ability::Wisdom, 12);
+            scores.insert(Ability::Charisma, 8);
+            let mut character = create_character(
+                "Hero".to_string(),
+                Race::Human,
+                class,
+                scores,
+                vec![],
+            );
+            character.level = level;
+
+            let mut npcs = HashMap::new();
+            npcs.insert(0, Npc {
+                id: 0,
+                name: "Ogre".to_string(),
+                role: NpcRole::Guard,
+                disposition: Disposition::Hostile,
+                dialogue_tags: vec![],
+                location: 0,
+                combat_stats: Some(CombatStats {
+                    max_hp: 59,
+                    current_hp: 59,
+                    ac: 11,
+                    speed: 40,
+                    ability_scores: {
+                        let mut m = HashMap::new();
+                        m.insert(Ability::Strength, 19); // high STR for hard DC
+                        m.insert(Ability::Dexterity, 8);
+                        m.insert(Ability::Constitution, 16);
+                        m.insert(Ability::Intelligence, 5);
+                        m.insert(Ability::Wisdom, 7);
+                        m.insert(Ability::Charisma, 7);
+                        m
+                    },
+                    attacks: vec![NpcAttack {
+                        name: "Greatclub".to_string(),
+                        hit_bonus: 6,
+                        damage_dice: 2,
+                        damage_die: 8,
+                        damage_bonus: 4,
+                        damage_type: DamageType::Bludgeoning,
+                        reach: 5,
+                        range_normal: 0,
+                        range_long: 0,
+                    }],
+                    proficiency_bonus: 2,
+                    cr: 2.0,
+                    ..Default::default()
+                }),
+                conditions: Vec::new(),
+            });
+
+            GameState {
+                version: SAVE_VERSION.to_string(),
+                character,
+                current_location: 0,
+                discovered_locations: HashSet::new(),
+                world: WorldState {
+                    locations: HashMap::new(),
+                    npcs,
+                    items: HashMap::new(),
+                    triggers: HashMap::new(),
+                    triggered: HashSet::new(),
+                },
+                log: Vec::new(),
+                rng_seed: 42,
+                rng_counter: 0,
+                game_phase: GamePhase::Exploration,
+                active_combat: None,
+                ironman_mode: false,
+                progress: crate::state::ProgressState::default(),
+                in_world_minutes: 0,
+                last_long_rest_minutes: None,
+                pending_background_pattern: None,
+                pending_subrace: None,
+                pending_disambiguation: None,
+                pending_new_game_confirm: false,
+            }
+        }
+
+        let trials = 2000u64;
+        let mut barbarian_resists = 0u32;
+        let mut fighter_resists = 0u32;
+
+        for seed in 0..trials {
+            // Barbarian level 2 (has Danger Sense)
+            let mut barb_state = make_state(Class::Barbarian, 2);
+            let mut rng = StdRng::seed_from_u64(seed);
+            if let Some(res) = resolve_npc_grapple_attempt(&mut rng, &mut barb_state, 0) {
+                if !res.success {
+                    barbarian_resists += 1;
+                }
+            }
+
+            // Fighter level 2 (no Danger Sense, same stats)
+            let mut fighter_state = make_state(Class::Fighter, 2);
+            let mut rng = StdRng::seed_from_u64(seed);
+            if let Some(res) = resolve_npc_grapple_attempt(&mut rng, &mut fighter_state, 0) {
+                if !res.success {
+                    fighter_resists += 1;
+                }
+            }
+        }
+
+        // With advantage, the Barbarian should resist significantly more often.
+        assert!(
+            barbarian_resists > fighter_resists,
+            "Barbarian with Danger Sense should resist NPC grapple more often \
+             (advantage on DEX save). Barbarian resists: {}, Fighter resists: {}",
+            barbarian_resists, fighter_resists,
         );
     }
 }
