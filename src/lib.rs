@@ -7893,6 +7893,22 @@ fn apply_mainhand_mastery_effects(
     let Some(mastery) = player_mastery_for_weapon(state, weapon_id) else {
         return;
     };
+
+    // Skip condition-based mastery effects on dead targets. A creature
+    // with 0 HP cannot benefit from or be meaningfully affected by Sap,
+    // Vex, Slow, Push, Topple, etc. Graze fires on a miss (so the target
+    // was never hit lethally) but we skip it too for consistency — you
+    // cannot graze a corpse.
+    let target_dead = state
+        .world
+        .npcs
+        .get(&npc_id)
+        .and_then(|npc| npc.combat_stats.as_ref())
+        .map_or(false, |stats| stats.current_hp <= 0);
+    if target_dead {
+        return;
+    }
+
     let ability_mod = player_attack_ability_mod(state, weapon_id, distance);
     let prof_bonus = state.character.proficiency_bonus();
 
@@ -16656,6 +16672,67 @@ mod tests {
                 output.text
             );
         }
+    }
+
+    #[test]
+    fn test_sap_mastery_skipped_when_target_killed() {
+        // Hypothesis: The bug occurs because apply_mainhand_mastery_effects
+        // is called unconditionally after damage, so Sap fires on dead
+        // targets producing "Sap: the target has disadvantage..." after
+        // "{NPC} is slain!".
+        //
+        // Set NPC HP to 1 so any hit kills it, then verify that Sap
+        // narration does NOT appear in the output and sap_targets is empty.
+        let mut state = create_test_combat_state();
+        state
+            .character
+            .weapon_masteries
+            .push("Longsword".to_string());
+        // Set goblin HP to 1 so a single hit guarantees death.
+        if let Some(npc) = state.world.npcs.get_mut(&100) {
+            if let Some(ref mut stats) = npc.combat_stats {
+                stats.max_hp = 1;
+                stats.current_hp = 1;
+            }
+        }
+        force_player_turn(&mut state);
+        if let Some(ref mut combat) = state.active_combat {
+            combat.distances.insert(100, 5);
+        }
+
+        // Try seeds until we land a hit that kills the goblin.
+        for seed in 0..40u64 {
+            let mut s = state.clone();
+            s.rng_seed = seed;
+            s.rng_counter = 0;
+            let state_json = serde_json::to_string(&s).unwrap();
+            let output = process_input(&state_json, "attack test goblin");
+            let text = output.text.join(" ");
+            if !text.contains("is slain!") {
+                continue; // miss -- try another seed
+            }
+            // The NPC was killed. Sap narration must NOT appear.
+            assert!(
+                !text.contains("Sap"),
+                "Sap mastery should not fire on a dead target. Output: {:?}",
+                output.text
+            );
+            // If combat state still exists, sap_targets must not contain
+            // the dead NPC.
+            if let Ok(new_state) =
+                serde_json::from_str::<GameState>(&output.state_json)
+            {
+                if let Some(combat) = new_state.active_combat.as_ref() {
+                    assert!(
+                        !combat.sap_targets.contains(&100),
+                        "Dead NPC should not be in sap_targets (seed {})",
+                        seed
+                    );
+                }
+            }
+            return; // test passed
+        }
+        panic!("Did not land a killing hit in 40 seeds; fixture may need adjustment.");
     }
 
     #[test]
