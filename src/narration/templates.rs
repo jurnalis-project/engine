@@ -141,6 +141,48 @@ pub const CAST_MINOR_ILLUSION: &str =
     "You conjure a small illusion -- a flicker, a whisper, a shadow that isn't there.";
 pub const CAST_MAGE_ARMOR: &str = "A protective weave of force settles around you. Your base AC is now 13 + your Dexterity modifier while you remain unarmored.";
 
+// -- Level 3 spell templates --
+pub const CAST_FIREBALL_INTRO: &str =
+    "A bright streak flashes from your fingertip and blossoms into a fiery explosion! (8d6 = {damage} fire damage, DC {dc} DEX save)";
+pub const CAST_FIREBALL_FAIL: &str =
+    "  {target} fails the save ({save_result}) -- takes {damage} fire damage!";
+pub const CAST_FIREBALL_SAVE: &str =
+    "  {target} saves ({save_result}) -- takes {damage} fire damage (half).";
+pub const CAST_FIREBALL_NO_TARGETS: &str = "The fireball explodes, but there are no enemies to hit.";
+pub const CAST_LIGHTNING_BOLT_INTRO: &str =
+    "A stroke of lightning blasts from your outstretched hand! (8d6 = {damage} lightning damage, DC {dc} DEX save)";
+pub const CAST_LIGHTNING_BOLT_FAIL: &str =
+    "  {target} fails the save ({save_result}) -- takes {damage} lightning damage!";
+pub const CAST_LIGHTNING_BOLT_SAVE: &str =
+    "  {target} saves ({save_result}) -- takes {damage} lightning damage (half).";
+pub const CAST_LIGHTNING_BOLT_NO_TARGETS: &str = "The bolt crackles through empty air. No enemies to hit.";
+pub const CAST_SPIRIT_GUARDIANS_INTRO: &str =
+    "Spectral guardians swirl around you! (3d8 = {damage} radiant damage, DC {dc} WIS save)";
+pub const CAST_SPIRIT_GUARDIANS_FAIL: &str =
+    "  {target} fails the save ({save_result}) -- takes {damage} radiant damage!";
+pub const CAST_SPIRIT_GUARDIANS_SAVE: &str =
+    "  {target} saves ({save_result}) -- takes {damage} radiant damage (half).";
+pub const CAST_SPIRIT_GUARDIANS_NO_TARGETS: &str = "Spectral guardians swirl around you, but there are no enemies nearby.";
+pub const CAST_FEAR_INTRO: &str =
+    "You project a phantasmal image of pure dread! (DC {dc} WIS save)";
+pub const CAST_FEAR_FAIL: &str =
+    "  {target} fails the save ({save_result}) -- frightened!";
+pub const CAST_FEAR_SAVE: &str =
+    "  {target} resists the fear ({save_result}).";
+pub const CAST_FEAR_NO_TARGETS: &str = "You project dread, but there are no enemies to frighten.";
+pub const CAST_MASS_HEALING_WORD: &str =
+    "You whisper a word of healing that washes over you. You recover {roll}+{mod}={healing} HP. (HP: {current}/{max})";
+pub const CAST_REVIVIFY_SUCCESS: &str =
+    "You touch your own body and pull yourself back from the brink of death. You stabilize at 1 HP.";
+pub const CAST_REVIVIFY_NOT_DYING: &str =
+    "You are not dying. Revivify has no effect.";
+pub const CAST_FLY: &str =
+    "You rise into the air, borne aloft by magical wings of shimmering light.";
+pub const CAST_DISPEL_MAGIC_SUCCESS: &str =
+    "You dispel {spell}. The magical effect fades.";
+pub const CAST_DISPEL_MAGIC_NOTHING: &str =
+    "There is nothing to dispel.";
+
 // -- Ritual-cast templates --
 pub const CAST_NOT_A_RITUAL: &str = "{spell} doesn't have the Ritual tag — cast it normally.";
 pub const CAST_RITUAL_INTRO: &str = "You begin a ritual casting of {spell}. (No spell slot consumed. Takes longer than normal in-world.)";
