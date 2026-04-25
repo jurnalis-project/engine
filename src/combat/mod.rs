@@ -6946,7 +6946,7 @@ mod tests {
         let seed = find_shove_success_seed();
         let mut rng = StdRng::seed_from_u64(seed);
         let mut state = test_state_with_goblin();
-        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
         combat.distances.insert(0, 5);
 
         let mut rng2 = StdRng::seed_from_u64(seed);
@@ -6973,7 +6973,7 @@ mod tests {
             stats.ability_scores.insert(Ability::Dexterity, 8);
         }
 
-        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
         combat.distances.insert(0, 5);
 
         // DC is 13, NPC STR mod is +3. Find a seed where d20 + 3 < 13 (d20 <= 9).
@@ -7382,7 +7382,7 @@ mod tests {
             cs.current_hp = 1;
         }
         let mut rng = StdRng::seed_from_u64(42);
-        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
         let initial_distance = 10;
         combat.distances.insert(0, initial_distance);
 
@@ -7402,7 +7402,7 @@ mod tests {
         // An NPC at full HP should move toward the player, not retreat.
         let mut state = test_state_with_goblin();
         let mut rng = StdRng::seed_from_u64(42);
-        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
         let initial_distance = 20;
         combat.distances.insert(0, initial_distance);
 
@@ -7427,7 +7427,7 @@ mod tests {
             cs.attacks.retain(|a| a.reach > 0);
         }
         let mut rng = StdRng::seed_from_u64(42);
-        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
         let initial_distance = 20;
         combat.distances.insert(0, initial_distance);
 
@@ -7439,7 +7439,6 @@ mod tests {
             "Low-HP NPC without ranged attack should still approach. \
              Initial: {}, After: {}. Lines: {:?}",
             initial_distance, new_distance, lines
->>>>>>> 293bfcd (feat: add NPC retreat/kite AI when HP below 30% with ranged attack)
         );
     }
 }

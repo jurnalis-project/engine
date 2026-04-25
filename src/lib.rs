@@ -21181,89 +21181,70 @@ mod tests {
         panic!("no seed found producing a natural 1");
     }
 
-    // Hypothesis: The death save accumulation logic in `apply_death_save_roll`
-    // is correct (unit tests confirm), but no integration test drives 3
-    // failure accumulations through `process_input` to confirm the full
-    // pipeline results in a game-over state. This test fills that gap.
-    //
-    // Engine behavior note: when the player is dying, a single
-    // `process_input` call resolves multiple death save rounds (the NPC
-    // turn loop auto-rolls death saves each time the player's turn comes
-    // around). A seed that produces three consecutive failure rolls (d20
-    // in 2..=9) from the same RNG instance ensures the player accumulates
-    // three failures and dies within that single call.
+    // Drives 3 separate process_input calls (one death save per call) with
+    // failure-producing seeds and verifies the player is dead after the third.
     #[test]
     fn test_three_death_save_failures_across_process_input_triggers_game_over() {
-        let mut state = create_dying_combat_state();
-        let base_counter = state.rng_counter;
+        use rand::Rng;
 
-        // Find a seed that gives 3 consecutive failure rolls (d20 in 2..=9)
-        // from a single RNG instance seeded at (seed + counter).
-        let seed = find_seed_three_consecutive_failures(base_counter);
-        state.rng_seed = seed;
-
-        // Verify the rolls are what we expect before running process_input.
-        {
-            use rand::Rng;
-            let mut rng = StdRng::seed_from_u64(seed + base_counter);
-            for i in 0..3 {
+        // Find three seeds that each produce a failure roll (d20 in 2..=9)
+        // at counter 0 so we can control each call independently.
+        let find_failure_seed = || -> u64 {
+            for seed in 0u64..100_000 {
+                let mut rng = StdRng::seed_from_u64(seed);
                 let d20: i32 = rng.gen_range(1..=20);
-                assert!(
-                    (2..=9).contains(&d20),
-                    "pre-check: expected failure roll at position {}, got {}",
-                    i, d20
-                );
+                if (2..=9).contains(&d20) {
+                    return seed;
+                }
             }
-        }
+            panic!("no failure seed found");
+        };
 
-        // A single process_input call should resolve 3 consecutive failure
-        // death saves and end combat in defeat.
-        let json = serde_json::to_string(&state).unwrap();
-        let out = process_input(&json, "wait");
-        let final_state: GameState = serde_json::from_str(&out.state_json).unwrap();
-        let text = out.text.join("\n");
+        let failure_seed = find_failure_seed();
+        let mut state = create_dying_combat_state();
 
-        // Verify death save narration appeared.
-        let text_lower = text.to_lowercase();
-        assert!(
-            text_lower.contains("death sav"),
-            "Expected death save narration, got: {}",
-            text
-        );
+        // Turn 1: one failure
+        state.rng_seed = failure_seed;
+        state.rng_counter = 0;
+        let out1 = process_input(&serde_json::to_string(&state).unwrap(), "wait");
+        let mut state: GameState = serde_json::from_str(&out1.state_json).unwrap();
+        assert!(out1.text.join("\n").to_lowercase().contains("failure"), "Turn 1 should produce a failure");
 
-        // Count the failure narration lines to confirm 3 failures accumulated.
-        let failure_count = text_lower.matches("failure").count();
-        assert!(
-            failure_count >= 3,
-            "Expected at least 3 failure narrations, got {}: {}",
-            failure_count, text
-        );
+        // Turn 2: second failure
+        state.rng_seed = failure_seed;
+        state.rng_counter = 0;
+        let out2 = process_input(&serde_json::to_string(&state).unwrap(), "wait");
+        let mut state: GameState = serde_json::from_str(&out2.state_json).unwrap();
+        assert!(out2.text.join("\n").to_lowercase().contains("failure"), "Turn 2 should produce a failure");
 
-        // After defeat, active_combat is cleared.
+        // Turn 3: third failure — should trigger death
+        state.rng_seed = failure_seed;
+        state.rng_counter = 0;
+        let out3 = process_input(&serde_json::to_string(&state).unwrap(), "wait");
+        let final_state: GameState = serde_json::from_str(&out3.state_json).unwrap();
+        let text3 = out3.text.join("\n");
+
         assert!(
             final_state.active_combat.is_none(),
-            "Combat should end after three failures"
+            "Combat should end after three failures. Output: {}",
+            text3
         );
         assert!(
             final_state.character.current_hp <= 0,
-            "Player HP should be 0 or below"
+            "Player HP should be 0 or below after death"
         );
-
-        // The defeat text should appear.
         assert!(
-            text.contains("DEFEAT") || text.contains("fallen"),
+            text3.contains("DEFEAT") || text3.to_lowercase().contains("fallen"),
             "Expected defeat narration, got: {}",
-            text
+            text3
         );
 
-        // Confirm the GAME OVER gate: the next process_input should show
-        // GAME OVER because HP <= 0 and no active combat.
-        let out2 = process_input(&out.state_json, "look");
-        let text2 = out2.text.join("\n");
+        // GAME OVER gate: one more call should show GAME OVER.
+        let out_go = process_input(&serde_json::to_string(&final_state).unwrap(), "look");
         assert!(
-            text2.contains("GAME OVER"),
-            "After defeat, process_input should show GAME OVER. Got: {}",
-            text2
+            out_go.text.join("\n").contains("GAME OVER"),
+            "After defeat, process_input should show GAME OVER. Got: {:?}",
+            out_go.text
         );
     }
 
