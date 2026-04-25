@@ -16,6 +16,13 @@ pub enum ResolveResult {
 pub fn resolve_target(target: &str, candidates: &[(usize, &str)]) -> ResolveResult {
     let target_lower = target.to_lowercase();
 
+    // Guard: empty (or whitespace-only) target must never match any candidate.
+    // Without this, starts_with("") is true for every string, causing the
+    // prefix-match phase to silently resolve a single-item list.
+    if target_lower.trim().is_empty() {
+        return ResolveResult::NotFound;
+    }
+
     // Phase 1: exact matches
     let exact: Vec<(usize, String)> = candidates.iter()
         .filter(|(_, name)| name.to_lowercase() == target_lower)
@@ -136,5 +143,40 @@ mod tests {
     fn test_case_insensitive() {
         let candidates = vec![(1, "Torn Map")];
         assert_eq!(resolve_target("TORN MAP", &candidates), ResolveResult::Found(1));
+    }
+
+    // Hypothesis: resolve_target("", candidates) incorrectly matches all
+    // candidates via starts_with("") in Phase 2 (prefix match). With a
+    // single candidate this silently returns Found, allowing commands like
+    // Drop("") to execute without user feedback. The fix adds an early
+    // return of NotFound when the target string is empty.
+    #[test]
+    fn test_empty_target_returns_not_found() {
+        let candidates = vec![(1, "Shortsword")];
+        assert_eq!(
+            resolve_target("", &candidates),
+            ResolveResult::NotFound,
+            "Empty target must never match any candidate"
+        );
+    }
+
+    #[test]
+    fn test_empty_target_multiple_candidates_returns_not_found() {
+        let candidates = vec![(1, "Shortsword"), (2, "Shield")];
+        assert_eq!(
+            resolve_target("", &candidates),
+            ResolveResult::NotFound,
+            "Empty target must not produce Ambiguous with multiple candidates"
+        );
+    }
+
+    #[test]
+    fn test_whitespace_only_target_returns_not_found() {
+        let candidates = vec![(1, "Shortsword")];
+        assert_eq!(
+            resolve_target("  ", &candidates),
+            ResolveResult::NotFound,
+            "Whitespace-only target must not match any candidate"
+        );
     }
 }

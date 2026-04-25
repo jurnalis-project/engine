@@ -2533,6 +2533,12 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
             lines
         }
         Command::Drop(item_name) => {
+            // Defense-in-depth: guard against empty item name reaching the
+            // resolver, where starts_with("") matches every candidate.
+            if item_name.trim().is_empty() {
+                return vec!["Drop what?".to_string()];
+            }
+
             let owned_candidates = inventory_item_candidates(state);
             let candidates: Vec<(usize, &str)> = owned_candidates
                 .iter()
@@ -14866,6 +14872,58 @@ mod tests {
         assert!(
             text.contains("I don't understand"),
             "Unrecognised input should be wrapped in error template. Got: {}",
+            text,
+        );
+    }
+
+    // Issue #231: bare commands must produce non-empty feedback, not blank output.
+    #[test]
+    fn test_bare_and_command_produces_feedback() {
+        let state = create_test_exploration_state();
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "and");
+        assert!(
+            !output.text.is_empty(),
+            "Bare 'and' must produce non-empty output, got empty text"
+        );
+        let text = output.text.join("\n");
+        assert!(
+            text.contains("I don't understand"),
+            "Bare 'and' should produce unknown-command feedback. Got: {}",
+            text,
+        );
+    }
+
+    #[test]
+    fn test_bare_drop_command_produces_feedback() {
+        let state = create_test_exploration_state();
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "drop");
+        assert!(
+            !output.text.is_empty(),
+            "Bare 'drop' must produce non-empty output, got empty text"
+        );
+        let text = output.text.join("\n").to_lowercase();
+        assert!(
+            text.contains("drop what"),
+            "Bare 'drop' should ask what to drop. Got: {}",
+            text,
+        );
+    }
+
+    #[test]
+    fn test_bare_equip_command_produces_feedback() {
+        let state = create_test_exploration_state();
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "equip");
+        assert!(
+            !output.text.is_empty(),
+            "Bare 'equip' must produce non-empty output, got empty text"
+        );
+        let text = output.text.join("\n").to_lowercase();
+        assert!(
+            text.contains("equip what"),
+            "Bare 'equip' should ask what to equip. Got: {}",
             text,
         );
     }
