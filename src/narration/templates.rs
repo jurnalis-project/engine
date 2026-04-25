@@ -175,6 +175,31 @@ pub const EXHAUSTION_LETHAL_OTHER: &str = "{target} collapses, lifeless from exh
 pub const END_TURN: &str = "You end your turn.";
 pub const END_TURN_WAIT: &str = "You wait, letting your turn pass without acting.";
 
+// -- NPC ambient bark templates (one-liners per NpcRole) --
+pub const BARK_GUARD: &[&str] = &[
+    "\"Keep moving.\"",
+    "\"Stay out of trouble.\"",
+    "\"I've got my eye on you.\"",
+];
+
+pub const BARK_MERCHANT: &[&str] = &[
+    "\"Fine goods here, if you're buying.\"",
+    "\"Best prices this side of the dungeon.\"",
+    "\"Take a look, friend. You won't be disappointed.\"",
+];
+
+pub const BARK_HERMIT: &[&str] = &[
+    "\"The walls remember what you forget...\"",
+    "\"Shh. Listen. Do you hear it?\"",
+    "\"Few come this way. Fewer leave.\"",
+];
+
+pub const BARK_ADVENTURER: &[&str] = &[
+    "\"Careful ahead -- I've seen things.\"",
+    "\"Another explorer? Good luck to you.\"",
+    "\"Treasure's deeper in, if you dare.\"",
+];
+
 pub const HELP_TEXT: &str = "\
 Commands:
   look [target]     - Examine surroundings or a specific thing
@@ -509,7 +534,9 @@ fn unavailable_topic_help(topic: &str, phase: HelpPhase) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{render_help, HelpPhase};
+    use super::{
+        render_help, HelpPhase, BARK_ADVENTURER, BARK_GUARD, BARK_HERMIT, BARK_MERCHANT,
+    };
 
     #[test]
     fn help_overview_lists_topics_for_exploration() {
@@ -700,5 +727,41 @@ mod tests {
             "Expected background topic to mention backgrounds. Got:\n{}",
             joined,
         );
+    }
+
+    #[test]
+    fn bark_templates_exist_for_all_roles() {
+        assert!(
+            BARK_GUARD.len() >= 3,
+            "Expected at least 3 guard bark templates"
+        );
+        assert!(
+            BARK_MERCHANT.len() >= 3,
+            "Expected at least 3 merchant bark templates"
+        );
+        assert!(
+            BARK_HERMIT.len() >= 3,
+            "Expected at least 3 hermit bark templates"
+        );
+        assert!(
+            BARK_ADVENTURER.len() >= 3,
+            "Expected at least 3 adventurer bark templates"
+        );
+    }
+
+    #[test]
+    fn bark_templates_are_quoted_strings() {
+        for bark in BARK_GUARD
+            .iter()
+            .chain(BARK_MERCHANT.iter())
+            .chain(BARK_HERMIT.iter())
+            .chain(BARK_ADVENTURER.iter())
+        {
+            assert!(
+                bark.starts_with('"') && bark.ends_with('"'),
+                "Bark template should be wrapped in quotes: {}",
+                bark
+            );
+        }
     }
 }
