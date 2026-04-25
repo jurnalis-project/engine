@@ -217,9 +217,18 @@ Combat commands (available during combat):
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HelpPhase {
+    CharacterCreation,
     Exploration,
     Combat,
 }
+
+const CREATION_HELP_TOPICS: &[&str] = &[
+    "race",
+    "class",
+    "abilities",
+    "checks",
+    "background",
+];
 
 const EXPLORATION_HELP_TOPICS: &[&str] = &[
     "movement",
@@ -265,6 +274,7 @@ pub fn render_help(topic: Option<&str>, phase: HelpPhase) -> Vec<String> {
 impl HelpPhase {
     fn valid_topics(self) -> &'static [&'static str] {
         match self {
+            HelpPhase::CharacterCreation => CREATION_HELP_TOPICS,
             HelpPhase::Exploration => EXPLORATION_HELP_TOPICS,
             HelpPhase::Combat => COMBAT_HELP_TOPICS,
         }
@@ -272,6 +282,7 @@ impl HelpPhase {
 
     fn name(self) -> &'static str {
         match self {
+            HelpPhase::CharacterCreation => "character creation",
             HelpPhase::Exploration => "exploration",
             HelpPhase::Combat => "combat",
         }
@@ -291,12 +302,24 @@ fn normalize_help_topic(raw_topic: &str) -> Option<&'static str> {
         "system" | "save" | "load" | "help" | "commands" => Some("system"),
         "combat" | "battle" | "fight" | "attack" => Some("combat"),
         "spells" | "spell" | "magic" | "cast" | "casting" => Some("spells"),
+        // Character creation topics
+        "race" | "races" | "species" => Some("race"),
+        "class" | "classes" => Some("class"),
+        "abilities" | "ability" | "ability scores" | "scores" => Some("abilities"),
+        "background" | "backgrounds" | "origin" => Some("background"),
         _ => None,
     }
 }
 
 fn overview_help(phase: HelpPhase) -> Vec<String> {
     match phase {
+        HelpPhase::CharacterCreation => vec![
+            "Help (character creation):".to_string(),
+            format!("Topics: {}.", phase.valid_topics().join(", ")),
+            "Type 'help <topic>' for details on each step.".to_string(),
+            "Steps: choose race, class, background, ability scores, skills, alignment, and name.".to_string(),
+            "Enter a number or type a name to make your selection at each step.".to_string(),
+        ],
         HelpPhase::Exploration => vec![
             "Commands overview (exploration):".to_string(),
             format!("Topics: {}.", phase.valid_topics().join(", ")),
@@ -408,6 +431,40 @@ fn topic_help(topic: &str, phase: HelpPhase) -> Vec<String> {
             "  Your spellcasting ability depends on class (e.g. Cleric/Druid use WIS,".to_string(),
             "  Bard/Sorcerer/Warlock use CHA, Wizard uses INT).".to_string(),
         ],
+        // ---- Character creation topics ----
+        ("race", HelpPhase::CharacterCreation) => vec![
+            "Help: race (character creation)".to_string(),
+            "  Your race determines ability score bonuses, traits, and starting speed.".to_string(),
+            "  Available races: Human, Elf, Dwarf, Dragonborn, Gnome, Goliath, Halfling, Orc, Tiefling.".to_string(),
+            "  Some races (Elf, Dragonborn, Gnome, Goliath, Tiefling) have subraces to choose after.".to_string(),
+            "  Enter a number or type the race name to select.".to_string(),
+        ],
+        ("class", HelpPhase::CharacterCreation) => vec![
+            "Help: class (character creation)".to_string(),
+            "  Your class determines hit dice, saving throws, proficiencies, and features.".to_string(),
+            "  12 classes available: Barbarian, Bard, Cleric, Druid, Fighter, Monk,".to_string(),
+            "  Paladin, Ranger, Rogue, Sorcerer, Warlock, Wizard.".to_string(),
+            "  Enter a number or type the class name to select.".to_string(),
+        ],
+        ("abilities", HelpPhase::CharacterCreation) => vec![
+            "Help: abilities (character creation)".to_string(),
+            "  Six ability scores define your character: STR, DEX, CON, INT, WIS, CHA.".to_string(),
+            "  Methods: Standard Array (15,14,13,12,10,8), Random (4d6 drop lowest),".to_string(),
+            "  or Point Buy (27 points, scores 8-15).".to_string(),
+            "  After generating scores, assign them to abilities in order: STR DEX CON INT WIS CHA.".to_string(),
+        ],
+        ("checks", HelpPhase::CharacterCreation) => vec![
+            "Help: skills (character creation)".to_string(),
+            "  Your class determines which skill proficiencies you can choose from.".to_string(),
+            "  Proficiency adds your proficiency bonus (+2 at level 1) to skill checks.".to_string(),
+            "  Enter the numbers of your chosen skills separated by spaces.".to_string(),
+        ],
+        ("background", HelpPhase::CharacterCreation) => vec![
+            "Help: background (character creation)".to_string(),
+            "  Your background grants an origin feat and ability score adjustments.".to_string(),
+            "  Each background suggests a default origin feat you can accept or change.".to_string(),
+            "  After choosing a background, pick an ability adjustment pattern: +2/+1 or +1/+1/+1.".to_string(),
+        ],
         _ => unreachable!("Topic '{topic}' should be resolved before rendering"),
     }
 }
@@ -515,5 +572,105 @@ mod tests {
         assert!(joined.contains("reaction"));
         assert!(joined.contains("rage"));
         assert!(joined.contains("grapple"));
+    }
+
+    // ---- CharacterCreation help tests ----
+
+    #[test]
+    fn help_overview_lists_topics_for_creation() {
+        let lines = render_help(None, HelpPhase::CharacterCreation);
+        let joined = lines.join("\n").to_lowercase();
+
+        assert!(
+            joined.contains("character creation"),
+            "Expected overview to mention character creation. Got:\n{}",
+            joined,
+        );
+        assert!(joined.contains("race"), "Expected overview to mention 'race'");
+        assert!(
+            joined.contains("class"),
+            "Expected overview to mention 'class'"
+        );
+        assert!(
+            joined.contains("abilities"),
+            "Expected overview to mention 'abilities'"
+        );
+        assert!(
+            joined.contains("checks"),
+            "Expected overview to mention 'checks' (skill proficiency topic)"
+        );
+    }
+
+    #[test]
+    fn help_creation_race_topic() {
+        let lines = render_help(Some("race"), HelpPhase::CharacterCreation);
+        let joined = lines.join("\n").to_lowercase();
+
+        assert!(
+            joined.contains("race"),
+            "Expected race topic to mention races. Got:\n{}",
+            joined,
+        );
+    }
+
+    #[test]
+    fn help_creation_class_topic() {
+        let lines = render_help(Some("class"), HelpPhase::CharacterCreation);
+        let joined = lines.join("\n").to_lowercase();
+
+        assert!(
+            joined.contains("class"),
+            "Expected class topic to mention classes. Got:\n{}",
+            joined,
+        );
+    }
+
+    #[test]
+    fn help_creation_abilities_topic() {
+        let lines = render_help(Some("abilities"), HelpPhase::CharacterCreation);
+        let joined = lines.join("\n").to_lowercase();
+
+        assert!(
+            joined.contains("ability"),
+            "Expected abilities topic to mention ability scores. Got:\n{}",
+            joined,
+        );
+    }
+
+    #[test]
+    fn help_creation_skills_topic() {
+        // "skills" normalizes to "checks" which is valid during creation
+        let lines = render_help(Some("skills"), HelpPhase::CharacterCreation);
+        let joined = lines.join("\n").to_lowercase();
+
+        assert!(
+            joined.contains("skill"),
+            "Expected skills topic to mention skill proficiencies. Got:\n{}",
+            joined,
+        );
+    }
+
+    #[test]
+    fn help_creation_unknown_topic() {
+        let lines = render_help(Some("combat"), HelpPhase::CharacterCreation);
+        let joined = lines.join("\n").to_lowercase();
+
+        assert!(
+            joined.contains("not available during character creation"),
+            "Expected unavailable topic message. Got:\n{}",
+            joined,
+        );
+    }
+
+    #[test]
+    fn help_creation_background_topic() {
+        let lines = render_help(Some("background"), HelpPhase::CharacterCreation);
+        let joined = lines.join("\n").to_lowercase();
+
+        assert!(
+            joined.contains("background"),
+            "Expected background topic to mention backgrounds. Got:\n{}",
+            joined,
+        );
     }
 }
