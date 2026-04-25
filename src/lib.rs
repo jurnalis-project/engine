@@ -4056,19 +4056,26 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
     // Death Saving Throws (issue #84): if it's the player's turn but they
     // are dying, auto-roll a death save. Unconscious characters can't
     // issue commands, so any player input received while they're at 0 HP
-    // simply triggers the save and advances to NPC turns. A stabilizing
-    // save (nat 20 / third success) returns the player to consciousness
-    // and lets their input run normally.
+    // simply triggers the save and advances to NPC turns.
     if combat.is_player_turn() && combat.is_player_dying(state) {
         let (d20, outcome) = combat.roll_death_save(&mut rng, &mut state.character);
         let mut lines = combat::narrate_death_save_outcome(d20, outcome);
         match outcome {
-            combat::DeathSaveOutcome::CritSuccess | combat::DeathSaveOutcome::Stable => {
-                // Player is conscious. Show prompt; let them issue a new
-                // command next turn (the current input is consumed by the
-                // death save, per SRD: rolling the save IS the turn's
-                // action when unconscious, and regaining consciousness
-                // mid-turn leaves no movement/action this turn).
+            combat::DeathSaveOutcome::CritSuccess => {
+                // Issue #225: nat-20 revives the player at 1 HP on their
+                // own initiative count. They get a full turn immediately
+                // — do NOT end/advance the turn. The death save consumed
+                // the current input, so prompt for a fresh command.
+                state.active_combat = Some(combat);
+                if let Some(ref combat) = state.active_combat {
+                    append_player_turn_prompt(&mut lines, state, combat);
+                }
+                return lines;
+            }
+            combat::DeathSaveOutcome::Stable => {
+                // Three successes: character stabilizes (HP set to 1 by
+                // apply_death_save_roll). The save consumed the turn's
+                // action, so end the turn and let NPCs act.
                 combat.end_player_turn();
                 combat.advance_turn(state);
                 state.active_combat = Some(combat);
@@ -18668,6 +18675,7 @@ mod tests {
         println!("REST_FIXTURE:\n{}", rest_json);
     }
 
+<<<<<<< HEAD
     // Hypothesis: A merchant NPC that is initially Friendly loses its disposition
     // and becomes hostile (triggering combat) when the player revisits the room
     // via an alternate path. The bug occurs because the at-least-one-hostile
@@ -18846,6 +18854,57 @@ mod tests {
         assert!(
             state_after_visit2.active_combat.is_none(),
             "No active combat should exist after visiting a Friendly merchant room"
+        );
+    }
+
+    /// Find an RNG seed that produces a nat-20 on the first `roll_d20` call.
+    fn find_nat20_seed() -> u64 {
+        use rand::rngs::StdRng;
+        use rand::SeedableRng;
+        for seed in 0u64..100_000 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let roll = rules::dice::roll_d20(&mut rng);
+            if roll == 20 {
+                return seed;
+            }
+        }
+        panic!("Could not find a seed that rolls nat-20 within 100k attempts");
+    }
+
+    #[test]
+    fn test_nat20_death_save_gives_player_turn_prompt() {
+        let mut state = create_test_combat_state();
+        force_player_turn(&mut state);
+
+        state.character.current_hp = 0;
+
+        let nat20_seed = find_nat20_seed();
+        state.rng_counter = 0;
+        state.rng_seed = nat20_seed;
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "attack goblin");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+
+        assert_eq!(
+            new_state.character.current_hp, 1,
+            "Nat-20 death save should revive player at 1 HP"
+        );
+        assert!(
+            output.text.iter().any(|t| t.contains("regain 1 HP")),
+            "Expected revival narration, got: {:?}",
+            output.text
+        );
+        assert!(
+            output.text.iter().any(|t| t.contains("Your turn!")),
+            "After nat-20 revival, player should get a turn prompt. Got: {:?}",
+            output.text
+        );
+
+        let combat = new_state.active_combat.as_ref().expect("Combat should still be active");
+        assert!(
+            combat.is_player_turn(),
+            "Initiative should remain on the player after nat-20 revival"
         );
     }
 }
