@@ -1,5 +1,5 @@
 // jurnalis-engine/src/world/location.rs
-use crate::state::{LightLevel, Location, LocationType, RoomFeature};
+use crate::state::{FeatureState, LightLevel, Location, LocationType, RoomFeature, RoomFeatureKind};
 use crate::types::{Direction, LocationId};
 use rand::seq::SliceRandom;
 use rand::Rng;
@@ -41,46 +41,66 @@ const ROOM_DESCRIPTIONS: &[&str] = &[
     "Shadows dance at the edges of your vision.",
 ];
 
-const ROOM_FEATURES: &[(&str, &str)] = &[
+const ROOM_FEATURES: &[(&str, &str, RoomFeatureKind, Option<FeatureState>)] = &[
     (
         "altar",
         "Its worn surface is etched with old prayer marks and candle wax.",
+        RoomFeatureKind::Decorative,
+        None,
     ),
     (
         "statue",
         "A weathered stone figure watches the room with a cracked, patient face.",
+        RoomFeatureKind::Decorative,
+        None,
     ),
     (
         "door",
         "Age-darkened wood and iron bands suggest it has resisted many hands.",
+        RoomFeatureKind::Door,
+        Some(FeatureState::Closed),
     ),
     (
         "runes",
         "The faded runes look ceremonial, their grooves still sharp beneath the dust.",
+        RoomFeatureKind::Decorative,
+        None,
     ),
     (
         "torch sconce",
         "Cold iron brackets hold the remains of long-burned torches.",
+        RoomFeatureKind::Decorative,
+        None,
     ),
     (
         "bookshelf",
         "Warped shelves sag under mildew-stained books and loose parchment.",
+        RoomFeatureKind::Climbable,
+        None,
     ),
     (
         "well",
         "A ring of damp stone surrounds a shaft that drops into darkness.",
+        RoomFeatureKind::Climbable,
+        None,
     ),
     (
         "forge",
         "Ash and old slag cling to the stone, hinting at fires that once roared here.",
+        RoomFeatureKind::Decorative,
+        None,
     ),
     (
         "chains",
         "Rust-bitten chains hang from the wall, some snapped, some still taut.",
+        RoomFeatureKind::Climbable,
+        None,
     ),
     (
         "mural",
         "A peeling mural depicts forgotten figures in triumph and ruin.",
+        RoomFeatureKind::Decorative,
+        None,
     ),
 ];
 
@@ -90,9 +110,11 @@ fn generate_room_features(rng: &mut impl Rng) -> Vec<RoomFeature> {
     pool.shuffle(rng);
     pool.into_iter()
         .take(feature_count)
-        .map(|(name, description)| RoomFeature {
+        .map(|(name, description, kind, feature_state)| RoomFeature {
             name: name.to_string(),
             description: description.to_string(),
+            kind,
+            state: feature_state,
         })
         .collect()
 }

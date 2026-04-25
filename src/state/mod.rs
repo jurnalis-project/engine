@@ -124,10 +124,36 @@ pub struct Location {
     pub room_features: Vec<RoomFeature>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RoomFeatureKind {
+    Door,
+    Lever,
+    Chest,
+    Climbable,
+    Decorative,
+}
+
+impl Default for RoomFeatureKind {
+    fn default() -> Self {
+        RoomFeatureKind::Decorative
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FeatureState {
+    Open,
+    Closed,
+    Locked,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RoomFeature {
     pub name: String,
     pub description: String,
+    #[serde(default)]
+    pub kind: RoomFeatureKind,
+    #[serde(default)]
+    pub state: Option<FeatureState>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -990,5 +1016,61 @@ mod tests {
         let loaded = load_game(&json.to_string()).unwrap();
         assert!(loaded.progress.objectives.is_empty());
         assert!(loaded.progress.objective_triggers.is_empty());
+    }
+
+    #[test]
+    fn test_room_feature_kind_defaults_to_decorative() {
+        // Older saves without kind/state fields should deserialize with defaults
+        let json = r#"{
+            "name": "altar",
+            "description": "A stone altar."
+        }"#;
+        let feature: RoomFeature = serde_json::from_str(json).unwrap();
+        assert_eq!(feature.kind, RoomFeatureKind::Decorative);
+        assert_eq!(feature.state, None);
+    }
+
+    #[test]
+    fn test_room_feature_kind_roundtrips() {
+        let feature = RoomFeature {
+            name: "iron door".to_string(),
+            description: "A heavy iron door.".to_string(),
+            kind: RoomFeatureKind::Door,
+            state: Some(FeatureState::Closed),
+        };
+        let json = serde_json::to_string(&feature).unwrap();
+        let loaded: RoomFeature = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded.kind, RoomFeatureKind::Door);
+        assert_eq!(loaded.state, Some(FeatureState::Closed));
+    }
+
+    #[test]
+    fn test_feature_state_variants() {
+        for (state, expected) in [
+            (FeatureState::Open, "Open"),
+            (FeatureState::Closed, "Closed"),
+            (FeatureState::Locked, "Locked"),
+        ] {
+            let json = serde_json::to_string(&state).unwrap();
+            assert!(json.contains(expected));
+            let loaded: FeatureState = serde_json::from_str(&json).unwrap();
+            assert_eq!(loaded, state);
+        }
+    }
+
+    #[test]
+    fn test_room_feature_kind_variants() {
+        for (kind, expected) in [
+            (RoomFeatureKind::Door, "Door"),
+            (RoomFeatureKind::Lever, "Lever"),
+            (RoomFeatureKind::Chest, "Chest"),
+            (RoomFeatureKind::Climbable, "Climbable"),
+            (RoomFeatureKind::Decorative, "Decorative"),
+        ] {
+            let json = serde_json::to_string(&kind).unwrap();
+            assert!(json.contains(expected));
+            let loaded: RoomFeatureKind = serde_json::from_str(&json).unwrap();
+            assert_eq!(loaded, kind);
+        }
     }
 }

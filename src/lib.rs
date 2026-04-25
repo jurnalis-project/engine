@@ -11164,6 +11164,7 @@ mod tests {
         loc.room_features = vec![state::RoomFeature {
             name: "altar".to_string(),
             description: "Its worn surface is etched with soot-dark prayers.".to_string(),
+            ..Default::default()
         }];
 
         let state_json = serde_json::to_string(&state).unwrap();
@@ -11188,10 +11189,12 @@ mod tests {
             state::RoomFeature {
                 name: "stone door".to_string(),
                 description: "A heavy slab blocks the passage.".to_string(),
+                ..Default::default()
             },
             state::RoomFeature {
                 name: "wooden door".to_string(),
                 description: "Age-darkened planks hang on rusted hinges.".to_string(),
+                ..Default::default()
             },
         ];
 
@@ -11216,6 +11219,7 @@ mod tests {
         loc.room_features = vec![state::RoomFeature {
             name: "door".to_string(),
             description: "Age-darkened wood and iron bands.".to_string(),
+            ..Default::default()
         }];
 
         let state_json = serde_json::to_string(&state).unwrap();
@@ -11246,6 +11250,7 @@ mod tests {
         loc.room_features = vec![state::RoomFeature {
             name: "door".to_string(),
             description: "Age-darkened wood and iron bands.".to_string(),
+            ..Default::default()
         }];
 
         let state_json = serde_json::to_string(&state).unwrap();
@@ -11299,6 +11304,7 @@ mod tests {
         loc.room_features = vec![state::RoomFeature {
             name: "lever".to_string(),
             description: "A rusted iron lever protrudes from the wall.".to_string(),
+            ..Default::default()
         }];
 
         let state_json = serde_json::to_string(&state).unwrap();
@@ -11323,6 +11329,7 @@ mod tests {
         loc.room_features = vec![state::RoomFeature {
             name: "door".to_string(),
             description: "A heavy iron door.".to_string(),
+            ..Default::default()
         }];
 
         let state_json = serde_json::to_string(&state).unwrap();
@@ -11689,6 +11696,7 @@ mod tests {
         location.room_features = vec![state::RoomFeature {
             name: "bookshelf".to_string(),
             description: "Warped shelves lean against the wall.".to_string(),
+            ..Default::default()
         }];
         let npc_id = 50_001;
         location.npcs.push(npc_id);
@@ -11741,6 +11749,7 @@ mod tests {
             room_features: vec![state::RoomFeature {
                 name: "bookshelf".to_string(),
                 description: "Warped shelves lean against the wall.".to_string(),
+                ..Default::default()
             }],
         };
 
@@ -20924,7 +20933,7 @@ mod tests {
     fn test_examine_room_feature() {
         let mut state = create_test_exploration_state();
         let loc = state.world.locations.get_mut(&state.current_location).unwrap();
-        loc.room_features = vec![state::RoomFeature { name: "crystal fountain".to_string(), description: "Water shimmers with an ethereal glow.".to_string() }];
+        loc.room_features = vec![state::RoomFeature { name: "crystal fountain".to_string(), description: "Water shimmers with an ethereal glow.".to_string(), ..Default::default() }];
         let state_json = serde_json::to_string(&state).unwrap();
         let output = process_input(&state_json, "examine fountain");
         let all_text = output.text.join("\n");
