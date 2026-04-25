@@ -2977,6 +2977,7 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
         | Command::EndTurn
         | Command::OffHandAttack(_)
         | Command::BonusDash
+        | Command::BonusDisengage
         | Command::ReactionYes
         | Command::ReactionNo
         | Command::Grapple(_)

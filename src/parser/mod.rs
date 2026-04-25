@@ -44,6 +44,9 @@ pub enum Command {
     OffHandAttack(String),
     /// Dash as a bonus action (for Rogue Cunning Action or generic MVP).
     BonusDash,
+    /// Disengage as a bonus action (Rogue Cunning Action). Consumes the bonus
+    /// action, sets `player_disengaging = true`. Non-Rogues are rejected.
+    BonusDisengage,
     /// Accept a pending reaction prompt. Only meaningful when
     /// `CombatState::pending_reaction` is Some; otherwise the orchestrator
     /// treats it as an unknown verb.
@@ -141,6 +144,7 @@ pub fn parse(input: &str) -> Command {
                 };
             }
             "dash as bonus" => return Command::BonusDash,
+            "disengage as bonus" => return Command::BonusDisengage,
             // Paladin: "lay on hands [target]"
             "lay on hands" => return Command::LayOnHands(rest_after_three),
             _ => {}
@@ -216,6 +220,9 @@ pub fn parse(input: &str) -> Command {
             }
             "bonus dash" | "dash bonus" => {
                 return Command::BonusDash;
+            }
+            "bonus disengage" | "disengage bonus" | "cunning disengage" => {
+                return Command::BonusDisengage;
             }
             "move to" | "move toward" => {
                 // Check if it looks like a direction first
@@ -1254,6 +1261,22 @@ mod tests {
         assert_eq!(parse("bonus dash"), Command::BonusDash);
         assert_eq!(parse("dash as bonus"), Command::BonusDash);
         assert_eq!(parse("dash bonus"), Command::BonusDash);
+    }
+
+    #[test]
+    fn test_bonus_disengage_variants() {
+        assert_eq!(parse("bonus disengage"), Command::BonusDisengage);
+        assert_eq!(parse("disengage as bonus"), Command::BonusDisengage);
+        assert_eq!(parse("disengage bonus"), Command::BonusDisengage);
+        assert_eq!(parse("cunning disengage"), Command::BonusDisengage);
+    }
+
+    #[test]
+    fn test_regular_disengage_still_parses_after_bonus_disengage() {
+        // Ensure existing Disengage still works without bonus markers.
+        assert_eq!(parse("disengage"), Command::Disengage);
+        assert_eq!(parse("withdraw"), Command::Disengage);
+        assert_eq!(parse("flee"), Command::Disengage);
     }
 
     #[test]
