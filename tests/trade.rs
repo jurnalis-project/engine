@@ -278,6 +278,17 @@ fn test_merchant_dialogue_includes_trade_hint() {
         "Expected trade hint in merchant dialogue, got: {}", text);
 }
 
+#[test]
+fn test_merchant_dialogue_mentions_browse() {
+    let state = make_trade_state();
+    let state_json = serde_json::to_string(&state).unwrap();
+
+    let output = process_input(&state_json, "talk marcus");
+    let text = output.text.join(" ");
+    assert!(text.contains("browse"),
+        "Expected 'browse' in merchant trade hint, got: {}", text);
+}
+
 // ---------- starting gold test -----------------------------------------------
 
 #[test]

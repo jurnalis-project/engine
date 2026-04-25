@@ -9333,7 +9333,7 @@ impl state::Npc {
         .collect();
 
         if self.role == state::NpcRole::Merchant {
-            lines.push("(You can 'buy <item>' or 'sell <item>' here.)".to_string());
+            lines.push("(You can 'browse' wares, 'buy <item>', or 'sell <item>' here.)".to_string());
         }
 
         lines
