@@ -22,7 +22,7 @@ use jurnalis_engine::{
     combat::{CombatState, Combatant},
     new_game, process_input,
     state::{CombatStats, DamageType, Disposition, GameState, GamePhase, Npc, NpcAttack, NpcRole, ProgressState, SAVE_VERSION, WorldState},
-    types::{Ability, Cover, Skill},
+    types::{Ability, Skill},
 };
 
 // ---------- helpers ----------------------------------------------------------
@@ -90,31 +90,9 @@ fn from_json(s: &str) -> GameState {
 fn fake_combat() -> CombatState {
     CombatState {
         initiative_order: vec![(Combatant::Player, 10)],
-        current_turn: 0,
         round: 1,
-        distances: HashMap::new(),
         player_movement_remaining: 30,
-        player_dodging: false,
-        player_disengaging: false,
-        action_used: false,
-        bonus_action_used: false,
-            action_surge_active: false,
-        reaction_used: false,
-        free_interaction_used: false,
-        npc_dodging: HashMap::new(),
-        npc_disengaging: HashMap::new(),
-        player_shield_ac_bonus: 0,
-        pending_reaction: None,
-        player_vex_target: None,
-        sap_targets: std::collections::HashSet::new(),
-        slow_targets: HashMap::new(),
-        cleave_used_this_turn: false,
-        nick_used_this_turn: false,
-        death_save_successes: 0,
-        death_save_failures: 0,
-        player_cover: jurnalis_engine::types::Cover::None,
-        npc_cover: std::collections::HashMap::new(),
-        npc_reactions_used: std::collections::HashSet::new(),
+        ..Default::default()
     }
 }
 
@@ -160,31 +138,10 @@ fn make_downed_combat_state() -> GameState {
     distances.insert(npc_id, 5);
     state.active_combat = Some(CombatState {
         initiative_order: vec![(Combatant::Player, 20), (Combatant::Npc(npc_id), 10)],
-        current_turn: 0,
         round: 1,
         distances,
         player_movement_remaining: state.character.speed,
-        player_dodging: false,
-        player_disengaging: false,
-        action_used: false,
-        bonus_action_used: false,
-            action_surge_active: false,
-        reaction_used: false,
-        free_interaction_used: false,
-        npc_dodging: HashMap::new(),
-        npc_disengaging: HashMap::new(),
-        player_shield_ac_bonus: 0,
-        pending_reaction: None,
-        player_vex_target: None,
-        sap_targets: std::collections::HashSet::new(),
-        slow_targets: HashMap::new(),
-        cleave_used_this_turn: false,
-        nick_used_this_turn: false,
-        death_save_successes: 0,
-        death_save_failures: 0,
-        player_cover: Cover::None,
-        npc_cover: HashMap::new(),
-        npc_reactions_used: std::collections::HashSet::new(),
+        ..Default::default()
     });
 
     state
@@ -235,31 +192,10 @@ fn make_downed_wizard_combat_state() -> GameState {
     distances.insert(npc_id, 5);
     state.active_combat = Some(CombatState {
         initiative_order: vec![(Combatant::Player, 20), (Combatant::Npc(npc_id), 10)],
-        current_turn: 0,
         round: 1,
         distances,
         player_movement_remaining: state.character.speed,
-        player_dodging: false,
-        player_disengaging: false,
-        action_used: false,
-        bonus_action_used: false,
-            action_surge_active: false,
-        reaction_used: false,
-        free_interaction_used: false,
-        npc_dodging: HashMap::new(),
-        npc_disengaging: HashMap::new(),
-        player_shield_ac_bonus: 0,
-        pending_reaction: None,
-        player_vex_target: None,
-        sap_targets: std::collections::HashSet::new(),
-        slow_targets: HashMap::new(),
-        cleave_used_this_turn: false,
-        nick_used_this_turn: false,
-        death_save_successes: 0,
-        death_save_failures: 0,
-        player_cover: Cover::None,
-        npc_cover: HashMap::new(),
-        npc_reactions_used: std::collections::HashSet::new(),
+        ..Default::default()
     });
 
     state

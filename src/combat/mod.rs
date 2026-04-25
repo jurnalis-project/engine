@@ -182,6 +182,41 @@ pub struct CombatState {
     pub player_reckless: bool,
 }
 
+impl Default for CombatState {
+    fn default() -> Self {
+        Self {
+            initiative_order: Vec::new(),
+            current_turn: 0,
+            round: 0,
+            distances: HashMap::new(),
+            player_movement_remaining: 0,
+            player_dodging: false,
+            player_disengaging: false,
+            action_used: false,
+            bonus_action_used: false,
+            action_surge_active: false,
+            reaction_used: false,
+            free_interaction_used: false,
+            npc_dodging: HashMap::new(),
+            npc_disengaging: HashMap::new(),
+            player_shield_ac_bonus: 0,
+            pending_reaction: None,
+            player_vex_target: None,
+            sap_targets: std::collections::HashSet::new(),
+            slow_targets: std::collections::HashMap::new(),
+            cleave_used_this_turn: false,
+            nick_used_this_turn: false,
+            attacks_made_this_turn: 0,
+            death_save_successes: 0,
+            death_save_failures: 0,
+            player_cover: Cover::None,
+            npc_cover: HashMap::new(),
+            npc_reactions_used: std::collections::HashSet::new(),
+            player_reckless: false,
+        }
+    }
+}
+
 /// Outcome of a single Death Saving Throw or damage-while-dying event.
 ///
 /// Emitted by `CombatState::apply_death_save_roll` and
@@ -4337,7 +4372,6 @@ mod tests {
                 (Combatant::Npc(0), 12),
                 (Combatant::Npc(1), 10),
             ],
-            current_turn: 0,
             round: 1,
             distances: {
                 let mut d = HashMap::new();
@@ -4346,29 +4380,7 @@ mod tests {
                 d
             },
             player_movement_remaining: 30,
-            player_dodging: false,
-            player_disengaging: false,
-            action_used: false,
-            bonus_action_used: false,
-            action_surge_active: false,
-            reaction_used: false,
-            free_interaction_used: false,
-            npc_dodging: HashMap::new(),
-            npc_disengaging: HashMap::new(),
-            player_shield_ac_bonus: 0,
-            pending_reaction: None,
-            player_vex_target: None,
-            sap_targets: std::collections::HashSet::new(),
-            slow_targets: HashMap::new(),
-            cleave_used_this_turn: false,
-            nick_used_this_turn: false,
-            attacks_made_this_turn: 0,
-            death_save_successes: 0,
-            death_save_failures: 0,
-            player_cover: Cover::None,
-            npc_cover: HashMap::new(),
-            npc_reactions_used: std::collections::HashSet::new(),
-            player_reckless: false,
+            ..Default::default()
         };
 
         // Kill the first goblin (the one with stats)
@@ -7278,29 +7290,7 @@ mod tests {
                 d
             },
             player_movement_remaining: 30,
-            player_dodging: false,
-            player_disengaging: false,
-            action_used: false,
-            bonus_action_used: false,
-            action_surge_active: false,
-            reaction_used: false,
-            free_interaction_used: false,
-            npc_dodging: HashMap::new(),
-            npc_disengaging: HashMap::new(),
-            player_shield_ac_bonus: 0,
-            pending_reaction: None,
-            player_vex_target: None,
-            sap_targets: std::collections::HashSet::new(),
-            slow_targets: std::collections::HashMap::new(),
-            cleave_used_this_turn: false,
-            nick_used_this_turn: false,
-            attacks_made_this_turn: 0,
-            death_save_successes: 0,
-            death_save_failures: 0,
-            player_cover: Cover::None,
-            npc_cover: HashMap::new(),
-            npc_reactions_used: std::collections::HashSet::new(),
-            player_reckless: false,
+            ..Default::default()
         };
         let lines = resolve_npc_turn(&mut rng, 0, &mut state, &mut combat);
         // The grappled NPC should NOT have moved (distance unchanged).
@@ -7346,7 +7336,6 @@ mod tests {
                 (Combatant::Npc(0), 10),
                 (Combatant::Npc(1), 5),
             ],
-            current_turn: 0,
             round: 1,
             distances: {
                 let mut d = HashMap::new();
@@ -7355,29 +7344,7 @@ mod tests {
                 d
             },
             player_movement_remaining: 30,
-            player_dodging: false,
-            player_disengaging: false,
-            action_used: false,
-            bonus_action_used: false,
-            action_surge_active: false,
-            reaction_used: false,
-            free_interaction_used: false,
-            npc_dodging: HashMap::new(),
-            npc_disengaging: HashMap::new(),
-            player_shield_ac_bonus: 0,
-            pending_reaction: None,
-            player_vex_target: None,
-            sap_targets: std::collections::HashSet::new(),
-            slow_targets: std::collections::HashMap::new(),
-            cleave_used_this_turn: false,
-            nick_used_this_turn: false,
-            attacks_made_this_turn: 0,
-            death_save_successes: 0,
-            death_save_failures: 0,
-            player_cover: Cover::None,
-            npc_cover: HashMap::new(),
-            npc_reactions_used: std::collections::HashSet::new(),
-            player_reckless: false,
+            ..Default::default()
         };
         // Approach the Orc (NPC 1). Normal approach would cost 1 ft per 1 ft moved.
         // With dragging, it costs 2 ft per 1 ft, so 30 ft of movement lets us move only 15 ft.
@@ -7406,7 +7373,6 @@ mod tests {
         );
         let mut combat = CombatState {
             initiative_order: vec![(Combatant::Player, 20), (Combatant::Npc(0), 10)],
-            current_turn: 0,
             round: 1,
             distances: {
                 let mut d = HashMap::new();
@@ -7414,29 +7380,8 @@ mod tests {
                 d
             },
             player_movement_remaining: 30,
-            player_dodging: false,
             player_disengaging: true, // disengage to avoid OA complexity
-            action_used: false,
-            bonus_action_used: false,
-            action_surge_active: false,
-            reaction_used: false,
-            free_interaction_used: false,
-            npc_dodging: HashMap::new(),
-            npc_disengaging: HashMap::new(),
-            player_shield_ac_bonus: 0,
-            pending_reaction: None,
-            player_vex_target: None,
-            sap_targets: std::collections::HashSet::new(),
-            slow_targets: std::collections::HashMap::new(),
-            cleave_used_this_turn: false,
-            nick_used_this_turn: false,
-            attacks_made_this_turn: 0,
-            death_save_successes: 0,
-            death_save_failures: 0,
-            player_cover: Cover::None,
-            npc_cover: HashMap::new(),
-            npc_reactions_used: std::collections::HashSet::new(),
-            player_reckless: false,
+            ..Default::default()
         };
         // Retreat should move the player away. With drag cost, effective distance moved
         // is halved. But the grappled NPC's distance should increase (player moves away

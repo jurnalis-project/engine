@@ -483,34 +483,9 @@ mod tests {
         // active_combat is Some.
         use crate::combat::CombatState;
         state.active_combat = Some(CombatState {
-            initiative_order: Vec::new(),
-            current_turn: 0,
             round: 1,
-            distances: HashMap::new(),
             player_movement_remaining: 30,
-            player_dodging: false,
-            player_disengaging: false,
-            action_used: false,
-            bonus_action_used: false,
-            action_surge_active: false,
-            reaction_used: false,
-            free_interaction_used: false,
-            npc_dodging: HashMap::new(),
-            npc_disengaging: HashMap::new(),
-            player_shield_ac_bonus: 0,
-            pending_reaction: None,
-            player_vex_target: None,
-            sap_targets: std::collections::HashSet::new(),
-            slow_targets: HashMap::new(),
-            cleave_used_this_turn: false,
-            nick_used_this_turn: false,
-            attacks_made_this_turn: 0,
-            death_save_successes: 0,
-            death_save_failures: 0,
-            player_cover: crate::types::Cover::None,
-            npc_cover: std::collections::HashMap::new(),
-            npc_reactions_used: std::collections::HashSet::new(),
-            player_reckless: false,
+            ..Default::default()
         });
         assert_eq!(check_rest_allowed(&state), Err(RestDenial::InCombat));
     }
@@ -755,34 +730,9 @@ mod tests {
         let mut state = make_state(CharClass::Fighter);
         use crate::combat::CombatState;
         state.active_combat = Some(CombatState {
-            initiative_order: Vec::new(),
-            current_turn: 0,
             round: 1,
-            distances: HashMap::new(),
             player_movement_remaining: 30,
-            player_dodging: false,
-            player_disengaging: false,
-            action_used: false,
-            bonus_action_used: false,
-            action_surge_active: false,
-            reaction_used: false,
-            free_interaction_used: false,
-            npc_dodging: HashMap::new(),
-            npc_disengaging: HashMap::new(),
-            player_shield_ac_bonus: 0,
-            pending_reaction: None,
-            player_vex_target: None,
-            sap_targets: std::collections::HashSet::new(),
-            slow_targets: HashMap::new(),
-            cleave_used_this_turn: false,
-            nick_used_this_turn: false,
-            attacks_made_this_turn: 0,
-            death_save_successes: 0,
-            death_save_failures: 0,
-            player_cover: crate::types::Cover::None,
-            npc_cover: std::collections::HashMap::new(),
-            npc_reactions_used: std::collections::HashSet::new(),
-            player_reckless: false,
+            ..Default::default()
         });
         state.character.current_hp = 1;
         let before_time = state.in_world_minutes;

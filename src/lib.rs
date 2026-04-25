@@ -17546,33 +17546,9 @@ mod tests {
         );
         state.active_combat = Some(CombatState {
             initiative_order: vec![(Combatant::Player, 15), (Combatant::Npc(npc_id), 10)],
-            current_turn: 0,
             round: 1,
-            distances: HashMap::new(),
             player_movement_remaining: state.character.speed,
-            player_dodging: false,
-            player_disengaging: false,
-            action_used: false,
-            bonus_action_used: false,
-            action_surge_active: false,
-            reaction_used: false,
-            free_interaction_used: false,
-            npc_dodging: HashMap::new(),
-            npc_disengaging: HashMap::new(),
-            player_shield_ac_bonus: 0,
-            pending_reaction: None,
-            player_vex_target: None,
-            sap_targets: std::collections::HashSet::new(),
-            slow_targets: HashMap::new(),
-            cleave_used_this_turn: false,
-            nick_used_this_turn: false,
-            attacks_made_this_turn: 0,
-            death_save_successes: 0,
-            death_save_failures: 0,
-            player_cover: crate::types::Cover::None,
-            npc_cover: std::collections::HashMap::new(),
-            npc_reactions_used: std::collections::HashSet::new(),
-            player_reckless: false,
+            ..Default::default()
         });
         npc_id
     }
@@ -17627,33 +17603,9 @@ mod tests {
                 (Combatant::Npc(7001), 12),
                 (Combatant::Npc(7002), 8),
             ],
-            current_turn: 0,
             round: 1,
-            distances: HashMap::new(),
             player_movement_remaining: state.character.speed,
-            player_dodging: false,
-            player_disengaging: false,
-            action_used: false,
-            bonus_action_used: false,
-            action_surge_active: false,
-            reaction_used: false,
-            free_interaction_used: false,
-            npc_dodging: HashMap::new(),
-            npc_disengaging: HashMap::new(),
-            player_shield_ac_bonus: 0,
-            pending_reaction: None,
-            player_vex_target: None,
-            sap_targets: std::collections::HashSet::new(),
-            slow_targets: HashMap::new(),
-            cleave_used_this_turn: false,
-            nick_used_this_turn: false,
-            attacks_made_this_turn: 0,
-            death_save_successes: 0,
-            death_save_failures: 0,
-            player_cover: crate::types::Cover::None,
-            npc_cover: std::collections::HashMap::new(),
-            npc_reactions_used: std::collections::HashSet::new(),
-            player_reckless: false,
+            ..Default::default()
         });
         let _ = end_combat(&mut state, true);
         // Two goblins: 50 + 50 = 100 XP.
@@ -17699,33 +17651,9 @@ mod tests {
         );
         state.active_combat = Some(CombatState {
             initiative_order: vec![(Combatant::Player, 15), (Combatant::Npc(npc_id), 10)],
-            current_turn: 0,
             round: 1,
-            distances: HashMap::new(),
             player_movement_remaining: state.character.speed,
-            player_dodging: false,
-            player_disengaging: false,
-            action_used: false,
-            bonus_action_used: false,
-            action_surge_active: false,
-            reaction_used: false,
-            free_interaction_used: false,
-            npc_dodging: HashMap::new(),
-            npc_disengaging: HashMap::new(),
-            player_shield_ac_bonus: 0,
-            pending_reaction: None,
-            player_vex_target: None,
-            sap_targets: std::collections::HashSet::new(),
-            slow_targets: HashMap::new(),
-            cleave_used_this_turn: false,
-            nick_used_this_turn: false,
-            attacks_made_this_turn: 0,
-            death_save_successes: 0,
-            death_save_failures: 0,
-            player_cover: crate::types::Cover::None,
-            npc_cover: std::collections::HashMap::new(),
-            npc_reactions_used: std::collections::HashSet::new(),
-            player_reckless: false,
+            ..Default::default()
         });
         let _ = end_combat(&mut state, true);
         // No XP should be awarded — the hostile is still alive.
@@ -19970,33 +19898,9 @@ mod tests {
         // Set up active combat with the boss in the initiative order
         state.active_combat = Some(CombatState {
             initiative_order: vec![(Combatant::Player, 15), (Combatant::Npc(boss_id), 10)],
-            current_turn: 0,
             round: 1,
-            distances: HashMap::new(),
             player_movement_remaining: state.character.speed,
-            player_dodging: false,
-            player_disengaging: false,
-            action_used: false,
-            bonus_action_used: false,
-            action_surge_active: false,
-            reaction_used: false,
-            free_interaction_used: false,
-            npc_dodging: HashMap::new(),
-            npc_disengaging: HashMap::new(),
-            player_shield_ac_bonus: 0,
-            pending_reaction: None,
-            player_vex_target: None,
-            sap_targets: std::collections::HashSet::new(),
-            slow_targets: HashMap::new(),
-            cleave_used_this_turn: false,
-            nick_used_this_turn: false,
-            attacks_made_this_turn: 0,
-            death_save_successes: 0,
-            death_save_failures: 0,
-            player_cover: crate::types::Cover::None,
-            npc_cover: std::collections::HashMap::new(),
-            npc_reactions_used: std::collections::HashSet::new(),
-            player_reckless: false,
+            ..Default::default()
         });
 
         let lines = end_combat(&mut state, true);
@@ -20115,33 +20019,10 @@ mod tests {
         distances.insert(boss_id, 5);
         state.active_combat = Some(CombatState {
             initiative_order: vec![(Combatant::Player, 20), (Combatant::Npc(boss_id), 5)],
-            current_turn: 0,
             round: 1,
             distances,
             player_movement_remaining: state.character.speed,
-            player_dodging: false,
-            player_disengaging: false,
-            action_used: false,
-            bonus_action_used: false,
-            action_surge_active: false,
-            reaction_used: false,
-            free_interaction_used: false,
-            npc_dodging: HashMap::new(),
-            npc_disengaging: HashMap::new(),
-            player_shield_ac_bonus: 0,
-            pending_reaction: None,
-            player_vex_target: None,
-            sap_targets: std::collections::HashSet::new(),
-            slow_targets: HashMap::new(),
-            cleave_used_this_turn: false,
-            nick_used_this_turn: false,
-            attacks_made_this_turn: 0,
-            death_save_successes: 0,
-            death_save_failures: 0,
-            player_cover: crate::types::Cover::None,
-            npc_cover: std::collections::HashMap::new(),
-            npc_reactions_used: std::collections::HashSet::new(),
-            player_reckless: false,
+            ..Default::default()
         });
 
         // Try multiple seeds to get a hit (AC=1, nat 1 is the only miss)
@@ -21198,37 +21079,14 @@ mod tests {
                 (crate::combat::Combatant::Player, 15),
                 (crate::combat::Combatant::Npc(goblin_id), 12),
             ],
-            current_turn: 0,
             round: 1,
             distances: {
                 let mut d = HashMap::new();
                 d.insert(goblin_id, 10u32);
                 d
             },
-            death_save_successes: 0,
-            death_save_failures: 0,
-            bonus_action_used: false,
-            action_surge_active: false,
-            action_used: false,
             player_movement_remaining: 30,
-            reaction_used: false,
-            player_dodging: false,
-            player_disengaging: false,
-            free_interaction_used: false,
-            npc_dodging: HashMap::new(),
-            npc_disengaging: HashMap::new(),
-            player_shield_ac_bonus: 0,
-            pending_reaction: None,
-            player_vex_target: None,
-            sap_targets: std::collections::HashSet::new(),
-            slow_targets: HashMap::new(),
-            cleave_used_this_turn: false,
-            nick_used_this_turn: false,
-            attacks_made_this_turn: 0,
-            player_cover: crate::types::Cover::None,
-            npc_cover: HashMap::new(),
-            npc_reactions_used: std::collections::HashSet::new(),
-            player_reckless: false,
+            ..Default::default()
         };
 
         let mut discovered = std::collections::HashSet::new();
@@ -21634,7 +21492,6 @@ mod tests {
                 (combat::Combatant::Player, 20),
                 (combat::Combatant::Npc(npc_id), 5),
             ],
-            current_turn: 0, // player's turn
             round: 1,
             distances: {
                 let mut d = HashMap::new();
@@ -21642,29 +21499,7 @@ mod tests {
                 d
             },
             player_movement_remaining: 30,
-            player_dodging: false,
-            player_disengaging: false,
-            action_used: false,
-            bonus_action_used: false,
-            action_surge_active: false,
-            reaction_used: false,
-            free_interaction_used: false,
-            npc_dodging: HashMap::new(),
-            npc_disengaging: HashMap::new(),
-            player_shield_ac_bonus: 0,
-            pending_reaction: None,
-            player_vex_target: None,
-            sap_targets: std::collections::HashSet::new(),
-            slow_targets: HashMap::new(),
-            cleave_used_this_turn: false,
-            nick_used_this_turn: false,
-            attacks_made_this_turn: 0,
-            death_save_successes: 0,
-            death_save_failures: 0,
-            player_cover: crate::types::Cover::None,
-            npc_cover: HashMap::new(),
-            npc_reactions_used: std::collections::HashSet::new(),
-            player_reckless: false,
+            ..Default::default()
         });
 
         // Drop the player to 0 HP (dying).

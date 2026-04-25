@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use jurnalis_engine::{
     combat::{CombatState, Combatant},
     new_game, process_input,
@@ -27,31 +25,9 @@ fn create_combat_state_json() -> String {
 
     state.active_combat = Some(CombatState {
         initiative_order: vec![(Combatant::Player, 15)],
-        current_turn: 0,
         round: 1,
-        distances: HashMap::new(),
         player_movement_remaining: state.character.speed,
-        player_dodging: false,
-        player_disengaging: false,
-        action_used: false,
-        bonus_action_used: false,
-            action_surge_active: false,
-        reaction_used: false,
-        free_interaction_used: false,
-        npc_dodging: HashMap::new(),
-        npc_disengaging: HashMap::new(),
-        player_shield_ac_bonus: 0,
-        pending_reaction: None,
-        player_vex_target: None,
-        sap_targets: std::collections::HashSet::new(),
-        slow_targets: HashMap::new(),
-        cleave_used_this_turn: false,
-        nick_used_this_turn: false,
-        death_save_successes: 0,
-        death_save_failures: 0,
-        player_cover: jurnalis_engine::types::Cover::None,
-        npc_cover: std::collections::HashMap::new(),
-        npc_reactions_used: std::collections::HashSet::new(),
+        ..Default::default()
     });
 
     serde_json::to_string(&state).unwrap()
