@@ -822,6 +822,60 @@ pub enum CastOutcome {
         attack: SpellAttackResult,
         damage: i32,
     },
+    /// Fireball / Lightning Bolt: AoE save-half, 8d6 damage.
+    SaveHalfAoE {
+        total_rolled: i32,
+        half_damage: i32,
+        dc: i32,
+        results: Vec<SaveHalfAoETarget>,
+    },
+    /// Spirit Guardians: AoE WIS save, 3d8 radiant/necrotic.
+    SpiritGuardians {
+        total_rolled: i32,
+        half_damage: i32,
+        dc: i32,
+        results: Vec<SaveHalfAoETarget>,
+    },
+    /// Fear: AoE WIS save, Frightened on fail.
+    FearResult {
+        dc: i32,
+        results: Vec<FearTarget>,
+    },
+    /// Mass Healing Word: 1d4 + spellcasting mod healing.
+    MassHealingWordResult {
+        healing: i32,
+        rolled: i32,
+        modifier: i32,
+    },
+    /// Revivify: raise a dying character to 1 HP.
+    RevivifySuccess,
+    /// Revivify: target is not dying.
+    RevivifyNotDying,
+    /// Fly: narration-only self-buff.
+    FlyCast,
+    /// Dispel Magic: cleared concentration.
+    DispelMagicSuccess {
+        dispelled_spell: String,
+    },
+    /// Dispel Magic: nothing to dispel.
+    DispelMagicNothing,
+}
+
+/// Per-target result for AoE save-half spells (Fireball, Lightning Bolt).
+#[derive(Debug, Clone)]
+pub struct SaveHalfAoETarget {
+    pub name: String,
+    pub save_result: SpellSaveResult,
+    pub damage_taken: i32,
+}
+
+/// Per-target result for Fear spell.
+#[derive(Debug, Clone)]
+pub struct FearTarget {
+    pub id: u32,
+    pub name: String,
+    pub save_result: SpellSaveResult,
+    pub frightened: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -1066,6 +1120,107 @@ pub fn resolve_eldritch_blast(
         0
     };
     CastOutcome::EldritchBlast { attack, damage }
+}
+
+/// Resolve Fireball or Lightning Bolt (level 3). All targets make a DEX save;
+/// fail = 8d6 damage, success = half. The `damage_type_name` is for narration
+/// only (the orchestrator picks the actual `DamageType`).
+pub fn resolve_save_half_aoe(
+    rng: &mut impl Rng,
+    caster_ability_score: i32,
+    caster_proficiency_bonus: i32,
+    targets: &[SpellTarget],
+    num_dice: u32,
+    die_size: u32,
+    save_ability: Ability,
+) -> CastOutcome {
+    let dc = spell_save_dc(caster_ability_score, caster_proficiency_bonus);
+    let damage_rolls = roll_dice(rng, num_dice, die_size);
+    let total_rolled: i32 = damage_rolls.iter().sum();
+    let half_damage = total_rolled / 2;
+
+    let mut results = Vec::new();
+    for target in targets {
+        if target.current_hp <= 0 { continue; }
+        let save_score = target.ability_scores.get(&save_ability).copied().unwrap_or(10);
+        let is_prof = target.save_proficiencies.contains(&save_ability);
+        let save = roll_spell_save(rng, save_score, target.proficiency_bonus, is_prof, dc);
+        let damage_taken = if save.saved { half_damage } else { total_rolled };
+        results.push(SaveHalfAoETarget {
+            name: target.name.clone(),
+            save_result: save,
+            damage_taken,
+        });
+    }
+
+    CastOutcome::SaveHalfAoE { total_rolled, half_damage, dc, results }
+}
+
+/// Resolve Spirit Guardians (level 3). All targets make a WIS save;
+/// fail = 3d8 radiant/necrotic, success = half.
+pub fn resolve_spirit_guardians(
+    rng: &mut impl Rng,
+    caster_ability_score: i32,
+    caster_proficiency_bonus: i32,
+    targets: &[SpellTarget],
+) -> CastOutcome {
+    let dc = spell_save_dc(caster_ability_score, caster_proficiency_bonus);
+    let damage_rolls = roll_dice(rng, 3, 8);
+    let total_rolled: i32 = damage_rolls.iter().sum();
+    let half_damage = total_rolled / 2;
+
+    let mut results = Vec::new();
+    for target in targets {
+        if target.current_hp <= 0 { continue; }
+        let wis = target.ability_scores.get(&Ability::Wisdom).copied().unwrap_or(10);
+        let is_prof = target.save_proficiencies.contains(&Ability::Wisdom);
+        let save = roll_spell_save(rng, wis, target.proficiency_bonus, is_prof, dc);
+        let damage_taken = if save.saved { half_damage } else { total_rolled };
+        results.push(SaveHalfAoETarget {
+            name: target.name.clone(),
+            save_result: save,
+            damage_taken,
+        });
+    }
+
+    CastOutcome::SpiritGuardians { total_rolled, half_damage, dc, results }
+}
+
+/// Resolve Fear (level 3). All targets make a WIS save; fail = Frightened.
+pub fn resolve_fear(
+    rng: &mut impl Rng,
+    caster_ability_score: i32,
+    caster_proficiency_bonus: i32,
+    targets: &[SpellTarget],
+) -> CastOutcome {
+    let dc = spell_save_dc(caster_ability_score, caster_proficiency_bonus);
+
+    let mut results = Vec::new();
+    for target in targets {
+        if target.current_hp <= 0 { continue; }
+        let wis = target.ability_scores.get(&Ability::Wisdom).copied().unwrap_or(10);
+        let is_prof = target.save_proficiencies.contains(&Ability::Wisdom);
+        let save = roll_spell_save(rng, wis, target.proficiency_bonus, is_prof, dc);
+        let frightened = !save.saved;
+        results.push(FearTarget {
+            id: target.id,
+            name: target.name.clone(),
+            save_result: save,
+            frightened,
+        });
+    }
+
+    CastOutcome::FearResult { dc, results }
+}
+
+/// Resolve Mass Healing Word (level 3). Heals 1d4 + caster's spellcasting mod.
+/// Same formula as Healing Word but consumes a level-3 slot.
+pub fn resolve_mass_healing_word(rng: &mut impl Rng, caster_ability_score: i32) -> CastOutcome {
+    let rolls = roll_dice(rng, 1, 4);
+    let rolled: i32 = rolls.iter().sum();
+    let modifier = Ability::modifier(caster_ability_score);
+    let healing = (rolled + modifier).max(1);
+    CastOutcome::MassHealingWordResult { healing, rolled, modifier }
 }
 
 /// Format the player's known spells and remaining spell slots for display.
@@ -1925,5 +2080,157 @@ mod tests {
         // damage 12 -> DC 10. CON 14 (+2) + prof 2 = +4.
         assert_eq!(save.dc, 10);
         assert_eq!(save.modifier, 4);
+    }
+
+    // ---- Level 3 spell resolve helpers ----
+
+    fn test_target_with_wis(
+        name: &str, id: u32, hp: i32, wis: i32, distance: u32,
+    ) -> SpellTarget {
+        let mut scores = HashMap::new();
+        scores.insert(Ability::Wisdom, wis);
+        scores.insert(Ability::Dexterity, 10);
+        SpellTarget {
+            id,
+            name: name.to_string(),
+            ac: 12,
+            current_hp: hp,
+            ability_scores: scores,
+            proficiency_bonus: 2,
+            save_proficiencies: Vec::new(),
+            distance,
+        }
+    }
+
+    #[test]
+    fn test_resolve_save_half_aoe_rolls_8d6_and_saves() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let targets = vec![
+            test_target("Goblin A", 12, 10, 10, 30),
+            test_target("Goblin B", 12, 8, 14, 30),
+        ];
+        let outcome = resolve_save_half_aoe(
+            &mut rng, 16, 2, &targets, 8, 6, Ability::Dexterity,
+        );
+        match outcome {
+            CastOutcome::SaveHalfAoE { total_rolled, half_damage, dc, results } => {
+                // 8d6 range: 8-48
+                assert!(total_rolled >= 8 && total_rolled <= 48,
+                    "8d6 total {} out of range", total_rolled);
+                assert_eq!(half_damage, total_rolled / 2);
+                // DC = 8 + 3(INT mod from 16) + 2(prof) = 13
+                assert_eq!(dc, 13);
+                assert_eq!(results.len(), 2);
+                for result in &results {
+                    if result.save_result.saved {
+                        assert_eq!(result.damage_taken, half_damage);
+                    } else {
+                        assert_eq!(result.damage_taken, total_rolled);
+                    }
+                }
+            }
+            _ => panic!("Expected SaveHalfAoE outcome"),
+        }
+    }
+
+    #[test]
+    fn test_resolve_save_half_aoe_skips_dead_targets() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let targets = vec![
+            test_target("Alive", 12, 10, 10, 30),
+            test_target("Dead", 12, 0, 10, 30),
+        ];
+        let outcome = resolve_save_half_aoe(
+            &mut rng, 16, 2, &targets, 8, 6, Ability::Dexterity,
+        );
+        if let CastOutcome::SaveHalfAoE { results, .. } = outcome {
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0].name, "Alive");
+        } else {
+            panic!("Expected SaveHalfAoE outcome");
+        }
+    }
+
+    #[test]
+    fn test_resolve_spirit_guardians_rolls_3d8_wis_save() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let targets = vec![
+            test_target_with_wis("Skeleton", 1, 10, 8, 5),
+        ];
+        let outcome = resolve_spirit_guardians(&mut rng, 16, 2, &targets);
+        match outcome {
+            CastOutcome::SpiritGuardians { total_rolled, half_damage, dc, results } => {
+                // 3d8 range: 3-24
+                assert!(total_rolled >= 3 && total_rolled <= 24,
+                    "3d8 total {} out of range", total_rolled);
+                assert_eq!(half_damage, total_rolled / 2);
+                assert_eq!(dc, 13);
+                assert_eq!(results.len(), 1);
+            }
+            _ => panic!("Expected SpiritGuardians outcome"),
+        }
+    }
+
+    #[test]
+    fn test_resolve_fear_frightens_on_fail() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let targets = vec![
+            test_target_with_wis("Goblin A", 1, 10, 8, 10),
+            test_target_with_wis("Goblin B", 2, 10, 20, 10),
+        ];
+        let outcome = resolve_fear(&mut rng, 16, 2, &targets);
+        match outcome {
+            CastOutcome::FearResult { dc, results } => {
+                assert_eq!(dc, 13);
+                assert_eq!(results.len(), 2);
+                for r in &results {
+                    assert_eq!(r.frightened, !r.save_result.saved);
+                }
+            }
+            _ => panic!("Expected FearResult outcome"),
+        }
+    }
+
+    #[test]
+    fn test_resolve_fear_skips_dead_targets() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let targets = vec![
+            test_target_with_wis("Alive", 1, 5, 10, 10),
+            test_target_with_wis("Dead", 2, 0, 10, 10),
+        ];
+        let outcome = resolve_fear(&mut rng, 16, 2, &targets);
+        if let CastOutcome::FearResult { results, .. } = outcome {
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0].name, "Alive");
+        } else {
+            panic!("Expected FearResult outcome");
+        }
+    }
+
+    #[test]
+    fn test_resolve_mass_healing_word_heals_1d4_plus_mod() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let outcome = resolve_mass_healing_word(&mut rng, 16);
+        match outcome {
+            CastOutcome::MassHealingWordResult { healing, rolled, modifier } => {
+                // 16 -> +3 mod
+                assert_eq!(modifier, 3);
+                assert!(rolled >= 1 && rolled <= 4);
+                assert_eq!(healing, rolled + modifier);
+            }
+            _ => panic!("Expected MassHealingWordResult outcome"),
+        }
+    }
+
+    #[test]
+    fn test_resolve_mass_healing_word_minimum_one() {
+        let mut rng = StdRng::seed_from_u64(42);
+        // Ability 4 -> mod = -3. 1d4 min 1, +(-3) could be negative but .max(1)
+        let outcome = resolve_mass_healing_word(&mut rng, 4);
+        if let CastOutcome::MassHealingWordResult { healing, .. } = outcome {
+            assert!(healing >= 1, "Mass Healing Word should heal at least 1");
+        } else {
+            panic!("Expected MassHealingWordResult outcome");
+        }
     }
 }
