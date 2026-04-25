@@ -30,15 +30,24 @@ pub fn generate_world(rng: &mut impl Rng, location_count: usize) -> WorldState {
     if !npcs.is_empty()
         && !npcs.values().any(|n| n.disposition == Disposition::Hostile)
     {
+        // Prefer a Guard (thematically hostile-adjacent). Fall back to the
+        // lowest-id non-Merchant NPC. Merchants must never become hostile —
+        // they are always peaceful and available for trade.
         let promote_id = npcs
             .values()
             .filter(|n| n.role == crate::state::NpcRole::Guard)
             .map(|n| n.id)
             .min()
-            .or_else(|| npcs.keys().copied().min())
-            .expect("npcs is non-empty");
-        if let Some(npc) = npcs.get_mut(&promote_id) {
-            npc.disposition = Disposition::Hostile;
+            .or_else(|| {
+                npcs.values()
+                    .filter(|n| n.role != crate::state::NpcRole::Merchant)
+                    .map(|n| n.id)
+                    .min()
+            });
+        if let Some(id) = promote_id {
+            if let Some(npc) = npcs.get_mut(&id) {
+                npc.disposition = Disposition::Hostile;
+            }
         }
     }
 
@@ -198,22 +207,29 @@ mod tests {
 
     #[test]
     fn test_every_seed_produces_at_least_one_hostile_npc() {
-        // Root cause hypothesis: uniform random disposition selection in
-        // `npc::generate_npcs()` can, for small NPC counts, produce worlds
-        // with zero hostile NPCs. This makes the starting "Defeat a hostile
-        // foe" objective (seeded in lib.rs per objective-quest-system.md)
-        // uncompletable. `generate_world()` must guarantee >=1 hostile NPC.
+        // The at-least-one-hostile guarantee promotes a non-Merchant NPC to
+        // Hostile when no NPC was naturally assigned Hostile. Merchants are
+        // excluded from promotion (they must always be peaceful). If every NPC
+        // in the world happens to be a Merchant, zero hostiles is acceptable
+        // because promoting a Merchant would break the trading contract.
         //
         // See: docs/specs/world-generation.md, docs/specs/objective-quest-system.md
         for seed in 0..2000u64 {
             let mut rng = StdRng::seed_from_u64(seed);
             let world = generate_world(&mut rng, 10);
+            let has_non_merchant = world.npcs.values()
+                .any(|n| n.role != crate::state::NpcRole::Merchant);
+            if !has_non_merchant {
+                // All-Merchant world: zero hostiles is acceptable
+                continue;
+            }
             let hostile_count = world.npcs.values()
                 .filter(|n| n.disposition == crate::state::Disposition::Hostile)
                 .count();
             assert!(
                 hostile_count >= 1,
-                "seed {}: generated world has zero hostile NPCs (total npcs={})",
+                "seed {}: generated world has zero hostile NPCs (total npcs={}) \
+                 despite having non-Merchant NPCs",
                 seed, world.npcs.len()
             );
         }
@@ -233,6 +249,28 @@ mod tests {
                     assert!(
                         npc.combat_stats.is_some(),
                         "seed {}: hostile NPC '{}' (id={}) missing combat_stats",
+                        seed, npc.name, npc.id
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_merchant_never_promoted_to_hostile() {
+        // The at-least-one-hostile guarantee must never promote a Merchant NPC.
+        // A Merchant becoming hostile violates the game's NPC role contract:
+        // Merchants are always peaceful and available for trade.
+        for seed in 0..2000u64 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let world = generate_world(&mut rng, 10);
+            for npc in world.npcs.values() {
+                if npc.role == crate::state::NpcRole::Merchant {
+                    assert_ne!(
+                        npc.disposition,
+                        crate::state::Disposition::Hostile,
+                        "seed {}: Merchant NPC '{}' (id={}) was promoted to Hostile. \
+                         Merchants must never be hostile.",
                         seed, npc.name, npc.id
                     );
                 }

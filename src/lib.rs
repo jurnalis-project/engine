@@ -18667,4 +18667,185 @@ mod tests {
         let rest_json = serde_json::to_string_pretty(&rest_state).unwrap();
         println!("REST_FIXTURE:\n{}", rest_json);
     }
+
+    // Hypothesis: A merchant NPC that is initially Friendly loses its disposition
+    // and becomes hostile (triggering combat) when the player revisits the room
+    // via an alternate path. The bug occurs because the at-least-one-hostile
+    // guarantee in generate_world() can promote a Merchant NPC to Hostile when
+    // no Guard NPC exists and the Merchant has the lowest ID.
+    #[test]
+    fn test_merchant_npc_stays_friendly_on_revisit_via_alternate_path() {
+        use crate::types::Direction;
+
+        let mut state = create_test_exploration_state();
+
+        // === Build a 3-room topology ===
+        //
+        //   Room A (start, id=900)
+        //     |  North -> Room B (id=901)
+        //     |  East  -> Room C (id=902)
+        //
+        //   Room B (id=901) — merchant room
+        //     |  South -> Room A (id=900)
+        //     |  East  -> Room C (id=902)
+        //
+        //   Room C (id=902)
+        //     |  West  -> Room A (id=900)
+        //     |  West  -> Room B (id=901)  (alternate entry to merchant room)
+        //
+        // Actually Room C needs two westward exits, which isn't possible with
+        // Direction as the key. Let's use North from C to B instead.
+        //
+        //   Room C (id=902)
+        //     |  West  -> Room A (id=900)
+        //     |  North -> Room B (id=901)
+
+        let room_a_id = 900u32;
+        let room_b_id = 901u32;
+        let room_c_id = 902u32;
+
+        // Room A
+        state.world.locations.insert(room_a_id, state::Location {
+            id: room_a_id,
+            name: "Starting Hall".to_string(),
+            description: "A plain stone hall.".to_string(),
+            location_type: state::LocationType::Room,
+            exits: {
+                let mut m = HashMap::new();
+                m.insert(Direction::North, room_b_id);
+                m.insert(Direction::East, room_c_id);
+                m
+            },
+            npcs: vec![],
+            items: vec![],
+            triggers: vec![],
+            light_level: state::LightLevel::Bright,
+            room_features: vec![],
+        });
+
+        // Room B — merchant room
+        state.world.locations.insert(room_b_id, state::Location {
+            id: room_b_id,
+            name: "Merchant Alcove".to_string(),
+            description: "A cozy alcove with trade goods.".to_string(),
+            location_type: state::LocationType::Room,
+            exits: {
+                let mut m = HashMap::new();
+                m.insert(Direction::South, room_a_id);
+                m.insert(Direction::East, room_c_id);
+                m
+            },
+            npcs: vec![],  // will push merchant NPC id below
+            items: vec![],
+            triggers: vec![],
+            light_level: state::LightLevel::Bright,
+            room_features: vec![],
+        });
+
+        // Room C — alternate corridor
+        state.world.locations.insert(room_c_id, state::Location {
+            id: room_c_id,
+            name: "Side Corridor".to_string(),
+            description: "A narrow corridor.".to_string(),
+            location_type: state::LocationType::Corridor,
+            exits: {
+                let mut m = HashMap::new();
+                m.insert(Direction::West, room_a_id);
+                m.insert(Direction::North, room_b_id);
+                m
+            },
+            npcs: vec![],
+            items: vec![],
+            triggers: vec![],
+            light_level: state::LightLevel::Dim,
+            room_features: vec![],
+        });
+
+        // Add a Friendly Merchant NPC in Room B
+        let merchant_npc_id = 500u32;
+        state.world.npcs.insert(merchant_npc_id, state::Npc {
+            id: merchant_npc_id,
+            name: "Greta the Merchant".to_string(),
+            role: state::NpcRole::Merchant,
+            disposition: state::Disposition::Friendly,
+            dialogue_tags: vec!["trade".to_string(), "goods".to_string()],
+            location: room_b_id,
+            combat_stats: None,
+            conditions: vec![],
+        });
+        state.world.locations.get_mut(&room_b_id).unwrap().npcs.push(merchant_npc_id);
+
+        // Set the player at Room A
+        state.current_location = room_a_id;
+        state.discovered_locations = [room_a_id].into_iter().collect();
+
+        // === Visit 1: Go North from A to B ===
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output1 = process_input(&state_json, "go north");
+
+        // Should NOT trigger combat
+        let text1 = output1.text.join(" ");
+        assert!(
+            !text1.contains("initiative") && !text1.contains("VICTORY") && !text1.contains("Your turn"),
+            "First visit: merchant room should NOT trigger combat. Got: {:?}",
+            output1.text
+        );
+        // Should mention the merchant NPC
+        assert!(
+            text1.contains("Greta"),
+            "First visit should mention the merchant NPC. Got: {:?}",
+            output1.text
+        );
+
+        // Deserialize updated state and verify merchant disposition is unchanged
+        let state_after_visit1: GameState = serde_json::from_str(&output1.state_json).unwrap();
+        let merchant_v1 = state_after_visit1.world.npcs.get(&merchant_npc_id).unwrap();
+        assert_eq!(
+            merchant_v1.disposition,
+            state::Disposition::Friendly,
+            "Merchant disposition should remain Friendly after first visit"
+        );
+        assert!(
+            merchant_v1.combat_stats.is_none(),
+            "Merchant should have no combat_stats after first visit"
+        );
+
+        // === Leave: Go South from B back to A ===
+        let output_leave = process_input(&output1.state_json, "go south");
+        let state_after_leave: GameState = serde_json::from_str(&output_leave.state_json).unwrap();
+        assert_eq!(state_after_leave.current_location, room_a_id);
+
+        // === Go to C: Go East from A to C ===
+        let output_to_c = process_input(&output_leave.state_json, "go east");
+        let state_after_c: GameState = serde_json::from_str(&output_to_c.state_json).unwrap();
+        assert_eq!(state_after_c.current_location, room_c_id);
+
+        // === Visit 2: Go North from C to B (alternate path) ===
+        let output2 = process_input(&output_to_c.state_json, "go north");
+
+        // Should NOT trigger combat on second visit either
+        let text2 = output2.text.join(" ");
+        assert!(
+            !text2.contains("initiative") && !text2.contains("VICTORY") && !text2.contains("Your turn"),
+            "Second visit via alternate path: merchant room should NOT trigger combat. Got: {:?}",
+            output2.text
+        );
+
+        // Verify merchant disposition is STILL Friendly
+        let state_after_visit2: GameState = serde_json::from_str(&output2.state_json).unwrap();
+        let merchant_v2 = state_after_visit2.world.npcs.get(&merchant_npc_id).unwrap();
+        assert_eq!(
+            merchant_v2.disposition,
+            state::Disposition::Friendly,
+            "Merchant disposition should remain Friendly after second visit via alternate path"
+        );
+        assert!(
+            merchant_v2.combat_stats.is_none(),
+            "Merchant should have no combat_stats after second visit"
+        );
+        assert!(
+            state_after_visit2.active_combat.is_none(),
+            "No active combat should exist after visiting a Friendly merchant room"
+        );
+    }
 }

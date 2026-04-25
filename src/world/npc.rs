@@ -96,7 +96,13 @@ pub fn generate_npcs(
         let name_idx = rng.gen_range(0..FIRST_NAMES.len());
         let title_idx = rng.gen_range(0..TITLES.len());
         let role = roles[rng.gen_range(0..roles.len())];
-        let disposition = dispositions[rng.gen_range(0..dispositions.len())];
+        // Merchants must never be hostile — they are always peaceful and
+        // available for trade. Draw disposition from the full pool to keep
+        // RNG parity, then clamp Hostile → Neutral for Merchants.
+        let mut disposition = dispositions[rng.gen_range(0..dispositions.len())];
+        if role == NpcRole::Merchant && disposition == Disposition::Hostile {
+            disposition = Disposition::Neutral;
+        }
         let location = location_ids[rng.gen_range(0..location_ids.len())];
 
         let dialogue_tags = DIALOGUE_TAGS_BY_ROLE
