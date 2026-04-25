@@ -3362,29 +3362,39 @@ fn should_trigger_opportunity_attack(
     }
     let distance = *combat.distances.get(&npc_id).unwrap_or(&u32::MAX);
 
-    // Determine whether the NPC will actually move away. The stock AI in
-    // `resolve_npc_turn` prefers melee (if in reach) then ranged (if in
-    // range) then moves toward the player. None of those branches move the
-    // NPC *away* from the player, so with the current AI this predicate
-    // returns `None`.
-    //
-    // A future AI change (issue #43 — retreat on low HP, kiting with a
-    // ranged attack, etc.) should surface the predicted destination here,
-    // at which point the reach gate above and the reach check below form
-    // a correct trigger for the player OA.
-    let has_melee_in_reach = stats
-        .attacks
-        .iter()
-        .any(|a| a.reach > 0 && distance <= a.reach as u32);
-    let has_ranged_in_range = stats
-        .attacks
-        .iter()
-        .any(|a| a.range_long > 0 && distance <= a.range_long as u32);
-    let _ = (has_melee_in_reach, has_ranged_in_range);
+    // Predict whether the NPC's AI will retreat (move away from the
+    // player) on this turn, using the same logic as `resolve_npc_turn`.
+    let npc_conditions = npc.conditions.clone();
+    if !combat::npc_wants_to_retreat(stats, &npc_conditions) {
+        return None;
+    }
 
-    // Placeholder until the AI gains a retreat path: with the current AI
-    // the NPC will never move out of reach, so we return None.
-    None
+    // NPC wants to retreat. Check if it would Disengage (suppressing OA).
+    // The retreat AI Disengages only when the NPC cannot escape the
+    // player's reach with its speed (i.e. predicted distance after
+    // retreat is still within reach). With standard 30ft speed and 5ft
+    // or 10ft reach this is rare, so most retreating NPCs will provoke.
+    let player_reach = combat::player_melee_reach(&state.character, &state.world.items);
+    let npc_speed = stats.speed as u32;
+    let slow_reduction = combat.slow_targets.get(&npc_id).copied().unwrap_or(0).max(0) as u32;
+    let effective_speed = npc_speed.saturating_sub(slow_reduction);
+    let predicted_distance = distance.saturating_add(effective_speed);
+
+    // If the NPC can't escape reach even after moving, it will Disengage,
+    // which suppresses the OA.
+    if predicted_distance <= player_reach {
+        return None;
+    }
+
+    // If the NPC is already marked as disengaging (set earlier in the
+    // same round by some other path), the OA is suppressed.
+    if combat.npc_disengaging.get(&npc_id).copied().unwrap_or(false) {
+        return None;
+    }
+
+    // The NPC will retreat from within reach to beyond reach without
+    // disengaging -- the player gets an opportunity attack.
+    Some((distance, predicted_distance))
 }
 
 /// Resolve the player's decision on a pending reaction. Consumes the reaction
@@ -14355,6 +14365,501 @@ mod tests {
         assert!(
             should_trigger_opportunity_attack(&combat, &state, 100).is_none(),
             "OA must not trigger when player reaction is already spent"
+        );
+    }
+
+    // ---- Opportunity attack triggers with NPC retreat AI (issue #256) ----
+
+    #[test]
+    fn test_oa_triggers_when_retreating_npc_leaves_reach() {
+        // An NPC at <30% HP with ranged attack, currently within 5 ft reach,
+        // should trigger an OA when it retreats (moves from 5ft to 35ft).
+        // With 30ft speed and 5ft reach, the NPC CAN escape reach so it
+        // does NOT Disengage -- the OA fires.
+        let mut state = create_test_combat_state();
+        // Give goblin low HP and a ranged attack.
+        if let Some(npc) = state.world.npcs.get_mut(&100) {
+            if let Some(cs) = npc.combat_stats.as_mut() {
+                cs.current_hp = 1; // 1/7 = 14%, below 30%
+                cs.attacks.push(state::NpcAttack {
+                    name: "Shortbow".to_string(),
+                    hit_bonus: 4,
+                    damage_dice: 1,
+                    damage_die: 6,
+                    damage_bonus: 2,
+                    damage_type: state::DamageType::Piercing,
+                    reach: 0,
+                    range_normal: 80,
+                    range_long: 320,
+                });
+            }
+        }
+        {
+            let combat = state.active_combat.as_mut().unwrap();
+            combat.distances.insert(100, 5);
+            combat.reaction_used = false;
+        }
+        let combat = state.active_combat.as_ref().unwrap().clone();
+        let result = should_trigger_opportunity_attack(&combat, &state, 100);
+        assert!(
+            result.is_some(),
+            "Retreating NPC at 5ft within reach should trigger OA. Got: {:?}",
+            result
+        );
+        let (old, new) = result.unwrap();
+        assert_eq!(old, 5, "Old distance should be 5ft");
+        assert_eq!(new, 35, "New distance should be 5 + 30 (speed) = 35ft");
+    }
+
+    #[test]
+    fn test_oa_does_not_trigger_when_npc_beyond_reach() {
+        // NPC at 10ft with a standard 5ft-reach player is OUTSIDE reach.
+        // No OA even though the NPC is retreating.
+        let mut state = create_test_combat_state();
+        if let Some(npc) = state.world.npcs.get_mut(&100) {
+            if let Some(cs) = npc.combat_stats.as_mut() {
+                cs.current_hp = 1;
+                cs.attacks.push(state::NpcAttack {
+                    name: "Shortbow".to_string(),
+                    hit_bonus: 4,
+                    damage_dice: 1,
+                    damage_die: 6,
+                    damage_bonus: 2,
+                    damage_type: state::DamageType::Piercing,
+                    reach: 0,
+                    range_normal: 80,
+                    range_long: 320,
+                });
+            }
+        }
+        {
+            let combat = state.active_combat.as_mut().unwrap();
+            combat.distances.insert(100, 10); // Beyond unarmed 5ft reach
+            combat.reaction_used = false;
+        }
+        let combat = state.active_combat.as_ref().unwrap().clone();
+        let result = should_trigger_opportunity_attack(&combat, &state, 100);
+        assert!(
+            result.is_none(),
+            "NPC beyond player's 5ft reach should not trigger OA. Got: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_oa_does_not_trigger_for_non_retreating_npc() {
+        // A full-HP NPC should not trigger OA (it approaches, not retreats).
+        let mut state = create_test_combat_state();
+        {
+            let combat = state.active_combat.as_mut().unwrap();
+            combat.distances.insert(100, 5);
+            combat.reaction_used = false;
+        }
+        let combat = state.active_combat.as_ref().unwrap().clone();
+        let result = should_trigger_opportunity_attack(&combat, &state, 100);
+        assert!(
+            result.is_none(),
+            "Full-HP NPC should not trigger OA (not retreating). Got: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_oa_suppressed_when_npc_disengaging() {
+        // Even if the NPC would retreat and is within reach, if the NPC
+        // is marked as disengaging (via npc_disengaging map), no OA fires.
+        let mut state = create_test_combat_state();
+        if let Some(npc) = state.world.npcs.get_mut(&100) {
+            if let Some(cs) = npc.combat_stats.as_mut() {
+                cs.current_hp = 1;
+                cs.attacks.push(state::NpcAttack {
+                    name: "Shortbow".to_string(),
+                    hit_bonus: 4,
+                    damage_dice: 1,
+                    damage_die: 6,
+                    damage_bonus: 2,
+                    damage_type: state::DamageType::Piercing,
+                    reach: 0,
+                    range_normal: 80,
+                    range_long: 320,
+                });
+            }
+        }
+        {
+            let combat = state.active_combat.as_mut().unwrap();
+            combat.distances.insert(100, 5);
+            combat.reaction_used = false;
+            combat.npc_disengaging.insert(100, true);
+        }
+        let combat = state.active_combat.as_ref().unwrap().clone();
+        let result = should_trigger_opportunity_attack(&combat, &state, 100);
+        assert!(
+            result.is_none(),
+            "Disengaging NPC should not trigger OA. Got: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_oa_suppressed_when_reaction_already_used() {
+        // Player reaction already spent -- no OA even if NPC retreats.
+        let mut state = create_test_combat_state();
+        if let Some(npc) = state.world.npcs.get_mut(&100) {
+            if let Some(cs) = npc.combat_stats.as_mut() {
+                cs.current_hp = 1;
+                cs.attacks.push(state::NpcAttack {
+                    name: "Shortbow".to_string(),
+                    hit_bonus: 4,
+                    damage_dice: 1,
+                    damage_die: 6,
+                    damage_bonus: 2,
+                    damage_type: state::DamageType::Piercing,
+                    reach: 0,
+                    range_normal: 80,
+                    range_long: 320,
+                });
+            }
+        }
+        {
+            let combat = state.active_combat.as_mut().unwrap();
+            combat.distances.insert(100, 5);
+            combat.reaction_used = true; // already spent
+        }
+        let combat = state.active_combat.as_ref().unwrap().clone();
+        let result = should_trigger_opportunity_attack(&combat, &state, 100);
+        assert!(
+            result.is_none(),
+            "OA must not trigger when player reaction is already spent. Got: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_oa_prompt_fires_end_to_end_when_npc_retreats() {
+        // End-to-end: NPC at 5ft, low HP, has ranged. Its speed (30ft) is
+        // enough to escape 5ft reach, so it does NOT Disengage. The OA
+        // prompt should fire (pending_reaction set).
+        let mut state = create_test_combat_state();
+        if let Some(npc) = state.world.npcs.get_mut(&100) {
+            if let Some(cs) = npc.combat_stats.as_mut() {
+                cs.current_hp = 1;
+                cs.attacks = vec![
+                    state::NpcAttack {
+                        name: "Scimitar".to_string(),
+                        hit_bonus: 4,
+                        damage_dice: 1,
+                        damage_die: 6,
+                        damage_bonus: 2,
+                        damage_type: state::DamageType::Slashing,
+                        reach: 5,
+                        range_normal: 0,
+                        range_long: 0,
+                    },
+                    state::NpcAttack {
+                        name: "Shortbow".to_string(),
+                        hit_bonus: 4,
+                        damage_dice: 1,
+                        damage_die: 6,
+                        damage_bonus: 2,
+                        damage_type: state::DamageType::Piercing,
+                        reach: 0,
+                        range_normal: 80,
+                        range_long: 320,
+                    },
+                ];
+            }
+        }
+        if let Some(ref mut combat) = state.active_combat {
+            combat.distances.insert(100, 5);
+            let npc_idx = combat
+                .initiative_order
+                .iter()
+                .position(|(c, _)| matches!(c, combat::Combatant::Npc(_)))
+                .unwrap();
+            combat.current_turn = npc_idx;
+            combat.reaction_used = false;
+            combat.pending_reaction = None;
+        }
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "");
+
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        let combat = new_state.active_combat.as_ref().unwrap();
+
+        // NPC was within reach and CAN escape reach (30ft speed > 5ft reach),
+        // so it does NOT Disengage. The OA prompt should fire.
+        assert!(
+            combat.pending_reaction.is_some(),
+            "OA prompt should fire when retreating NPC leaves reach without disengaging. \
+             Got: {:?}. Text: {:?}",
+            combat.pending_reaction, output.text
+        );
+        match &combat.pending_reaction {
+            Some(combat::PendingReaction::OpportunityAttack {
+                fleeing_npc_id,
+                old_distance,
+                new_distance,
+                ..
+            }) => {
+                assert_eq!(*fleeing_npc_id, 100);
+                assert_eq!(*old_distance, 5);
+                assert_eq!(*new_distance, 35);
+            }
+            other => panic!("Expected OpportunityAttack, got: {:?}", other),
+        }
+        // Narration should mention the OA prompt.
+        let text = output.text.join(" ");
+        assert!(
+            text.to_lowercase().contains("opportunity attack")
+                || text.to_lowercase().contains("out of your reach"),
+            "Expected OA prompt text. Got: {:?}",
+            output.text
+        );
+    }
+
+    #[test]
+    fn test_oa_accept_hits_fleeing_npc() {
+        // Full round-trip: NPC retreats -> OA prompt -> player accepts -> attack resolves.
+        let mut state = create_test_combat_state();
+        if let Some(npc) = state.world.npcs.get_mut(&100) {
+            if let Some(cs) = npc.combat_stats.as_mut() {
+                cs.current_hp = 1;
+                cs.attacks = vec![
+                    state::NpcAttack {
+                        name: "Scimitar".to_string(),
+                        hit_bonus: 4,
+                        damage_dice: 1,
+                        damage_die: 6,
+                        damage_bonus: 2,
+                        damage_type: state::DamageType::Slashing,
+                        reach: 5,
+                        range_normal: 0,
+                        range_long: 0,
+                    },
+                    state::NpcAttack {
+                        name: "Shortbow".to_string(),
+                        hit_bonus: 4,
+                        damage_dice: 1,
+                        damage_die: 6,
+                        damage_bonus: 2,
+                        damage_type: state::DamageType::Piercing,
+                        reach: 0,
+                        range_normal: 80,
+                        range_long: 320,
+                    },
+                ];
+            }
+        }
+        if let Some(ref mut combat) = state.active_combat {
+            combat.distances.insert(100, 5);
+            let npc_idx = combat
+                .initiative_order
+                .iter()
+                .position(|(c, _)| matches!(c, combat::Combatant::Npc(_)))
+                .unwrap();
+            combat.current_turn = npc_idx;
+            combat.reaction_used = false;
+            combat.pending_reaction = None;
+        }
+
+        // Step 1: trigger the OA prompt
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output1 = process_input(&state_json, "");
+        let state1: GameState = serde_json::from_str(&output1.state_json).unwrap();
+        assert!(
+            state1.active_combat.as_ref().unwrap().pending_reaction.is_some(),
+            "OA prompt should fire"
+        );
+
+        // Step 2: accept the OA
+        let output2 = process_input(&output1.state_json, "yes");
+        let state2: GameState = serde_json::from_str(&output2.state_json).unwrap();
+
+        // The OA may kill the NPC (1 HP), ending combat. Either way, the
+        // narration should reflect the OA resolution.
+        let text = output2.text.join(" ");
+        assert!(
+            text.to_lowercase().contains("opportunity attack")
+                || text.to_lowercase().contains("strike")
+                || text.to_lowercase().contains("miss")
+                || text.to_lowercase().contains("damage"),
+            "Expected OA resolution narration. Got: {:?}",
+            output2.text
+        );
+
+        if let Some(combat2) = state2.active_combat.as_ref() {
+            // Combat still active (OA missed or NPC survived).
+            assert!(combat2.reaction_used, "Accepting OA should consume reaction");
+            assert!(
+                combat2.pending_reaction.is_none(),
+                "Pending reaction should be cleared after resolution"
+            );
+            let npc_dist = combat2.distances.get(&100).copied().unwrap_or(0);
+            assert_eq!(npc_dist, 35, "NPC should be at predicted retreat distance");
+        } else {
+            // Combat ended (OA killed the NPC). Verify victory narration.
+            assert!(
+                text.to_lowercase().contains("defeat")
+                    || text.to_lowercase().contains("victory")
+                    || text.to_lowercase().contains("slain")
+                    || text.to_lowercase().contains("falls"),
+                "Expected combat-end narration. Got: {:?}",
+                output2.text
+            );
+        }
+    }
+
+    #[test]
+    fn test_oa_decline_lets_npc_pass() {
+        // Player declines OA -> NPC retreats without taking damage.
+        let mut state = create_test_combat_state();
+        if let Some(npc) = state.world.npcs.get_mut(&100) {
+            if let Some(cs) = npc.combat_stats.as_mut() {
+                cs.current_hp = 1;
+                cs.attacks = vec![
+                    state::NpcAttack {
+                        name: "Scimitar".to_string(),
+                        hit_bonus: 4,
+                        damage_dice: 1,
+                        damage_die: 6,
+                        damage_bonus: 2,
+                        damage_type: state::DamageType::Slashing,
+                        reach: 5,
+                        range_normal: 0,
+                        range_long: 0,
+                    },
+                    state::NpcAttack {
+                        name: "Shortbow".to_string(),
+                        hit_bonus: 4,
+                        damage_dice: 1,
+                        damage_die: 6,
+                        damage_bonus: 2,
+                        damage_type: state::DamageType::Piercing,
+                        reach: 0,
+                        range_normal: 80,
+                        range_long: 320,
+                    },
+                ];
+            }
+        }
+        if let Some(ref mut combat) = state.active_combat {
+            combat.distances.insert(100, 5);
+            let npc_idx = combat
+                .initiative_order
+                .iter()
+                .position(|(c, _)| matches!(c, combat::Combatant::Npc(_)))
+                .unwrap();
+            combat.current_turn = npc_idx;
+            combat.reaction_used = false;
+            combat.pending_reaction = None;
+        }
+
+        // Step 1: trigger OA prompt
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output1 = process_input(&state_json, "");
+
+        // Step 2: decline
+        let output2 = process_input(&output1.state_json, "no");
+        let state2: GameState = serde_json::from_str(&output2.state_json).unwrap();
+        let combat2 = state2.active_combat.as_ref().unwrap();
+
+        // Reaction should NOT be consumed.
+        assert!(
+            !combat2.reaction_used,
+            "Declining OA should not consume reaction"
+        );
+        // NPC should have moved to the retreat distance.
+        let npc_dist = combat2.distances.get(&100).copied().unwrap_or(0);
+        assert_eq!(npc_dist, 35, "NPC should have retreated to 35ft");
+        // NPC HP should be unchanged (no OA damage).
+        let npc_hp = state2
+            .world
+            .npcs
+            .get(&100)
+            .unwrap()
+            .combat_stats
+            .as_ref()
+            .unwrap()
+            .current_hp;
+        assert_eq!(npc_hp, 1, "NPC HP should be unchanged after declined OA");
+        // Narration should mention letting them pass.
+        let text = output2.text.join(" ");
+        assert!(
+            text.to_lowercase().contains("let them pass")
+                || text.to_lowercase().contains("pass"),
+            "Expected pass narration. Got: {:?}",
+            output2.text
+        );
+    }
+
+    #[test]
+    fn test_npc_disengages_when_cannot_escape_reach() {
+        // NPC at 5ft, speed reduced to 3ft by Slow mastery. Player reach is
+        // 5ft. After retreating, NPC would be at 8ft -- which IS beyond 5ft
+        // reach. So it should NOT Disengage (it can escape).
+        // But if player has 10ft reach (glaive) and NPC speed is 3ft, then
+        // after retreating it would be at 8ft, still within 10ft reach.
+        // The NPC should Disengage.
+        let mut state = create_test_combat_state();
+        // Equip player with a glaive (10ft reach).
+        let glaive_id = 900u32;
+        state.world.items.insert(
+            glaive_id,
+            state::Item {
+                id: glaive_id,
+                name: "Glaive".to_string(),
+                description: String::new(),
+                item_type: state::ItemType::Weapon {
+                    damage_dice: 1,
+                    damage_die: 10,
+                    damage_type: state::DamageType::Slashing,
+                    properties: crate::equipment::REACH
+                        | crate::equipment::HEAVY
+                        | crate::equipment::TWO_HANDED,
+                    category: state::WeaponCategory::Martial,
+                    versatile_die: 0,
+                    range_normal: 0,
+                    range_long: 0,
+                },
+                location: None,
+                carried_by_player: true,
+                charges_remaining: None,
+            },
+        );
+        state.character.equipped.main_hand = Some(glaive_id);
+
+        // Give NPC low HP and ranged.
+        if let Some(npc) = state.world.npcs.get_mut(&100) {
+            if let Some(cs) = npc.combat_stats.as_mut() {
+                cs.current_hp = 1;
+                cs.speed = 3; // Very slow (3ft)
+                cs.attacks.push(state::NpcAttack {
+                    name: "Shortbow".to_string(),
+                    hit_bonus: 4,
+                    damage_dice: 1,
+                    damage_die: 6,
+                    damage_bonus: 2,
+                    damage_type: state::DamageType::Piercing,
+                    reach: 0,
+                    range_normal: 80,
+                    range_long: 320,
+                });
+            }
+        }
+        {
+            let combat = state.active_combat.as_mut().unwrap();
+            combat.distances.insert(100, 5); // Within 10ft reach
+            combat.reaction_used = false;
+        }
+        let combat = state.active_combat.as_ref().unwrap().clone();
+        let result = should_trigger_opportunity_attack(&combat, &state, 100);
+        // NPC at 5ft, speed 3ft -> would be at 8ft, still within 10ft reach.
+        // It should Disengage, suppressing the OA.
+        assert!(
+            result.is_none(),
+            "NPC that can't escape 10ft reach should Disengage (no OA). Got: {:?}",
+            result
         );
     }
 

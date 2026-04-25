@@ -1555,16 +1555,25 @@ pub fn resolve_npc_turn(
             ));
         }
 
-        // Check if NPC is within player's melee reach — if so, Disengage first.
+        // Check if NPC is within player's melee reach. If so, and if the
+        // NPC would not escape reach even with full movement, it uses its
+        // action to Disengage (suppressing the player's OA). Otherwise the
+        // NPC just runs, risking an OA but keeping its action for a ranged
+        // attack after retreating.
         let player_reach = player_melee_reach(&state.character, &state.world.items);
-        let used_disengage = distance <= player_reach;
+        let predicted_distance = distance.saturating_add(effective_speed);
+        let would_provoke_oa = distance <= player_reach && predicted_distance > player_reach;
+        let cannot_escape_reach = distance <= player_reach && predicted_distance <= player_reach;
+        let used_disengage = cannot_escape_reach
+            && !combat.npc_disengaging.get(&npc_id).copied().unwrap_or(false);
         if used_disengage {
             combat.npc_disengaging.insert(npc_id, true);
             lines.push(format!("{} disengages.", npc_name));
         }
+        let _ = would_provoke_oa; // used by should_trigger_opportunity_attack
 
         // Move away from the player.
-        let new_distance = distance.saturating_add(effective_speed);
+        let new_distance = predicted_distance;
         combat.distances.insert(npc_id, new_distance);
         lines.push(format!(
             "{} retreats. ({}ft -> {}ft)",
