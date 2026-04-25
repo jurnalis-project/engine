@@ -289,6 +289,73 @@ fn test_merchant_dialogue_mentions_browse() {
         "Expected 'browse' in merchant trade hint, got: {}", text);
 }
 
+// ---------- browse tests -------------------------------------------------------
+
+#[test]
+fn test_browse_with_merchant_shows_wares_list() {
+    let state = make_trade_state();
+    let state_json = serde_json::to_string(&state).unwrap();
+
+    let output = process_input(&state_json, "browse");
+    let text = output.text.join("\n");
+
+    // Should show merchant name header
+    assert!(text.contains("Marcus the Merchant's wares:"),
+        "Expected merchant name header, got: {}", text);
+
+    // Should contain weapon, armor, and supply categories
+    assert!(text.contains("Weapons:"), "Expected Weapons category, got: {}", text);
+    assert!(text.contains("Armor:"), "Expected Armor category, got: {}", text);
+    assert!(text.contains("Supplies:"), "Expected Supplies category, got: {}", text);
+
+    // Should contain specific items with prices
+    assert!(text.contains("Dagger"), "Expected Dagger in wares, got: {}", text);
+    assert!(text.contains("Healing Potion"), "Expected Healing Potion in wares, got: {}", text);
+
+    // Should contain buy hint
+    assert!(text.contains("buy <item>"), "Expected buy hint, got: {}", text);
+}
+
+#[test]
+fn test_browse_without_merchant_returns_error() {
+    let mut state = make_trade_state();
+    // Remove the merchant from the room
+    state.world.locations.get_mut(&0).unwrap().npcs.clear();
+    let state_json = serde_json::to_string(&state).unwrap();
+
+    let output = process_input(&state_json, "browse");
+    let text = output.text.join(" ");
+    assert!(text.to_lowercase().contains("no merchant"),
+        "Expected no merchant error, got: {}", text);
+}
+
+#[test]
+fn test_browse_does_not_modify_state() {
+    let state = make_trade_state();
+    let state_json = serde_json::to_string(&state).unwrap();
+
+    let output = process_input(&state_json, "browse");
+    let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+
+    // Gold should be unchanged
+    assert_eq!(new_state.character.gold_cp, state.character.gold_cp,
+        "Browse should not modify gold");
+    // Inventory should be unchanged
+    assert_eq!(new_state.character.inventory.len(), state.character.inventory.len(),
+        "Browse should not modify inventory");
+}
+
+#[test]
+fn test_browse_alias_shop_works() {
+    let state = make_trade_state();
+    let state_json = serde_json::to_string(&state).unwrap();
+
+    let output = process_input(&state_json, "shop");
+    let text = output.text.join("\n");
+    assert!(text.contains("Marcus the Merchant's wares:"),
+        "Expected wares list from 'shop' alias, got: {}", text);
+}
+
 // ---------- starting gold test -----------------------------------------------
 
 #[test]
