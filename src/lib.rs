@@ -3052,7 +3052,8 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
         | Command::EscapeGrapple
         | Command::Shove(_)
         | Command::ShoveProne(_)
-        | Command::ActionSurge => {
+        | Command::ActionSurge
+        | Command::RecklessAttack(_) => {
             vec!["You're not in combat.".to_string()]
         }
         Command::NewGame => {
@@ -6437,6 +6438,11 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
             state.character.class_features.rage_active = true;
             combat.bonus_action_used = true;
             lines.push("You enter a rage! Your attacks deal bonus damage and you have resistance to physical damage.".to_string());
+        }
+        Command::RecklessAttack(_target) => {
+            // Placeholder: will be implemented in a later TDD unit.
+            state.active_combat = Some(combat);
+            return vec!["Reckless Attack is not yet implemented.".to_string()];
         }
         Command::BardicInspiration(target) => {
             if state.character.class != character::class::Class::Bard {

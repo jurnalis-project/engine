@@ -142,6 +142,12 @@ pub enum Command {
     /// Fighter: Action Surge (level 2). Grants one additional action this
     /// turn. Parsed from "action surge" or "surge".
     ActionSurge,
+    /// Barbarian: Reckless Attack (level 2). Declare a reckless attack on
+    /// a target. Gives advantage on STR-based attack rolls until the start
+    /// of the player's next turn; attack rolls against the player also have
+    /// advantage. Parsed from "reckless attack <target>" / "recklessly
+    /// attack <target>".
+    RecklessAttack(String),
     Unknown(String),
 }
 
@@ -316,6 +322,14 @@ pub fn parse(input: &str) -> Command {
             }
             // Fighter: "action surge"
             "action surge" => return Command::ActionSurge,
+            // Barbarian: "reckless attack <target>" / "recklessly attack <target>"
+            "reckless attack" | "recklessly attack" => {
+                return if rest.is_empty() {
+                    Command::Unknown("Reckless attack what?".to_string())
+                } else {
+                    Command::RecklessAttack(rest)
+                };
+            }
             // Scenery interaction: "break down <target>" -> Force
             "break down" => {
                 return if rest.is_empty() {
@@ -1738,5 +1752,41 @@ mod tests {
         assert_eq!(parse("Action Surge"), Command::ActionSurge);
         assert_eq!(parse("SURGE"), Command::ActionSurge);
         assert_eq!(parse("Surge"), Command::ActionSurge);
+    }
+
+    #[test]
+    fn test_reckless_attack_two_word() {
+        assert_eq!(
+            parse("reckless attack goblin"),
+            Command::RecklessAttack("goblin".to_string())
+        );
+    }
+
+    #[test]
+    fn test_reckless_attack_adverb_form() {
+        assert_eq!(
+            parse("recklessly attack goblin"),
+            Command::RecklessAttack("goblin".to_string())
+        );
+    }
+
+    #[test]
+    fn test_reckless_attack_no_target() {
+        match parse("reckless attack") {
+            Command::Unknown(_) => {}
+            other => panic!("Expected Unknown, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_reckless_attack_case_insensitive() {
+        assert_eq!(
+            parse("RECKLESS ATTACK Goblin"),
+            Command::RecklessAttack("goblin".to_string())
+        );
+        assert_eq!(
+            parse("Recklessly Attack Orc"),
+            Command::RecklessAttack("orc".to_string())
+        );
     }
 }
