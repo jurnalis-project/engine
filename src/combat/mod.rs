@@ -7614,7 +7614,8 @@ mod tests {
             barbarian_resists, fighter_resists,
         );
     }
-}    // ---- Extra Attack: attacks_made_this_turn field ----
+
+    // ---- Extra Attack: attacks_made_this_turn field ----
 
     #[test]
     fn test_attacks_made_this_turn_defaults_to_zero() {
