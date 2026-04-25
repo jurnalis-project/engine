@@ -3848,6 +3848,12 @@ fn resolve_reaction_decision(state: &mut GameState, rng: &mut StdRng, accept: bo
                 combat.advance_turn(state);
             }
         }
+        // UncannyDodge is auto-triggered inline in resolve_npc_attack_action and
+        // should never appear as a pending reaction awaiting player input.
+        // Guard arm for completeness / unexpected serialized state.
+        combat::PendingReaction::UncannyDodge { .. } => {
+            combat.advance_turn(state);
+        }
     }
 
     state.active_combat = Some(combat);
@@ -4357,6 +4363,10 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                     }
                     combat::PendingReaction::Counterspell { ref spell_name, .. } => {
                         lines.push(format!("Use Counterspell against {}? (yes/no)", spell_name))
+                    }
+                    combat::PendingReaction::UncannyDodge { .. } => {
+                        // Should not occur (auto-resolved), but guard for safety.
+                        lines.push("(Uncanny Dodge is resolving...)".to_string())
                     }
                 }
                 return lines;

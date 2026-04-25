@@ -63,6 +63,17 @@ pub enum PendingReaction {
         spell_level: u32,
         resume_npc_index: usize,
     },
+    /// Rogue level 5+ Uncanny Dodge: auto-triggered (no prompt) when an
+    /// NPC the Rogue can see hits them and the reaction is available.
+    /// Halves the incoming damage (rounded down). Stored here for type
+    /// completeness and serialization; resolved immediately in-line rather
+    /// than via the yes/no flow.
+    UncannyDodge {
+        attacker_npc_id: NpcId,
+        incoming_damage: i32,
+        halved_damage: i32,
+        resume_npc_index: usize,
+    },
 }
 
 /// Full combat state, stored in GameState.active_combat.
@@ -1397,11 +1408,29 @@ fn resolve_npc_attack_action(
         );
         if result.hit {
             let was_dying = state.character.current_hp <= 0;
-            state.character.current_hp -= result.damage;
+            // Uncanny Dodge (Rogue level 5+): auto-trigger when the Rogue
+            // is hit by a visible attacker and the reaction is available.
+            // Halves incoming damage (rounded down) and consumes the reaction.
+            let uncanny_eligible = !was_dying
+                && state.character.class == crate::character::class::Class::Rogue
+                && state.character.level >= 5
+                && !combat.reaction_used;
+            let actual_damage = if uncanny_eligible {
+                let halved = result.damage / 2;
+                combat.reaction_used = true;
+                lines.push(format!(
+                    "Uncanny Dodge! You halve the damage from {} to {}.",
+                    result.damage, halved
+                ));
+                halved
+            } else {
+                result.damage
+            };
+            state.character.current_hp -= actual_damage;
             if result.natural_20 {
                 lines.push(format!(
                     "{} {} {} -- CRITICAL HIT! {} {} damage!",
-                    npc_name, verb, result.weapon_name, result.damage, result.damage_type
+                    npc_name, verb, result.weapon_name, actual_damage, result.damage_type
                 ));
             } else {
                 lines.push(format!(
@@ -1411,7 +1440,7 @@ fn resolve_npc_attack_action(
                     result.weapon_name,
                     format_attack_roll_details(&result, attack.hit_bonus),
                     player_ac,
-                    result.damage,
+                    actual_damage,
                     result.damage_type
                 ));
             }
@@ -1420,7 +1449,7 @@ fn resolve_npc_attack_action(
             if was_dying {
                 let outcome = combat.apply_damage_while_dying(
                     &mut state.character,
-                    result.damage,
+                    actual_damage,
                     result.natural_20,
                 );
                 lines.extend(narrate_damage_while_dying_outcome(outcome));
@@ -7700,5 +7729,299 @@ mod tests {
         }"#;
         let combat: CombatState = serde_json::from_str(json).unwrap();
         assert_eq!(combat.attacks_made_this_turn, 0);
+    }
+
+    // ---- Uncanny Dodge (Rogue level 5 reaction) ----
+
+    /// Build a state with a Rogue character of the given level and a
+    /// guaranteed-hit NPC (hit_bonus 20, so it hits on any roll except
+    /// natural 1).
+    fn make_rogue_state(level: u32) -> GameState {
+        let mut scores = HashMap::new();
+        scores.insert(Ability::Strength, 10);
+        scores.insert(Ability::Dexterity, 16);
+        scores.insert(Ability::Constitution, 12);
+        scores.insert(Ability::Intelligence, 10);
+        scores.insert(Ability::Wisdom, 10);
+        scores.insert(Ability::Charisma, 10);
+        let mut character = create_character(
+            "Rogue".to_string(),
+            Race::Human,
+            Class::Rogue,
+            scores,
+            vec![],
+        );
+        character.level = level;
+
+        let mut npcs = HashMap::new();
+        npcs.insert(
+            0,
+            Npc {
+                id: 0,
+                name: "Bandit".to_string(),
+                role: NpcRole::Guard,
+                disposition: Disposition::Hostile,
+                dialogue_tags: vec![],
+                location: 0,
+                combat_stats: Some(CombatStats {
+                    max_hp: 20,
+                    current_hp: 20,
+                    ac: 10,
+                    speed: 30,
+                    attacks: vec![NpcAttack {
+                        name: "Shortsword".to_string(),
+                        hit_bonus: 20, // guaranteed hit on any roll except nat-1
+                        damage_dice: 1,
+                        damage_die: 6,
+                        damage_bonus: 3,
+                        damage_type: DamageType::Piercing,
+                        reach: 5,
+                        range_normal: 0,
+                        range_long: 0,
+                    }],
+                    proficiency_bonus: 2,
+                    cr: 0.125,
+                    ..Default::default()
+                }),
+                conditions: Vec::new(),
+            },
+        );
+
+        GameState {
+            version: crate::state::SAVE_VERSION.to_string(),
+            character,
+            current_location: 0,
+            discovered_locations: HashSet::new(),
+            world: WorldState {
+                locations: HashMap::new(),
+                npcs,
+                items: HashMap::new(),
+                triggers: HashMap::new(),
+                triggered: HashSet::new(),
+            },
+            log: Vec::new(),
+            rng_seed: 42,
+            rng_counter: 0,
+            game_phase: GamePhase::Exploration,
+            active_combat: None,
+            ironman_mode: false,
+            progress: crate::state::ProgressState::default(),
+            in_world_minutes: 0,
+            last_long_rest_minutes: None,
+            pending_background_pattern: None,
+            pending_subrace: None,
+            pending_disambiguation: None,
+            pending_new_game_confirm: false,
+        }
+    }
+
+    #[test]
+    fn test_uncanny_dodge_triggers_at_level_5_and_halves_damage() {
+        // Run seeds until we get a hit (skip natural-1 misses).
+        let mut triggered = false;
+        for seed in 0..200u64 {
+            let mut state = make_rogue_state(5);
+            let mut rng = StdRng::seed_from_u64(seed);
+            let mut combat = start_combat(
+                &mut rng,
+                &state.character,
+                &[0],
+                &state.world.npcs,
+                crate::state::LocationType::Room,
+            );
+            combat.distances.insert(0, 5);
+            combat.reaction_used = false;
+            let hp_before = state.character.current_hp;
+
+            let mut rng2 = StdRng::seed_from_u64(seed);
+            let lines = resolve_npc_turn(&mut rng2, 0, &mut state, &mut combat);
+            let all = lines.join("\n");
+
+            if all.contains("natural 1") || (!all.contains("hit for") && !all.contains("CRITICAL")) {
+                continue; // miss — try next seed
+            }
+
+            assert!(
+                all.contains("Uncanny Dodge"),
+                "Expected Uncanny Dodge narration at level 5. Got: {:?}",
+                lines
+            );
+            assert!(
+                combat.reaction_used,
+                "Reaction should be marked used after Uncanny Dodge"
+            );
+            // Max damage from 1d6+3 is 9; halved = 4. Player HP loss must be <= 5.
+            let damage_taken = hp_before - state.character.current_hp;
+            assert!(
+                damage_taken <= 5,
+                "Uncanny Dodge should halve damage (max halved is 4, taken={})",
+                damage_taken
+            );
+            triggered = true;
+            break;
+        }
+        assert!(triggered, "Could not find a hit in 200 seeds — test setup may be wrong");
+    }
+
+    #[test]
+    fn test_uncanny_dodge_does_not_trigger_at_level_4() {
+        let mut found_hit = false;
+        for seed in 0..200u64 {
+            let mut state = make_rogue_state(4);
+            let mut rng = StdRng::seed_from_u64(seed);
+            let mut combat = start_combat(
+                &mut rng,
+                &state.character,
+                &[0],
+                &state.world.npcs,
+                crate::state::LocationType::Room,
+            );
+            combat.distances.insert(0, 5);
+            combat.reaction_used = false;
+
+            let mut rng2 = StdRng::seed_from_u64(seed);
+            let lines = resolve_npc_turn(&mut rng2, 0, &mut state, &mut combat);
+            let all = lines.join("\n");
+
+            if all.contains("natural 1") || (!all.contains("hit for") && !all.contains("CRITICAL")) {
+                continue;
+            }
+
+            assert!(
+                !all.contains("Uncanny Dodge"),
+                "Uncanny Dodge should NOT trigger at level 4. Got: {:?}",
+                lines
+            );
+            assert!(
+                !combat.reaction_used,
+                "Reaction should NOT be consumed at level 4"
+            );
+            found_hit = true;
+            break;
+        }
+        assert!(found_hit, "Could not find a hit in 200 seeds — test setup may be wrong");
+    }
+
+    #[test]
+    fn test_uncanny_dodge_does_not_trigger_when_reaction_already_used() {
+        let mut found_hit = false;
+        for seed in 0..200u64 {
+            let mut state = make_rogue_state(5);
+            let mut rng = StdRng::seed_from_u64(seed);
+            let mut combat = start_combat(
+                &mut rng,
+                &state.character,
+                &[0],
+                &state.world.npcs,
+                crate::state::LocationType::Room,
+            );
+            combat.distances.insert(0, 5);
+            combat.reaction_used = true; // already spent
+
+            let hp_before = state.character.current_hp;
+            let mut rng2 = StdRng::seed_from_u64(seed);
+            let lines = resolve_npc_turn(&mut rng2, 0, &mut state, &mut combat);
+            let all = lines.join("\n");
+
+            if all.contains("natural 1") || (!all.contains("hit for") && !all.contains("CRITICAL")) {
+                continue;
+            }
+
+            assert!(
+                !all.contains("Uncanny Dodge"),
+                "Uncanny Dodge should NOT trigger when reaction already used. Got: {:?}",
+                lines
+            );
+            let damage_taken = hp_before - state.character.current_hp;
+            assert!(
+                damage_taken > 0,
+                "Player should take full damage when reaction was already used"
+            );
+            found_hit = true;
+            break;
+        }
+        assert!(found_hit, "Could not find a hit in 200 seeds — test setup may be wrong");
+    }
+
+    #[test]
+    fn test_uncanny_dodge_damage_halved_floor_division() {
+        // Verify floor(damage/2) by collecting hits across many seeds.
+        let mut checked = false;
+        for seed in 0..500u64 {
+            let mut state = make_rogue_state(5);
+            let mut rng = StdRng::seed_from_u64(seed);
+            let mut combat = start_combat(
+                &mut rng,
+                &state.character,
+                &[0],
+                &state.world.npcs,
+                crate::state::LocationType::Room,
+            );
+            combat.distances.insert(0, 5);
+            combat.reaction_used = false;
+
+            let hp_before = state.character.current_hp;
+            let mut rng2 = StdRng::seed_from_u64(seed);
+            let lines = resolve_npc_turn(&mut rng2, 0, &mut state, &mut combat);
+            let all = lines.join("\n");
+
+            if !all.contains("Uncanny Dodge! You halve the damage from") {
+                continue;
+            }
+
+            // Parse "Uncanny Dodge! You halve the damage from X to Y."
+            for line in &lines {
+                if let Some(rest) = line.strip_prefix("Uncanny Dodge! You halve the damage from ") {
+                    let rest = rest.trim_end_matches('.');
+                    if let Some((x_str, y_str)) = rest.split_once(" to ") {
+                        let x: i32 = x_str.trim().parse().unwrap_or(-1);
+                        let y: i32 = y_str.trim().parse().unwrap_or(-1);
+                        let damage_taken = hp_before - state.character.current_hp;
+                        assert_eq!(y, x / 2, "Halved damage should be floor(x/2)");
+                        assert_eq!(damage_taken, y, "HP loss must equal halved damage");
+                        checked = true;
+                    }
+                    break;
+                }
+            }
+            if checked { break; }
+        }
+        assert!(checked, "Could not find a hit with Uncanny Dodge in 500 seeds");
+    }
+
+    #[test]
+    fn test_uncanny_dodge_pending_reaction_variant_serializes() {
+        // Verify the UncannyDodge variant round-trips through serde.
+        let mut rng = StdRng::seed_from_u64(42);
+        let state = test_state_with_goblin();
+        let mut combat = start_combat(
+            &mut rng,
+            &state.character,
+            &[0],
+            &state.world.npcs,
+            crate::state::LocationType::Room,
+        );
+        combat.pending_reaction = Some(PendingReaction::UncannyDodge {
+            attacker_npc_id: 0,
+            incoming_damage: 10,
+            halved_damage: 5,
+            resume_npc_index: 1,
+        });
+        let json = serde_json::to_string(&combat).unwrap();
+        let deserialised: CombatState = serde_json::from_str(&json).unwrap();
+        match deserialised.pending_reaction {
+            Some(PendingReaction::UncannyDodge {
+                attacker_npc_id,
+                incoming_damage,
+                halved_damage,
+                resume_npc_index,
+            }) => {
+                assert_eq!(attacker_npc_id, 0);
+                assert_eq!(incoming_damage, 10);
+                assert_eq!(halved_damage, 5);
+                assert_eq!(resume_npc_index, 1);
+            }
+            other => panic!("Expected UncannyDodge, got {:?}", other),
+        }
     }
 }
