@@ -21931,7 +21931,11 @@ mod tests {
         assert!(
             all_text.contains("Danger Sense"),
             "Expected Danger Sense narration for Barbarian level 2 DEX save. Got: {}",
-            all_text    // ---- Divine Smite tests ----
+            all_text
+        );
+    }
+
+    // ---- Divine Smite tests ----
 
     /// Set up a Paladin level 2 in melee combat with a Longsword (melee-only).
     /// Target has high HP so smite narration can always be checked.
@@ -22394,17 +22398,19 @@ mod tests {
         assert!(
             !all_text.contains("Danger Sense"),
             "Incapacitated Barbarian should NOT trigger Danger Sense. Got: {}",
-            all_text    fn test_divine_smite_backward_compat_default_false() {
-        // Ensure older saves without the field deserialize cleanly.
+            all_text
+        );
+    }
+
+    #[test]
+    fn test_divine_smite_backward_compat_default_false() {
         let state = create_test_combat_state();
         let json = serde_json::to_string(&state).unwrap();
-        // Remove the field from JSON to simulate an older save.
         let stripped = json.replace("\"divine_smite_free_use_available\":false,", "");
         let deserialized: GameState = serde_json::from_str(&stripped).unwrap();
         assert!(
             !deserialized.character.class_features.divine_smite_free_use_available,
             "Missing field should default to false"
-
         );
     }
 }
