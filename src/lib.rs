@@ -2982,6 +2982,7 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
         Command::Press(target) => handle_scenery_interaction(state, &target, "press"),
         Command::Unlock(target) => handle_scenery_interaction(state, &target, "unlock"),
         Command::Force(target) => handle_scenery_interaction(state, &target, "force"),
+        Command::Climb(target) => handle_scenery_interaction(state, &target, "climb"),
         Command::Attack(target) => {
             // In exploration mode, provide contextual feedback for attack attempts.
             // - Room features: "scenery" rejection

@@ -121,6 +121,8 @@ pub enum Command {
     Unlock(String),
     /// Force open a room feature. Parsed from "force <target>" or "break down <target>".
     Force(String),
+    /// Climb a room feature. Parsed from "climb <target>".
+    Climb(String),
     // --- Trade commands ---
     /// Browse a merchant's available wares and prices. No argument.
     Browse,
@@ -566,6 +568,13 @@ pub fn parse(input: &str) -> Command {
                 Command::Unknown("Force open what?".to_string())
             } else {
                 Command::Force(args)
+            }
+        }
+        "climb" | "scale" | "clamber" => {
+            if args.is_empty() {
+                Command::Unknown("Climb what?".to_string())
+            } else {
+                Command::Climb(args)
             }
         }
         // ---- Trade commands ----
@@ -1649,5 +1658,28 @@ mod tests {
     fn test_take_cover_still_works() {
         assert_eq!(parse("take cover"), Command::TakeCover);
         assert_eq!(parse("Take Cover"), Command::TakeCover);
+    }
+
+    // ---- Climb command ----
+
+    #[test]
+    fn test_climb_command() {
+        assert_eq!(parse("climb chains"), Command::Climb("chains".to_string()));
+        assert_eq!(parse("climb bookshelf"), Command::Climb("bookshelf".to_string()));
+        assert_eq!(parse("climb well"), Command::Climb("well".to_string()));
+    }
+
+    #[test]
+    fn test_climb_bare_verb_error() {
+        match parse("climb") {
+            Command::Unknown(s) => assert!(s.to_lowercase().contains("what"), "Got: {}", s),
+            other => panic!("Expected Unknown, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_climb_case_insensitive() {
+        assert_eq!(parse("CLIMB CHAINS"), Command::Climb("chains".to_string()));
+        assert_eq!(parse("Climb Bookshelf"), Command::Climb("bookshelf".to_string()));
     }
 }
