@@ -18931,4 +18931,286 @@ mod tests {
             "Initiative should remain on the player after nat-20 revival"
         );
     }
+
+    // ---- Death Saving Throw Accumulation (issue #227) ----
+
+    /// Build a dying-in-combat `GameState` suitable for death save integration
+    /// tests. The player is at 0 HP, it is the player's turn, and the NPC is
+    /// placed 200 ft away with only a melee weapon (reach 5) so it will never
+    /// attack the dying player during its turn.
+    fn create_dying_combat_state() -> GameState {
+        let mut state = create_test_exploration_state();
+
+        // Place a goblin far from the player so it moves each NPC turn but
+        // never attacks (melee reach 5 vs distance 200).
+        let npc_id = 100;
+        let loc_id = state.current_location;
+        state.world.npcs.insert(npc_id, state::Npc {
+            id: npc_id,
+            name: "Distant Goblin".to_string(),
+            role: state::NpcRole::Guard,
+            disposition: state::Disposition::Hostile,
+            dialogue_tags: vec![],
+            location: loc_id,
+            combat_stats: Some(state::CombatStats {
+                max_hp: 7, current_hp: 7, ac: 15, speed: 30,
+                ability_scores: {
+                    let mut m = HashMap::new();
+                    m.insert(Ability::Strength, 8);
+                    m.insert(Ability::Dexterity, 14);
+                    m
+                },
+                attacks: vec![state::NpcAttack {
+                    name: "Scimitar".to_string(), hit_bonus: 4,
+                    damage_dice: 1, damage_die: 6, damage_bonus: 2,
+                    damage_type: state::DamageType::Slashing, reach: 5,
+                    // No ranged capability
+                    range_normal: 0, range_long: 0,
+                }],
+                proficiency_bonus: 2,
+                cr: 0.25,
+                ..Default::default()
+            }),
+            conditions: Vec::new(),
+        });
+        if let Some(loc) = state.world.locations.get_mut(&loc_id) {
+            loc.npcs.push(npc_id);
+        }
+
+        // Give player a weapon (required for valid combat state).
+        let weapon_id = 200;
+        state.world.items.insert(weapon_id, state::Item {
+            id: weapon_id,
+            name: "Longsword".to_string(),
+            description: "A fine longsword.".to_string(),
+            item_type: state::ItemType::Weapon {
+                damage_dice: 1, damage_die: 8,
+                damage_type: state::DamageType::Slashing,
+                properties: crate::equipment::VERSATILE,
+                category: state::WeaponCategory::Martial,
+                versatile_die: 10, range_normal: 0, range_long: 0,
+            },
+            location: None,
+            carried_by_player: true,
+            charges_remaining: None,
+        });
+        state.character.inventory.push(weapon_id);
+        state.character.equipped.main_hand = Some(weapon_id);
+
+        // Build combat with player first in initiative so we control the
+        // death save timing precisely. NPC at distance 200.
+        state.active_combat = Some(combat::CombatState {
+            initiative_order: vec![
+                (combat::Combatant::Player, 20),
+                (combat::Combatant::Npc(npc_id), 5),
+            ],
+            current_turn: 0, // player's turn
+            round: 1,
+            distances: {
+                let mut d = HashMap::new();
+                d.insert(npc_id, 200);
+                d
+            },
+            player_movement_remaining: 30,
+            player_dodging: false,
+            player_disengaging: false,
+            action_used: false,
+            bonus_action_used: false,
+            reaction_used: false,
+            free_interaction_used: false,
+            npc_dodging: HashMap::new(),
+            npc_disengaging: HashMap::new(),
+            player_shield_ac_bonus: 0,
+            pending_reaction: None,
+            player_vex_target: None,
+            sap_targets: std::collections::HashSet::new(),
+            slow_targets: HashMap::new(),
+            cleave_used_this_turn: false,
+            nick_used_this_turn: false,
+            death_save_successes: 0,
+            death_save_failures: 0,
+        });
+
+        // Drop the player to 0 HP (dying).
+        state.character.current_hp = 0;
+
+        state
+    }
+
+    /// Scan for an `rng_seed` value where the first three d20 rolls drawn
+    /// from a single `StdRng::seed_from_u64(rng_seed + counter)` are all
+    /// failures (d20 in 2..=9). This mirrors the engine's behavior: a single
+    /// `process_input` call resolves multiple death save rounds using the
+    /// same RNG instance.
+    fn find_seed_three_consecutive_failures(base_counter: u64) -> u64 {
+        use rand::Rng;
+        for seed in 0u64..100_000 {
+            let mut rng = StdRng::seed_from_u64(seed + base_counter);
+            let all_fail = (0..3).all(|_| {
+                let d20: i32 = rng.gen_range(1..=20);
+                (2..=9).contains(&d20)
+            });
+            if all_fail {
+                return seed;
+            }
+        }
+        panic!("no seed found producing 3 consecutive failure rolls");
+    }
+
+    /// Scan for an `rng_seed` value where the first d20 drawn from
+    /// `StdRng::seed_from_u64(rng_seed + counter)` is a natural 1.
+    fn find_seed_nat_one(counter: u64) -> u64 {
+        use rand::Rng;
+        for seed in 0u64..100_000 {
+            let mut rng = StdRng::seed_from_u64(seed + counter);
+            let d20: i32 = rng.gen_range(1..=20);
+            if d20 == 1 {
+                return seed;
+            }
+        }
+        panic!("no seed found producing a natural 1");
+    }
+
+    // Hypothesis: The death save accumulation logic in `apply_death_save_roll`
+    // is correct (unit tests confirm), but no integration test drives 3
+    // failure accumulations through `process_input` to confirm the full
+    // pipeline results in a game-over state. This test fills that gap.
+    //
+    // Engine behavior note: when the player is dying, a single
+    // `process_input` call resolves multiple death save rounds (the NPC
+    // turn loop auto-rolls death saves each time the player's turn comes
+    // around). A seed that produces three consecutive failure rolls (d20
+    // in 2..=9) from the same RNG instance ensures the player accumulates
+    // three failures and dies within that single call.
+    #[test]
+    fn test_three_death_save_failures_across_process_input_triggers_game_over() {
+        let mut state = create_dying_combat_state();
+        let base_counter = state.rng_counter;
+
+        // Find a seed that gives 3 consecutive failure rolls (d20 in 2..=9)
+        // from a single RNG instance seeded at (seed + counter).
+        let seed = find_seed_three_consecutive_failures(base_counter);
+        state.rng_seed = seed;
+
+        // Verify the rolls are what we expect before running process_input.
+        {
+            use rand::Rng;
+            let mut rng = StdRng::seed_from_u64(seed + base_counter);
+            for i in 0..3 {
+                let d20: i32 = rng.gen_range(1..=20);
+                assert!(
+                    (2..=9).contains(&d20),
+                    "pre-check: expected failure roll at position {}, got {}",
+                    i, d20
+                );
+            }
+        }
+
+        // A single process_input call should resolve 3 consecutive failure
+        // death saves and end combat in defeat.
+        let json = serde_json::to_string(&state).unwrap();
+        let out = process_input(&json, "wait");
+        let final_state: GameState = serde_json::from_str(&out.state_json).unwrap();
+        let text = out.text.join("\n");
+
+        // Verify death save narration appeared.
+        let text_lower = text.to_lowercase();
+        assert!(
+            text_lower.contains("death sav"),
+            "Expected death save narration, got: {}",
+            text
+        );
+
+        // Count the failure narration lines to confirm 3 failures accumulated.
+        let failure_count = text_lower.matches("failure").count();
+        assert!(
+            failure_count >= 3,
+            "Expected at least 3 failure narrations, got {}: {}",
+            failure_count, text
+        );
+
+        // After defeat, active_combat is cleared.
+        assert!(
+            final_state.active_combat.is_none(),
+            "Combat should end after three failures"
+        );
+        assert!(
+            final_state.character.current_hp <= 0,
+            "Player HP should be 0 or below"
+        );
+
+        // The defeat text should appear.
+        assert!(
+            text.contains("DEFEAT") || text.contains("fallen"),
+            "Expected defeat narration, got: {}",
+            text
+        );
+
+        // Confirm the GAME OVER gate: the next process_input should show
+        // GAME OVER because HP <= 0 and no active combat.
+        let out2 = process_input(&out.state_json, "look");
+        let text2 = out2.text.join("\n");
+        assert!(
+            text2.contains("GAME OVER"),
+            "After defeat, process_input should show GAME OVER. Got: {}",
+            text2
+        );
+    }
+
+    // Hypothesis: A natural 1 on a death save adds 2 failures per SRD. When
+    // the character already has 2 accumulated failures, a nat-1 should push
+    // the total to 3 (capped) and trigger death in a single `process_input`
+    // call.
+    #[test]
+    fn test_nat_one_death_save_with_two_prior_failures_kills_instantly() {
+        let mut state = create_dying_combat_state();
+        let base_counter = state.rng_counter;
+
+        // Pre-set 2 death save failures (as if accumulated from prior turns).
+        if let Some(ref mut combat) = state.active_combat {
+            combat.death_save_failures = 2;
+        }
+
+        // Find a seed that gives a natural 1.
+        let seed = find_seed_nat_one(base_counter);
+        state.rng_seed = seed;
+
+        // Verify the d20 is indeed 1 at this seed + counter.
+        {
+            use rand::Rng;
+            let mut rng = StdRng::seed_from_u64(seed + base_counter);
+            let d20: i32 = rng.gen_range(1..=20);
+            assert_eq!(d20, 1, "pre-check: expected nat-1, got {}", d20);
+        }
+
+        // One process_input call should kill the character.
+        let json = serde_json::to_string(&state).unwrap();
+        let out = process_input(&json, "wait");
+        let final_state: GameState = serde_json::from_str(&out.state_json).unwrap();
+        let text = out.text.join("\n");
+
+        // Nat-1 adds 2 failures: 2 + 2 = 4, capped at 3 → Dead.
+        assert!(
+            final_state.active_combat.is_none(),
+            "Combat should end after nat-1 with 2 pre-existing failures"
+        );
+        assert!(
+            final_state.character.current_hp <= 0,
+            "Player HP should remain at 0 or below"
+        );
+        assert!(
+            text.contains("DEFEAT") || text.contains("fallen") || text.contains("died"),
+            "Expected defeat narration, got: {}",
+            text
+        );
+
+        // Confirm GAME OVER on next call.
+        let out2 = process_input(&out.state_json, "look");
+        let text2 = out2.text.join("\n");
+        assert!(
+            text2.contains("GAME OVER"),
+            "After nat-1 death, process_input should show GAME OVER. Got: {}",
+            text2
+        );
+    }
 }
