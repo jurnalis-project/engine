@@ -22759,4 +22759,292 @@ mod tests {
             "Missing field should default to false"
         );
     }
+
+    // ---- Level 3 spell integration tests ----
+
+    /// Create a wizard in combat with level-3 spell slots (simulating a level 5 wizard).
+    fn create_level3_wizard_combat_state() -> GameState {
+        let mut state = create_test_combat_state();
+        state.character.class = character::class::Class::Wizard;
+        state.character.level = 5;
+        state.character.known_spells = vec![
+            "Fire Bolt".to_string(),
+            "Prestidigitation".to_string(),
+            "Magic Missile".to_string(),
+            "Burning Hands".to_string(),
+            "Fireball".to_string(),
+            "Lightning Bolt".to_string(),
+            "Fly".to_string(),
+            "Dispel Magic".to_string(),
+            "Fear".to_string(),
+        ];
+        // Level 5 wizard: 4/3/2 slots
+        state.character.spell_slots_max = vec![4, 3, 2];
+        state.character.spell_slots_remaining = vec![4, 3, 2];
+        state.character.ability_scores.insert(Ability::Intelligence, 16);
+        state.character.ability_scores.insert(Ability::Constitution, 14);
+        force_player_turn(&mut state);
+        state
+    }
+
+    /// Create a cleric in combat with level-3 spell slots (simulating a level 5 cleric).
+    fn create_level3_cleric_combat_state() -> GameState {
+        let mut state = create_test_combat_state();
+        state.character.class = character::class::Class::Cleric;
+        state.character.level = 5;
+        state.character.known_spells = vec![
+            "Sacred Flame".to_string(),
+            "Cure Wounds".to_string(),
+            "Spirit Guardians".to_string(),
+            "Mass Healing Word".to_string(),
+            "Revivify".to_string(),
+        ];
+        state.character.spell_slots_max = vec![4, 3, 2];
+        state.character.spell_slots_remaining = vec![4, 3, 2];
+        state.character.ability_scores.insert(Ability::Wisdom, 16);
+        state.character.ability_scores.insert(Ability::Constitution, 14);
+        force_player_turn(&mut state);
+        state
+    }
+
+    #[test]
+    fn test_fireball_deals_damage_and_consumes_slot() {
+        let mut state = create_level3_wizard_combat_state();
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "cast fireball");
+        let text = output.text.join("\n");
+
+        assert!(
+            text.contains("fiery explosion") || text.contains("fire damage"),
+            "Fireball should mention fire damage. Got: {}",
+            text
+        );
+        assert!(
+            text.contains("level 3 slots remaining"),
+            "Should show level 3 slot usage. Got: {}",
+            text
+        );
+
+        // Parse the returned state to check slot consumption
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(
+            new_state.character.spell_slots_remaining[2], 1,
+            "Should consume one level-3 slot (had 2, now 1)"
+        );
+    }
+
+    #[test]
+    fn test_lightning_bolt_deals_damage_and_consumes_slot() {
+        let mut state = create_level3_wizard_combat_state();
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "cast lightning bolt");
+        let text = output.text.join("\n");
+
+        assert!(
+            text.contains("lightning") || text.contains("Lightning"),
+            "Lightning Bolt should mention lightning. Got: {}",
+            text
+        );
+        assert!(
+            text.contains("level 3 slots remaining"),
+            "Should show level 3 slot usage. Got: {}",
+            text
+        );
+
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(
+            new_state.character.spell_slots_remaining[2], 1,
+            "Should consume one level-3 slot"
+        );
+    }
+
+    #[test]
+    fn test_fly_is_concentration_self_buff() {
+        let mut state = create_level3_wizard_combat_state();
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "cast fly");
+        let text = output.text.join("\n");
+
+        assert!(
+            text.contains("rise into the air") || text.contains("wings"),
+            "Fly should describe flight. Got: {}",
+            text
+        );
+        assert!(
+            text.contains("concentration") || text.contains("Fly"),
+            "Fly should mention concentration. Got: {}",
+            text
+        );
+
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(
+            new_state.character.class_features.concentration_spell,
+            Some("Fly".to_string()),
+            "Should set concentration to Fly"
+        );
+        assert_eq!(
+            new_state.character.spell_slots_remaining[2], 1,
+            "Should consume one level-3 slot"
+        );
+    }
+
+    #[test]
+    fn test_dispel_magic_clears_concentration() {
+        let mut state = create_level3_wizard_combat_state();
+        // Set up existing concentration
+        state.character.class_features.concentration_spell = Some("Fly".to_string());
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "cast dispel magic");
+        let text = output.text.join("\n");
+
+        assert!(
+            text.contains("dispel") && text.contains("Fly"),
+            "Should narrate dispelling Fly. Got: {}",
+            text
+        );
+
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(
+            new_state.character.class_features.concentration_spell, None,
+            "Concentration should be cleared after Dispel Magic"
+        );
+    }
+
+    #[test]
+    fn test_dispel_magic_nothing_to_dispel() {
+        let mut state = create_level3_wizard_combat_state();
+        state.character.class_features.concentration_spell = None;
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "cast dispel magic");
+        let text = output.text.join("\n");
+
+        assert!(
+            text.contains("nothing to dispel") || text.contains("Nothing to dispel"),
+            "Should say nothing to dispel. Got: {}",
+            text
+        );
+    }
+
+    #[test]
+    fn test_fear_applies_frightened_condition() {
+        let mut state = create_level3_wizard_combat_state();
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "cast fear");
+        let text = output.text.join("\n");
+
+        assert!(
+            text.contains("dread") || text.contains("fear") || text.contains("Fear"),
+            "Fear should narrate dread. Got: {}",
+            text
+        );
+        assert!(
+            text.contains("level 3 slots remaining"),
+            "Should show level 3 slot usage. Got: {}",
+            text
+        );
+
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(
+            new_state.character.spell_slots_remaining[2], 1,
+            "Should consume one level-3 slot"
+        );
+        // Check concentration is set
+        assert_eq!(
+            new_state.character.class_features.concentration_spell,
+            Some("Fear".to_string()),
+            "Fear is a concentration spell"
+        );
+    }
+
+    #[test]
+    fn test_spirit_guardians_deals_radiant_damage() {
+        let mut state = create_level3_cleric_combat_state();
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "cast spirit guardians");
+        let text = output.text.join("\n");
+
+        assert!(
+            text.contains("guardians") || text.contains("Guardians"),
+            "Spirit Guardians should narrate. Got: {}",
+            text
+        );
+        assert!(
+            text.contains("radiant"),
+            "Spirit Guardians should deal radiant damage. Got: {}",
+            text
+        );
+
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(
+            new_state.character.class_features.concentration_spell,
+            Some("Spirit Guardians".to_string()),
+            "Spirit Guardians is a concentration spell"
+        );
+    }
+
+    #[test]
+    fn test_mass_healing_word_heals_and_uses_bonus_action() {
+        let mut state = create_level3_cleric_combat_state();
+        state.character.current_hp = state.character.max_hp - 5; // slightly hurt
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "cast mass healing word");
+        let text = output.text.join("\n");
+
+        assert!(
+            text.contains("healing") || text.contains("recover"),
+            "Mass Healing Word should narrate healing. Got: {}",
+            text
+        );
+
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert!(
+            new_state.character.current_hp > state.character.current_hp
+                || new_state.character.current_hp == new_state.character.max_hp,
+            "Should heal the player"
+        );
+        // Bonus action should be consumed (not regular action)
+        if let Some(ref combat) = new_state.active_combat {
+            assert!(
+                combat.bonus_action_used,
+                "Mass Healing Word should consume bonus action"
+            );
+        }
+    }
+
+    #[test]
+    fn test_revivify_not_dying_refunds_slot() {
+        let mut state = create_level3_cleric_combat_state();
+        // Player is NOT dying
+        state.character.current_hp = 10;
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "cast revivify");
+        let text = output.text.join("\n");
+
+        assert!(
+            text.contains("not dying"),
+            "Should say player is not dying. Got: {}",
+            text
+        );
+
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(
+            new_state.character.spell_slots_remaining[2], 2,
+            "Should refund the level-3 slot when not dying"
+        );
+    }
+
+    #[test]
+    fn test_fireball_no_slot_returns_no_slots_message() {
+        let mut state = create_level3_wizard_combat_state();
+        state.character.spell_slots_remaining = vec![4, 3, 0]; // no level 3 slots
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "cast fireball");
+        let text = output.text.join("\n");
+
+        assert!(
+            text.contains("no spell slots") || text.contains("No spell slots"),
+            "Should report no slots. Got: {}",
+            text
+        );
+    }
 }
