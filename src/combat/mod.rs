@@ -1396,6 +1396,116 @@ pub fn resolve_npc_turn(
     let npc_conditions = npc_ref.conditions.clone();
     let player_conditions = state.character.conditions.clone();
 
+    // --- NPC Grapple AI: escape or initiate before attacking ---
+
+    // If the NPC is grappled, spend the action trying to escape.
+    if conditions::has_condition(&npc_conditions, ConditionType::Grappled) {
+        if let Some(result) = resolve_npc_escape_grapple(rng, state, npc_id) {
+            let skill_name = match result.skill_used {
+                Skill::Athletics => "Athletics",
+                Skill::Acrobatics => "Acrobatics",
+                _ => "check",
+            };
+            if result.success {
+                lines.push(format!(
+                    "{} breaks free of the grapple! ({}: {} vs DC {} -- succeeds)",
+                    npc_name,
+                    skill_name,
+                    crate::output::format_roll(
+                        result.npc_d20,
+                        result.npc_total - result.npc_d20,
+                        result.npc_total,
+                    ),
+                    result.dc,
+                ));
+            } else {
+                lines.push(format!(
+                    "{} tries to escape the grapple but fails. ({}: {} vs DC {} -- fails)",
+                    npc_name,
+                    skill_name,
+                    crate::output::format_roll(
+                        result.npc_d20,
+                        result.npc_total - result.npc_d20,
+                        result.npc_total,
+                    ),
+                    result.dc,
+                ));
+            }
+        }
+        // Grappled NPC's action is spent on escape attempt; turn ends.
+        return lines;
+    }
+
+    // NPC grapple initiation: wounded NPCs in melee range try to grapple
+    // the player instead of attacking.
+    let npc_hp_low = {
+        let npc = state.world.npcs.get(&npc_id);
+        npc.and_then(|n| n.combat_stats.as_ref())
+            .map(|s| s.current_hp <= s.max_hp / 2 && s.current_hp > 0)
+            .unwrap_or(false)
+    };
+    let player_already_grappled_by_this_npc = state.character.conditions.iter().any(|c| {
+        c.condition == ConditionType::Grappled
+            && c.source
+                .as_deref()
+                .map(|s| s.eq_ignore_ascii_case(&npc_name))
+                .unwrap_or(false)
+    });
+
+    if npc_hp_low && distance <= 5 && !player_already_grappled_by_this_npc {
+        // Check size limit: NPC cannot grapple a target more than one size
+        // larger. Player is Medium.
+        let npc_size = state
+            .world
+            .npcs
+            .get(&npc_id)
+            .and_then(|n| n.combat_stats.as_ref())
+            .map(|s| s.size)
+            .unwrap_or(crate::combat::monsters::Size::Medium);
+        let player_size = crate::combat::monsters::Size::Medium;
+        if !target_exceeds_grapple_size_limit(&npc_size, &player_size) {
+            if let Some(result) = resolve_npc_grapple_attempt(rng, state, npc_id) {
+                if result.success {
+                    let save_name = match result.save_ability {
+                        Ability::Strength => "STR",
+                        Ability::Dexterity => "DEX",
+                        _ => "save",
+                    };
+                    lines.push(format!(
+                        "{} grapples you! ({} save: {} vs DC {} -- fails). You are Grappled (speed 0).",
+                        npc_name,
+                        save_name,
+                        crate::output::format_roll(
+                            result.player_d20,
+                            result.player_save_total - result.player_d20,
+                            result.player_save_total,
+                        ),
+                        result.dc,
+                    ));
+                } else {
+                    let save_name = match result.save_ability {
+                        Ability::Strength => "STR",
+                        Ability::Dexterity => "DEX",
+                        _ => "save",
+                    };
+                    lines.push(format!(
+                        "{} tries to grapple you but fails! ({} save: {} vs DC {} -- succeeds).",
+                        npc_name,
+                        save_name,
+                        crate::output::format_roll(
+                            result.player_d20,
+                            result.player_save_total - result.player_d20,
+                            result.player_save_total,
+                        ),
+                        result.dc,
+                    ));
+                }
+                // NPC used its action on the grapple attempt.
+                return lines;
+            }
+        }
+    }
+
     // Priority: melee if in range -> ranged if in range -> move toward player
 
     // Orchestrator-side grappled disadvantage: if the NPC is grappled by
@@ -1429,7 +1539,12 @@ pub fn resolve_npc_turn(
         return lines;
     }
 
-    // No attack in range — move toward the player first.
+    // No attack in range — move toward the player first (unless speed is 0).
+    if conditions::speed_is_zero(&npc_conditions) {
+        lines.push(format!("{} cannot move (speed 0).", npc_name));
+        return lines;
+    }
+
     // Slow mastery (2024 SRD) reduces the NPC's Speed by up to 10 ft for
     // this move; the reduction is reported once so the player can see why
     // the NPC moved less.
@@ -1474,6 +1589,21 @@ pub fn resolve_npc_turn(
 
 // ---- Player Movement ----
 
+/// Check if the player is currently grappling any NPC (i.e., any NPC has
+/// `Grappled` sourced to the player). Used to determine drag movement cost.
+pub fn player_is_dragging(state: &GameState) -> bool {
+    let player_name = &state.character.name;
+    state.world.npcs.values().any(|npc| {
+        npc.conditions.iter().any(|c| {
+            c.condition == ConditionType::Grappled
+                && c.source
+                    .as_deref()
+                    .map(|s| s.eq_ignore_ascii_case(player_name))
+                    .unwrap_or(false)
+        })
+    })
+}
+
 /// Move the player toward a target NPC. Returns narration lines.
 pub fn approach_target(
     _rng: &mut impl Rng,
@@ -1493,10 +1623,24 @@ pub fn approach_target(
         return vec!["You are already in melee range.".to_string()];
     }
 
-    let move_amount = (movement as u32).min(distance - 5);
+    // Drag cost: when grappling an NPC, each foot of movement costs 2 feet.
+    let dragging = player_is_dragging(state);
+    let effective_movement = if dragging {
+        (movement as u32) / 2
+    } else {
+        movement as u32
+    };
+
+    let move_amount = effective_movement.min(distance - 5);
     let new_distance = distance - move_amount;
     combat.distances.insert(target_id, new_distance);
-    combat.player_movement_remaining -= move_amount as i32;
+    // Consume double movement when dragging.
+    let movement_consumed = if dragging {
+        move_amount * 2
+    } else {
+        move_amount
+    };
+    combat.player_movement_remaining -= movement_consumed as i32;
 
     let target_name = state
         .world
@@ -1505,10 +1649,17 @@ pub fn approach_target(
         .map(|n| n.name.clone())
         .unwrap_or_else(|| "the enemy".to_string());
 
-    lines.push(format!(
-        "You move toward {}. ({}ft -> {}ft, {}ft movement remaining)",
-        target_name, distance, new_distance, combat.player_movement_remaining
-    ));
+    if dragging {
+        lines.push(format!(
+            "You drag toward {}. ({}ft -> {}ft, {}ft movement remaining, halved by drag)",
+            target_name, distance, new_distance, combat.player_movement_remaining
+        ));
+    } else {
+        lines.push(format!(
+            "You move toward {}. ({}ft -> {}ft, {}ft movement remaining)",
+            target_name, distance, new_distance, combat.player_movement_remaining
+        ));
+    }
 
     lines
 }
@@ -1522,7 +1673,13 @@ pub fn retreat(rng: &mut impl Rng, state: &mut GameState, combat: &mut CombatSta
         return vec!["You have no movement remaining this turn.".to_string()];
     }
 
-    let move_amount = movement as u32;
+    // Drag cost: when grappling an NPC, movement costs double.
+    let dragging = player_is_dragging(state);
+    let move_amount = if dragging {
+        (movement as u32) / 2
+    } else {
+        movement as u32
+    };
 
     // Build distance map: npc_id -> (old_distance, new_distance)
     let distance_changes: Vec<(NpcId, u32, u32)> = combat
@@ -1542,7 +1699,33 @@ pub fn retreat(rng: &mut impl Rng, state: &mut GameState, combat: &mut CombatSta
     }
     combat.player_movement_remaining = 0;
 
-    lines.push(format!("You retreat {} ft.", move_amount));
+    if dragging {
+        lines.push(format!("You retreat {} ft (halved by drag).", move_amount));
+    } else {
+        lines.push(format!("You retreat {} ft.", move_amount));
+    }
+
+    // Distance auto-release: grapple ends when distance exceeds 5 ft.
+    let player_name = state.character.name.clone();
+    for npc in state.world.npcs.values_mut() {
+        let dist = combat.distances.get(&npc.id).copied().unwrap_or(0);
+        if dist > 5 {
+            let had_grapple = npc.conditions.iter().any(|c| {
+                c.condition == ConditionType::Grappled
+                    && c.source
+                        .as_deref()
+                        .map(|s| s.eq_ignore_ascii_case(&player_name))
+                        .unwrap_or(false)
+            });
+            if had_grapple {
+                release_grapple_on_npc(npc, &player_name);
+                lines.push(format!(
+                    "Your grapple on {} ends (distance exceeded 5 ft).",
+                    npc.name
+                ));
+            }
+        }
+    }
 
     lines
 }
@@ -2256,9 +2439,11 @@ pub struct GrappleEscapeResult {
 /// Attempt to escape the current grapple.
 ///
 /// The player picks whichever of Athletics (STR) or Acrobatics (DEX) gives
-/// the higher total. The DC is always the standard grapple DC:
-/// `8 + grappler STR mod + grappler PB` — and since the player is always the
-/// grappler in this MVP, the DC is derived from the player's own stats.
+/// the higher total. The DC is the standard grapple DC:
+/// `8 + grappler STR mod + grappler PB`. The grappler is identified by the
+/// `source` field on the `Grappled` condition — if the source matches an NPC
+/// name, the DC uses that NPC's stats; otherwise it falls back to the
+/// player's own stats (self-grapple edge case).
 ///
 /// Returns `None` when no Grappled condition is present on the player.
 pub fn resolve_escape_grapple(
@@ -2270,18 +2455,53 @@ pub fn resolve_escape_grapple(
         return None;
     }
 
-    let str_score = state
+    // Identify the grappler from the condition source.
+    let grappler_source = state
         .character
-        .ability_scores
-        .get(&Ability::Strength)
-        .copied()
-        .unwrap_or(10);
-    let pb = state.character.proficiency_bonus();
+        .conditions
+        .iter()
+        .find(|c| c.condition == ConditionType::Grappled)
+        .and_then(|c| c.source.clone());
 
-    // DC is based on the grappler's stats. Since only the player can grapple
-    // in this MVP, the grappler is always the player themselves. This creates
-    // a fair symmetric contest.
-    let dc = grapple_dc(str_score, pb);
+    // Look up grappler's STR and PB. If the source matches an NPC, use the
+    // NPC's stats; otherwise fall back to the player's stats (legacy /
+    // self-grapple case).
+    let (grappler_str, grappler_pb) = if let Some(ref source) = grappler_source {
+        let npc_stats = state.world.npcs.values().find_map(|npc| {
+            if npc.name.eq_ignore_ascii_case(source) {
+                npc.combat_stats.as_ref().map(|s| {
+                    let str_score = s
+                        .ability_scores
+                        .get(&Ability::Strength)
+                        .copied()
+                        .unwrap_or(10);
+                    (str_score, s.proficiency_bonus)
+                })
+            } else {
+                None
+            }
+        });
+        npc_stats.unwrap_or_else(|| {
+            // Fallback: grappler is the player or unknown.
+            let str_score = state
+                .character
+                .ability_scores
+                .get(&Ability::Strength)
+                .copied()
+                .unwrap_or(10);
+            (str_score, state.character.proficiency_bonus())
+        })
+    } else {
+        let str_score = state
+            .character
+            .ability_scores
+            .get(&Ability::Strength)
+            .copied()
+            .unwrap_or(10);
+        (str_score, state.character.proficiency_bonus())
+    };
+
+    let dc = grapple_dc(grappler_str, grappler_pb);
 
     // Pick the better skill (Athletics vs Acrobatics).
     let athletics_mod = state.character.skill_modifier(Skill::Athletics);
@@ -2310,6 +2530,181 @@ pub fn resolve_escape_grapple(
         player_total: total,
         dc,
         skill_used,
+    })
+}
+
+/// The result of an NPC attempting to escape the player's grapple.
+#[derive(Debug, Clone)]
+pub struct NpcGrappleEscapeResult {
+    /// Did the escape succeed?
+    pub success: bool,
+    /// The raw d20 rolled.
+    pub npc_d20: i32,
+    /// d20 + skill modifier.
+    pub npc_total: i32,
+    /// The DC that was beaten.
+    pub dc: i32,
+    /// Which skill was used (Athletics or Acrobatics).
+    pub skill_used: Skill,
+}
+
+/// Attempt to escape a grapple for the given NPC.
+///
+/// The NPC picks whichever of STR mod or DEX mod gives the higher check total.
+/// DC = `8 + player STR mod + player PB` (the grapple DC formula with the
+/// player as grappler).
+///
+/// Returns `None` when the NPC does not exist, has no combat stats, or is not
+/// grappled.
+pub fn resolve_npc_escape_grapple(
+    rng: &mut impl Rng,
+    state: &mut GameState,
+    npc_id: NpcId,
+) -> Option<NpcGrappleEscapeResult> {
+    let npc = state.world.npcs.get(&npc_id)?;
+    let stats = npc.combat_stats.as_ref()?;
+
+    // Confirm the NPC is actually grappled.
+    if !conditions::has_condition(&npc.conditions, ConditionType::Grappled) {
+        return None;
+    }
+
+    // NPC ability scores for the escape check.
+    let str_score = stats
+        .ability_scores
+        .get(&Ability::Strength)
+        .copied()
+        .unwrap_or(10);
+    let dex_score = stats
+        .ability_scores
+        .get(&Ability::Dexterity)
+        .copied()
+        .unwrap_or(10);
+    let str_mod = Ability::modifier(str_score);
+    let dex_mod = Ability::modifier(dex_score);
+    let (skill_mod, skill_used) = if str_mod >= dex_mod {
+        (str_mod, Skill::Athletics)
+    } else {
+        (dex_mod, Skill::Acrobatics)
+    };
+
+    // DC is based on the player's (grappler's) stats.
+    let player_str = state
+        .character
+        .ability_scores
+        .get(&Ability::Strength)
+        .copied()
+        .unwrap_or(10);
+    let player_pb = state.character.proficiency_bonus();
+    let dc = grapple_dc(player_str, player_pb);
+
+    let d20 = roll_d20(rng);
+    let total = d20 + skill_mod;
+    let success = total >= dc;
+
+    if success {
+        // Remove the Grappled condition from the NPC.
+        let npc = state.world.npcs.get_mut(&npc_id)?;
+        npc.conditions
+            .retain(|c| c.condition != ConditionType::Grappled);
+    }
+
+    Some(NpcGrappleEscapeResult {
+        success,
+        npc_d20: d20,
+        npc_total: total,
+        dc,
+        skill_used,
+    })
+}
+
+/// The result of an NPC grapple attempt against the player.
+#[derive(Debug, Clone)]
+pub struct NpcGrappleAttemptResult {
+    /// Did the grapple succeed (player failed the save)?
+    pub success: bool,
+    /// The raw d20 the player rolled.
+    pub player_d20: i32,
+    /// d20 + save modifier.
+    pub player_save_total: i32,
+    /// Save DC the player rolled against.
+    pub dc: i32,
+    /// Which ability the player used for the save (STR or DEX).
+    pub save_ability: Ability,
+}
+
+/// NPC attempts to grapple the player. Rolls the player's save and, on
+/// failure, applies the Grappled condition to `state.character.conditions`.
+///
+/// Returns `None` when the NPC does not exist or has no combat stats.
+///
+/// DC = 8 + NPC STR modifier + NPC proficiency bonus.
+/// Player picks the better of STR or DEX for the saving throw.
+pub fn resolve_npc_grapple_attempt(
+    rng: &mut impl Rng,
+    state: &mut GameState,
+    npc_id: NpcId,
+) -> Option<NpcGrappleAttemptResult> {
+    let npc = state.world.npcs.get(&npc_id)?;
+    let stats = npc.combat_stats.as_ref()?;
+    let npc_name = npc.name.clone();
+
+    // NPC's STR for DC calculation.
+    let npc_str = stats
+        .ability_scores
+        .get(&Ability::Strength)
+        .copied()
+        .unwrap_or(10);
+    let npc_pb = stats.proficiency_bonus;
+    let dc = grapple_dc(npc_str, npc_pb);
+
+    // Player picks whichever of STR or DEX gives the higher save total.
+    let player_str = state
+        .character
+        .ability_scores
+        .get(&Ability::Strength)
+        .copied()
+        .unwrap_or(10);
+    let player_dex = state
+        .character
+        .ability_scores
+        .get(&Ability::Dexterity)
+        .copied()
+        .unwrap_or(10);
+    let str_mod = Ability::modifier(player_str);
+    let dex_mod = Ability::modifier(player_dex);
+    let (save_mod, save_ability) = if str_mod >= dex_mod {
+        (str_mod, Ability::Strength)
+    } else {
+        (dex_mod, Ability::Dexterity)
+    };
+
+    let d20 = roll_d20(rng);
+    let save_total = d20 + save_mod;
+
+    if save_total >= dc {
+        // Player succeeds — no grapple.
+        return Some(NpcGrappleAttemptResult {
+            success: false,
+            player_d20: d20,
+            player_save_total: save_total,
+            dc,
+            save_ability,
+        });
+    }
+
+    // Player fails — apply Grappled condition.
+    let grappled_cond =
+        ActiveCondition::new(ConditionType::Grappled, ConditionDuration::Permanent)
+            .with_source(&npc_name);
+    conditions::apply_condition(&mut state.character.conditions, grappled_cond);
+
+    Some(NpcGrappleAttemptResult {
+        success: true,
+        player_d20: d20,
+        player_save_total: save_total,
+        dc,
+        save_ability,
     })
 }
 
@@ -6539,6 +6934,354 @@ mod tests {
         assert!(
             target_exceeds_grapple_size_limit(&shover_size, &target_size),
             "Medium player should NOT be able to shove Huge target"
+        );
+    }
+
+    // ---- NPC Escape from Player Grapple ----
+
+    #[test]
+    fn test_npc_escape_grapple_none_when_not_grappled() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut state = test_state_with_goblin();
+        // Goblin has no Grappled condition.
+        let result = resolve_npc_escape_grapple(&mut rng, &mut state, 0);
+        assert!(
+            result.is_none(),
+            "Should return None when NPC is not grappled"
+        );
+    }
+
+    #[test]
+    fn test_npc_escape_grapple_returns_result_when_grappled() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut state = test_state_with_goblin();
+        // Manually grapple the goblin.
+        let npc = state.world.npcs.get_mut(&0).unwrap();
+        npc.conditions.push(
+            ActiveCondition::new(ConditionType::Grappled, ConditionDuration::Permanent)
+                .with_source("TestHero"),
+        );
+        let result = resolve_npc_escape_grapple(&mut rng, &mut state, 0);
+        assert!(result.is_some(), "Should return Some when NPC is grappled");
+        let res = result.unwrap();
+        // DC should be based on player stats: 8 + STR mod(16) + PB(2) = 13.
+        assert_eq!(res.dc, 13);
+    }
+
+    #[test]
+    fn test_npc_escape_grapple_removes_condition_on_success() {
+        // Try many seeds to find one where the escape succeeds.
+        let mut state = test_state_with_goblin();
+        let npc = state.world.npcs.get_mut(&0).unwrap();
+        npc.conditions.push(
+            ActiveCondition::new(ConditionType::Grappled, ConditionDuration::Permanent)
+                .with_source("TestHero"),
+        );
+        for seed in 0..1000u64 {
+            let mut test_state = state.clone();
+            let mut rng = StdRng::seed_from_u64(seed);
+            if let Some(res) = resolve_npc_escape_grapple(&mut rng, &mut test_state, 0) {
+                if res.success {
+                    let npc = test_state.world.npcs.get(&0).unwrap();
+                    assert!(
+                        !conditions::has_condition(&npc.conditions, ConditionType::Grappled),
+                        "Grappled should be cleared on successful NPC escape"
+                    );
+                    return;
+                }
+            }
+        }
+        panic!("Could not find a seed where NPC escape succeeds");
+    }
+
+    #[test]
+    fn test_npc_escape_grapple_retains_condition_on_failure() {
+        // Try many seeds to find one where the escape fails.
+        let mut state = test_state_with_goblin();
+        let npc = state.world.npcs.get_mut(&0).unwrap();
+        npc.conditions.push(
+            ActiveCondition::new(ConditionType::Grappled, ConditionDuration::Permanent)
+                .with_source("TestHero"),
+        );
+        for seed in 0..1000u64 {
+            let mut test_state = state.clone();
+            let mut rng = StdRng::seed_from_u64(seed);
+            if let Some(res) = resolve_npc_escape_grapple(&mut rng, &mut test_state, 0) {
+                if !res.success {
+                    let npc = test_state.world.npcs.get(&0).unwrap();
+                    assert!(
+                        conditions::has_condition(&npc.conditions, ConditionType::Grappled),
+                        "Grappled should remain when NPC escape fails"
+                    );
+                    return;
+                }
+            }
+        }
+        panic!("Could not find a seed where NPC escape fails");
+    }
+
+    #[test]
+    fn test_player_escape_npc_grapple_uses_npc_dc() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut state = test_state_with_goblin();
+        // Manually put Grappled on the player, sourced to "Goblin".
+        state.character.conditions.push(
+            ActiveCondition::new(ConditionType::Grappled, ConditionDuration::Permanent)
+                .with_source("Goblin"),
+        );
+        let result = resolve_escape_grapple(&mut rng, &mut state).unwrap();
+        // DC should use the Goblin's stats: STR 8 (mod -1), PB 2.
+        // DC = 8 + (-1) + 2 = 9.
+        assert_eq!(result.dc, 9, "DC should be derived from NPC grappler's stats");
+    }
+
+    // ---- NPC-Initiated Grapple ----
+
+    #[test]
+    fn test_npc_grapple_attempt_applies_condition_on_success() {
+        // Try many seeds to find one where the grapple succeeds.
+        let state = test_state_with_goblin();
+        for seed in 0..1000u64 {
+            let mut test_state = state.clone();
+            let mut rng = StdRng::seed_from_u64(seed);
+            if let Some(res) = resolve_npc_grapple_attempt(&mut rng, &mut test_state, 0) {
+                if res.success {
+                    assert!(
+                        conditions::has_condition(
+                            &test_state.character.conditions,
+                            ConditionType::Grappled
+                        ),
+                        "Player should have Grappled condition after NPC grapple success"
+                    );
+                    let cond = test_state
+                        .character
+                        .conditions
+                        .iter()
+                        .find(|c| c.condition == ConditionType::Grappled)
+                        .unwrap();
+                    assert_eq!(cond.source.as_deref(), Some("Goblin"));
+                    return;
+                }
+            }
+        }
+        panic!("Could not find a seed where NPC grapple succeeds");
+    }
+
+    #[test]
+    fn test_npc_grapple_attempt_no_condition_on_failure() {
+        // Try many seeds to find one where the grapple fails.
+        let state = test_state_with_goblin();
+        for seed in 0..1000u64 {
+            let mut test_state = state.clone();
+            let mut rng = StdRng::seed_from_u64(seed);
+            if let Some(res) = resolve_npc_grapple_attempt(&mut rng, &mut test_state, 0) {
+                if !res.success {
+                    assert!(
+                        !conditions::has_condition(
+                            &test_state.character.conditions,
+                            ConditionType::Grappled
+                        ),
+                        "Player should NOT have Grappled condition after NPC grapple failure"
+                    );
+                    return;
+                }
+            }
+        }
+        panic!("Could not find a seed where NPC grapple fails");
+    }
+
+    #[test]
+    fn test_npc_grapple_attempt_dc_formula() {
+        // Goblin STR 8 (mod -1), PB 2. DC = 8 + (-1) + 2 = 9.
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut state = test_state_with_goblin();
+        let result = resolve_npc_grapple_attempt(&mut rng, &mut state, 0).unwrap();
+        assert_eq!(result.dc, 9, "DC should be 8 + NPC STR mod + NPC PB");
+    }
+
+    // ---- NPC Turn: Grappled NPC Does Not Move ----
+
+    #[test]
+    fn test_grappled_npc_does_not_move() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut state = test_state_with_goblin();
+        // Grapple the goblin so its speed is 0.
+        let npc = state.world.npcs.get_mut(&0).unwrap();
+        npc.conditions.push(
+            ActiveCondition::new(ConditionType::Grappled, ConditionDuration::Permanent)
+                .with_source("TestHero"),
+        );
+        // Set up combat with goblin far away (beyond melee reach).
+        let mut combat = CombatState {
+            initiative_order: vec![(Combatant::Player, 20), (Combatant::Npc(0), 10)],
+            current_turn: 1,
+            round: 1,
+            distances: {
+                let mut d = HashMap::new();
+                d.insert(0, 30); // 30 ft away
+                d
+            },
+            player_movement_remaining: 30,
+            player_dodging: false,
+            player_disengaging: false,
+            action_used: false,
+            bonus_action_used: false,
+            reaction_used: false,
+            free_interaction_used: false,
+            npc_dodging: HashMap::new(),
+            npc_disengaging: HashMap::new(),
+            player_shield_ac_bonus: 0,
+            pending_reaction: None,
+            player_vex_target: None,
+            sap_targets: std::collections::HashSet::new(),
+            slow_targets: std::collections::HashMap::new(),
+            cleave_used_this_turn: false,
+            nick_used_this_turn: false,
+            death_save_successes: 0,
+            death_save_failures: 0,
+            player_cover: Cover::None,
+            npc_cover: HashMap::new(),
+            npc_reactions_used: std::collections::HashSet::new(),
+        };
+        let lines = resolve_npc_turn(&mut rng, 0, &mut state, &mut combat);
+        // The grappled NPC should NOT have moved (distance unchanged).
+        let dist = *combat.distances.get(&0).unwrap();
+        assert_eq!(dist, 30, "Grappled NPC should not move (distance unchanged)");
+        // It should have attempted to escape instead of attacking.
+        let has_escape = lines.iter().any(|l| {
+            let lower = l.to_lowercase();
+            lower.contains("escape") || lower.contains("break") || lower.contains("grapple")
+        });
+        assert!(has_escape, "Grappled NPC should attempt escape, got: {:?}", lines);
+    }
+
+    // ---- Drag Movement Cost ----
+
+    #[test]
+    fn test_approach_costs_double_when_dragging() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut state = test_state_with_goblin();
+        // Add a second NPC to approach.
+        state.world.npcs.insert(
+            1,
+            Npc {
+                id: 1,
+                name: "Orc".to_string(),
+                role: NpcRole::Guard,
+                disposition: Disposition::Hostile,
+                dialogue_tags: vec![],
+                location: 0,
+                combat_stats: Some(goblin_stats()),
+                conditions: Vec::new(),
+            },
+        );
+        // Grapple the goblin (NPC 0) by the player.
+        let npc = state.world.npcs.get_mut(&0).unwrap();
+        npc.conditions.push(
+            ActiveCondition::new(ConditionType::Grappled, ConditionDuration::Permanent)
+                .with_source("TestHero"),
+        );
+        let mut combat = CombatState {
+            initiative_order: vec![
+                (Combatant::Player, 20),
+                (Combatant::Npc(0), 10),
+                (Combatant::Npc(1), 5),
+            ],
+            current_turn: 0,
+            round: 1,
+            distances: {
+                let mut d = HashMap::new();
+                d.insert(0, 5);  // Goblin at melee range
+                d.insert(1, 30); // Orc at 30 ft
+                d
+            },
+            player_movement_remaining: 30,
+            player_dodging: false,
+            player_disengaging: false,
+            action_used: false,
+            bonus_action_used: false,
+            reaction_used: false,
+            free_interaction_used: false,
+            npc_dodging: HashMap::new(),
+            npc_disengaging: HashMap::new(),
+            player_shield_ac_bonus: 0,
+            pending_reaction: None,
+            player_vex_target: None,
+            sap_targets: std::collections::HashSet::new(),
+            slow_targets: std::collections::HashMap::new(),
+            cleave_used_this_turn: false,
+            nick_used_this_turn: false,
+            death_save_successes: 0,
+            death_save_failures: 0,
+            player_cover: Cover::None,
+            npc_cover: HashMap::new(),
+            npc_reactions_used: std::collections::HashSet::new(),
+        };
+        // Approach the Orc (NPC 1). Normal approach would cost 1 ft per 1 ft moved.
+        // With dragging, it costs 2 ft per 1 ft, so 30 ft of movement lets us move only 15 ft.
+        let lines = approach_target(&mut rng, 1, &state, &mut combat);
+        // With 30 ft movement and drag cost, player can move 15 ft toward the orc.
+        // Orc was at 30 ft, so new distance = 30 - 15 = 15. But minimum is 5 ft.
+        // Actually, approach_target caps at distance - 5, so move_amount = min(movement/2, dist-5).
+        // move_amount = min(15, 25) = 15, so new distance = 30 - 15 = 15.
+        let orc_dist = *combat.distances.get(&1).unwrap();
+        assert_eq!(orc_dist, 15, "Orc should be at 15 ft (30 - 15 moved, halved by drag)");
+        assert_eq!(combat.player_movement_remaining, 0, "All movement should be consumed by drag");
+        assert!(!lines.is_empty());
+    }
+
+    // ---- Distance Auto-Release ----
+
+    #[test]
+    fn test_retreat_auto_releases_grapple_beyond_5ft() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut state = test_state_with_goblin();
+        // Grapple the goblin by the player.
+        let npc = state.world.npcs.get_mut(&0).unwrap();
+        npc.conditions.push(
+            ActiveCondition::new(ConditionType::Grappled, ConditionDuration::Permanent)
+                .with_source("TestHero"),
+        );
+        let mut combat = CombatState {
+            initiative_order: vec![(Combatant::Player, 20), (Combatant::Npc(0), 10)],
+            current_turn: 0,
+            round: 1,
+            distances: {
+                let mut d = HashMap::new();
+                d.insert(0, 5); // Goblin at melee range
+                d
+            },
+            player_movement_remaining: 30,
+            player_dodging: false,
+            player_disengaging: true, // disengage to avoid OA complexity
+            action_used: false,
+            bonus_action_used: false,
+            reaction_used: false,
+            free_interaction_used: false,
+            npc_dodging: HashMap::new(),
+            npc_disengaging: HashMap::new(),
+            player_shield_ac_bonus: 0,
+            pending_reaction: None,
+            player_vex_target: None,
+            sap_targets: std::collections::HashSet::new(),
+            slow_targets: std::collections::HashMap::new(),
+            cleave_used_this_turn: false,
+            nick_used_this_turn: false,
+            death_save_successes: 0,
+            death_save_failures: 0,
+            player_cover: Cover::None,
+            npc_cover: HashMap::new(),
+            npc_reactions_used: std::collections::HashSet::new(),
+        };
+        // Retreat should move the player away. With drag cost, effective distance moved
+        // is halved. But the grappled NPC's distance should increase (player moves away
+        // but the NPC doesn't move with the player on retreat). Once distance > 5 ft,
+        // auto-release triggers.
+        let _lines = retreat(&mut rng, &mut state, &mut combat);
+        let npc = state.world.npcs.get(&0).unwrap();
+        assert!(
+            !conditions::has_condition(&npc.conditions, ConditionType::Grappled),
+            "Grapple should auto-release when distance exceeds 5 ft after retreat"
         );
     }
 }
