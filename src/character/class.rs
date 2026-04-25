@@ -407,6 +407,14 @@ impl Class {
     }
 }
 
+/// Returns true when the character qualifies for the SRD 5.2.1 Danger Sense
+/// feature: Barbarian class at level 2 or higher. Danger Sense grants advantage
+/// on DEX saving throws unless the character is Incapacitated (the caller must
+/// check the Incapacitated guard separately).
+pub fn character_has_danger_sense(class: Class, level: u32) -> bool {
+    class == Class::Barbarian && level >= 2
+}
+
 impl std::fmt::Display for Class {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -791,5 +799,35 @@ mod tests {
         assert!(loaded.prepared_spells.is_empty());
         // Legacy saves have no concentration_spell; field defaults to None.
         assert!(loaded.concentration_spell.is_none());
+    }
+
+    // ---- Danger Sense (Barbarian level 2) ----
+
+    #[test]
+    fn test_danger_sense_barbarian_level_1_false() {
+        assert!(!character_has_danger_sense(Class::Barbarian, 1));
+    }
+
+    #[test]
+    fn test_danger_sense_barbarian_level_2_true() {
+        assert!(character_has_danger_sense(Class::Barbarian, 2));
+    }
+
+    #[test]
+    fn test_danger_sense_barbarian_level_10_true() {
+        assert!(character_has_danger_sense(Class::Barbarian, 10));
+    }
+
+    #[test]
+    fn test_danger_sense_non_barbarian_false() {
+        for class in Class::all() {
+            if *class != Class::Barbarian {
+                assert!(
+                    !character_has_danger_sense(*class, 5),
+                    "{:?} at level 5 should not have Danger Sense",
+                    class,
+                );
+            }
+        }
     }
 }
