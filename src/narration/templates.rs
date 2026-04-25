@@ -152,6 +152,14 @@ pub const CONCENTRATION_DROPPED: &str =
 pub const CONCENTRATION_BROKEN: &str = "Your concentration on {spell} is broken!";
 pub const CONCENTRATION_HELD: &str = "You grit your teeth and maintain concentration on {spell}.";
 
+// -- Divine Smite templates --
+pub const DIVINE_SMITE_HIT: &str = "Divine Smite: +{damage} radiant damage ({dice}d8).";
+pub const DIVINE_SMITE_HIT_EXTRA: &str =
+    "Divine Smite: +{damage} radiant damage ({dice}d8 -- extra radiance against {creature_type}).";
+pub const DIVINE_SMITE_FREE: &str = "Divine Smite: +{damage} radiant damage ({dice}d8). (free use)";
+pub const DIVINE_SMITE_FREE_EXTRA: &str =
+    "Divine Smite: +{damage} radiant damage ({dice}d8 -- extra radiance against {creature_type}). (free use)";
+
 // -- Condition templates --
 // Placeholders: {target} = creature name or "You", {condition} = lowercase condition name.
 // The orchestrator picks the correct variant (self vs other) based on whether the

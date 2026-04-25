@@ -53,6 +53,12 @@ pub struct ClassFeatureState {
     #[serde(default)]
     pub lay_on_hands_pool: u32,
 
+    // ---- Paladin (Divine Smite free use) ----
+    /// One free Divine Smite cast per long rest (2024 SRD "Paladin's Smite").
+    /// Set `true` for Paladins at level 2+; reset on long rest.
+    #[serde(default)]
+    pub divine_smite_free_use_available: bool,
+
     // ---- Monk ----
     #[serde(default)]
     pub ki_points_remaining: u32,
@@ -91,6 +97,7 @@ impl Default for ClassFeatureState {
             bardic_inspiration_remaining: 0,
             channel_divinity_remaining: 0,
             lay_on_hands_pool: 0,
+            divine_smite_free_use_available: false,
             ki_points_remaining: 0,
             cunning_action_used: false,
             sneak_attack_used_this_turn: false,

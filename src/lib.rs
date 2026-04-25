@@ -4494,6 +4494,16 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                         distance,
                     );
 
+                    // Paladin Divine Smite: bonus radiant damage on melee hit.
+                    apply_divine_smite(
+                        &mut rng,
+                        state,
+                        &mut result,
+                        &mut lines,
+                        npc_id,
+                        distance,
+                    );
+
                     let npc_name = state
                         .world
                         .npcs
@@ -5042,6 +5052,21 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                             distance,
                         );
                         adjusted_damage = sa_result.damage;
+                    }
+
+                    // Paladin Divine Smite on the off-hand swing.
+                    {
+                        let mut ds_result = result.clone();
+                        ds_result.damage = adjusted_damage;
+                        apply_divine_smite(
+                            &mut rng,
+                            state,
+                            &mut ds_result,
+                            &mut lines,
+                            npc_id,
+                            distance,
+                        );
+                        adjusted_damage = ds_result.damage;
                     }
 
                     let npc_name = state
@@ -8636,6 +8661,133 @@ fn apply_sneak_attack(
         "Sneak Attack: +{} damage ({}d6).",
         bonus, dice_label,
     ));
+}
+
+/// Apply Divine Smite for a Paladin melee hit. Called after `apply_sneak_attack`
+/// and before narration / damage application. Mirrors the `apply_sneak_attack`
+/// pattern: gate on class, level, hit, melee distance; consume free use or
+/// lowest spell slot; roll bonus radiant dice; append narration.
+fn apply_divine_smite(
+    rng: &mut StdRng,
+    state: &mut GameState,
+    result: &mut combat::AttackResult,
+    lines: &mut Vec<String>,
+    npc_id: crate::types::NpcId,
+    distance: u32,
+) {
+    // Gate: Paladin level 2+, hit landed, melee range.
+    if state.character.class != character::class::Class::Paladin {
+        return;
+    }
+    if state.character.level < 2 {
+        return;
+    }
+    if !result.hit || result.damage <= 0 {
+        return;
+    }
+    // Melee only: distance must be within melee reach (5 ft, or 10 ft with Reach).
+    let melee_reach = {
+        let mut reach = 5u32;
+        if let Some(weapon_item) = state.character.equipped.main_hand
+            .and_then(|id| state.world.items.get(&id))
+        {
+            let props = match &weapon_item.item_type {
+                state::ItemType::Weapon { properties, .. } => *properties,
+                state::ItemType::MagicWeapon { properties, .. } => *properties,
+                _ => 0,
+            };
+            if props & crate::equipment::REACH != 0 {
+                reach = 10;
+            }
+        }
+        reach
+    };
+    if distance > melee_reach {
+        return;
+    }
+
+    // Determine slot level to use (free use first, then lowest available slot).
+    let free_use = state.character.class_features.divine_smite_free_use_available;
+    let mut slot_level: u32 = 0; // 0 means free use
+    if free_use {
+        slot_level = 0; // will use free cast
+    } else {
+        // Find lowest non-zero spell slot.
+        let mut found = false;
+        for (i, &remaining) in state.character.spell_slots_remaining.iter().enumerate() {
+            if remaining > 0 {
+                slot_level = (i + 1) as u32;
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            return; // no slots, no free use -- skip silently
+        }
+    }
+
+    // Consume the resource.
+    let is_free = free_use;
+    if is_free {
+        state.character.class_features.divine_smite_free_use_available = false;
+    } else {
+        if !spells::consume_spell_slot(slot_level, &mut state.character.spell_slots_remaining) {
+            return; // should not happen, but guard
+        }
+    }
+
+    // Calculate dice count: 2d8 for level-1 (or free use, treated as level 1),
+    // +1d8 per slot level above 1, capped at 5d8.
+    let effective_level = if is_free { 1 } else { slot_level };
+    let base_dice = (1 + effective_level).min(5); // 2 at L1, 3 at L2, 4 at L3, 5 at L4+
+
+    // Undead/Fiend bonus: +1d8
+    let creature_type = state
+        .world
+        .npcs
+        .get(&npc_id)
+        .and_then(|npc| npc.combat_stats.as_ref())
+        .map(|stats| stats.creature_type)
+        .unwrap_or_default();
+    let extra_die = matches!(
+        creature_type,
+        combat::monsters::CreatureType::Undead | combat::monsters::CreatureType::Fiend
+    );
+    let total_dice = base_dice + if extra_die { 1 } else { 0 };
+
+    // Roll damage (double dice on critical hit per SRD).
+    let roll_count = if result.natural_20 { total_dice * 2 } else { total_dice };
+    let rolls = rules::dice::roll_dice(rng, roll_count, 8);
+    let bonus: i32 = rolls.iter().sum();
+
+    result.damage += bonus;
+
+    // Narration: pick template based on extra die and free use.
+    let dice_label = if result.natural_20 { total_dice * 2 } else { total_dice };
+    let line = if extra_die && is_free {
+        let ct_name = format!("{:?}", creature_type);
+        format!(
+            "Divine Smite: +{} radiant damage ({}d8 -- extra radiance against {}). (free use)",
+            bonus, dice_label, ct_name
+        )
+    } else if extra_die {
+        let ct_name = format!("{:?}", creature_type);
+        format!(
+            "Divine Smite: +{} radiant damage ({}d8 -- extra radiance against {}).",
+            bonus, dice_label, ct_name
+        )
+    } else if is_free {
+        format!(
+            "Divine Smite: +{} radiant damage ({}d8). (free use)",
+            bonus, dice_label
+        )
+    } else {
+        format!(
+            "Divine Smite: +{} radiant damage ({}d8).",
+            bonus, dice_label
+        )
+    };
+    lines.push(line);
 }
 
 /// Dispatch mastery effects for a main-hand attack. Called after damage
@@ -21779,7 +21931,306 @@ mod tests {
         assert!(
             all_text.contains("Danger Sense"),
             "Expected Danger Sense narration for Barbarian level 2 DEX save. Got: {}",
-            all_text
+            all_text    // ---- Divine Smite tests ----
+
+    /// Set up a Paladin level 2 in melee combat with a Longsword (melee-only).
+    /// Target has high HP so smite narration can always be checked.
+    fn paladin_divine_smite_setup() -> GameState {
+        let mut state = create_test_combat_state();
+        state.character.class = Class::Paladin;
+        state.character.level = 2;
+        // Give the Paladin level-1 spell slots (2 slots per SRD).
+        state.character.spell_slots_max = vec![2];
+        state.character.spell_slots_remaining = vec![2];
+        // Divine Smite free use available.
+        state.character.class_features.divine_smite_free_use_available = true;
+        // Boost goblin HP so smite doesn't end combat.
+        if let Some(npc) = state.world.npcs.get_mut(&100) {
+            if let Some(ref mut stats) = npc.combat_stats {
+                stats.max_hp = 300;
+                stats.current_hp = 300;
+            }
+        }
+        force_player_turn(&mut state);
+        if let Some(ref mut combat) = state.active_combat {
+            combat.distances.insert(100, 5); // melee range
+        }
+        state
+    }
+
+    #[test]
+    fn test_paladin_divine_smite_fires_on_melee_hit_with_free_use() {
+        let base = paladin_divine_smite_setup();
+        for seed in 0..60u64 {
+            let mut s = base.clone();
+            s.rng_seed = seed;
+            s.rng_counter = 0;
+            let state_json = serde_json::to_string(&s).unwrap();
+            let output = process_input(&state_json, "attack test goblin");
+            if !output.text.iter().any(|t| t.contains("hit for") || t.contains("CRITICAL HIT")) {
+                continue;
+            }
+            // Hit landed -- Divine Smite must have fired.
+            assert!(
+                output.text.iter().any(|t| t.contains("Divine Smite")),
+                "Expected Divine Smite narration on a Paladin melee hit, got: {:?}",
+                output.text
+            );
+            // Free use should have been consumed.
+            assert!(
+                output.text.iter().any(|t| t.contains("free use")),
+                "Expected 'free use' indicator on first smite, got: {:?}",
+                output.text
+            );
+            let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+            assert!(
+                !new_state.character.class_features.divine_smite_free_use_available,
+                "divine_smite_free_use_available should be false after free use consumed"
+            );
+            // Spell slots should NOT have been consumed (free use).
+            assert_eq!(
+                new_state.character.spell_slots_remaining,
+                vec![2],
+                "Spell slots should be untouched when free use is available"
+            );
+            return;
+        }
+        panic!("Did not land a Paladin hit in 60 seeds; fixture may need adjustment.");
+    }
+
+    #[test]
+    fn test_paladin_divine_smite_uses_spell_slot_after_free_use_consumed() {
+        let mut base = paladin_divine_smite_setup();
+        // Free use already consumed.
+        base.character.class_features.divine_smite_free_use_available = false;
+        for seed in 0..60u64 {
+            let mut s = base.clone();
+            s.rng_seed = seed;
+            s.rng_counter = 0;
+            let state_json = serde_json::to_string(&s).unwrap();
+            let output = process_input(&state_json, "attack test goblin");
+            if !output.text.iter().any(|t| t.contains("hit for") || t.contains("CRITICAL HIT")) {
+                continue;
+            }
+            assert!(
+                output.text.iter().any(|t| t.contains("Divine Smite")),
+                "Expected Divine Smite narration, got: {:?}",
+                output.text
+            );
+            // Should NOT say "free use".
+            assert!(
+                !output.text.iter().any(|t| t.contains("free use")),
+                "Should not say 'free use' when free use is already consumed, got: {:?}",
+                output.text
+            );
+            let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+            // One spell slot should have been consumed.
+            assert_eq!(
+                new_state.character.spell_slots_remaining,
+                vec![1],
+                "One spell slot should be consumed"
+            );
+            return;
+        }
+        panic!("Did not land a Paladin hit in 60 seeds; fixture may need adjustment.");
+    }
+
+    #[test]
+    fn test_paladin_divine_smite_does_not_fire_without_slots_or_free_use() {
+        let mut base = paladin_divine_smite_setup();
+        base.character.class_features.divine_smite_free_use_available = false;
+        base.character.spell_slots_remaining = vec![0]; // no slots
+        for seed in 0..60u64 {
+            let mut s = base.clone();
+            s.rng_seed = seed;
+            s.rng_counter = 0;
+            let state_json = serde_json::to_string(&s).unwrap();
+            let output = process_input(&state_json, "attack test goblin");
+            // Whether hit or miss, smite must not fire.
+            assert!(
+                !output.text.iter().any(|t| t.contains("Divine Smite")),
+                "Smite should not fire with no slots and no free use (seed {}). Got: {:?}",
+                seed,
+                output.text
+            );
+        }
+    }
+
+    #[test]
+    fn test_non_paladin_does_not_apply_divine_smite() {
+        let mut base = paladin_divine_smite_setup();
+        base.character.class = Class::Fighter;
+        for seed in 0..60u64 {
+            let mut s = base.clone();
+            s.rng_seed = seed;
+            s.rng_counter = 0;
+            let state_json = serde_json::to_string(&s).unwrap();
+            let output = process_input(&state_json, "attack test goblin");
+            assert!(
+                !output.text.iter().any(|t| t.contains("Divine Smite")),
+                "Fighter should never get Divine Smite (seed {}). Got: {:?}",
+                seed,
+                output.text
+            );
+        }
+    }
+
+    #[test]
+    fn test_paladin_level_1_does_not_apply_divine_smite() {
+        let mut base = paladin_divine_smite_setup();
+        base.character.level = 1;
+        for seed in 0..60u64 {
+            let mut s = base.clone();
+            s.rng_seed = seed;
+            s.rng_counter = 0;
+            let state_json = serde_json::to_string(&s).unwrap();
+            let output = process_input(&state_json, "attack test goblin");
+            assert!(
+                !output.text.iter().any(|t| t.contains("Divine Smite")),
+                "Paladin level 1 should not get Divine Smite (seed {}). Got: {:?}",
+                seed,
+                output.text
+            );
+        }
+    }
+
+    #[test]
+    fn test_paladin_divine_smite_does_not_fire_on_ranged_attack() {
+        let mut base = paladin_divine_smite_setup();
+        base.character.class_features.divine_smite_free_use_available = false;
+        // Give the Paladin a Longbow (ranged weapon).
+        let bow_id = 220;
+        base.world.items.insert(
+            bow_id,
+            state::Item {
+                id: bow_id,
+                name: "Longbow".to_string(),
+                description: "A ranged weapon.".to_string(),
+                item_type: state::ItemType::Weapon {
+                    damage_dice: 1,
+                    damage_die: 8,
+                    damage_type: state::DamageType::Piercing,
+                    properties: crate::equipment::AMMUNITION | crate::equipment::TWO_HANDED,
+                    category: state::WeaponCategory::Martial,
+                    versatile_die: 0,
+                    range_normal: 150,
+                    range_long: 600,
+                },
+                location: None,
+                carried_by_player: true,
+                charges_remaining: None,
+            },
+        );
+        base.character.inventory.push(bow_id);
+        base.character.equipped.main_hand = Some(bow_id);
+        // Move target to ranged distance.
+        if let Some(ref mut combat) = base.active_combat {
+            combat.distances.insert(100, 30);
+        }
+        for seed in 0..60u64 {
+            let mut s = base.clone();
+            s.rng_seed = seed;
+            s.rng_counter = 0;
+            let state_json = serde_json::to_string(&s).unwrap();
+            let output = process_input(&state_json, "shoot test goblin");
+            assert!(
+                !output.text.iter().any(|t| t.contains("Divine Smite")),
+                "Smite should not fire on a ranged (shoot) attack (seed {}). Got: {:?}",
+                seed,
+                output.text
+            );
+        }
+    }
+
+    #[test]
+    fn test_paladin_divine_smite_extra_die_vs_undead() {
+        let mut base = paladin_divine_smite_setup();
+        base.character.class_features.divine_smite_free_use_available = false;
+        // Set goblin's creature type to Undead.
+        if let Some(npc) = base.world.npcs.get_mut(&100) {
+            if let Some(ref mut stats) = npc.combat_stats {
+                stats.creature_type = combat::monsters::CreatureType::Undead;
+            }
+        }
+        for seed in 0..60u64 {
+            let mut s = base.clone();
+            s.rng_seed = seed;
+            s.rng_counter = 0;
+            let state_json = serde_json::to_string(&s).unwrap();
+            let output = process_input(&state_json, "attack test goblin");
+            if !output.text.iter().any(|t| t.contains("hit for") || t.contains("CRITICAL HIT")) {
+                continue;
+            }
+            assert!(
+                output.text.iter().any(|t| t.contains("Divine Smite")),
+                "Expected Divine Smite narration, got: {:?}",
+                output.text
+            );
+            // Should mention extra radiance and 3d8 (2 base + 1 undead bonus).
+            assert!(
+                output.text.iter().any(|t| t.contains("extra radiance") && t.contains("3d8")),
+                "Expected '3d8' and 'extra radiance' for Undead target, got: {:?}",
+                output.text
+            );
+            return;
+        }
+        panic!("Did not land a Paladin hit in 60 seeds; fixture may need adjustment.");
+    }
+
+    #[test]
+    fn test_paladin_divine_smite_extra_die_vs_fiend() {
+        let mut base = paladin_divine_smite_setup();
+        base.character.class_features.divine_smite_free_use_available = false;
+        // Set goblin's creature type to Fiend.
+        if let Some(npc) = base.world.npcs.get_mut(&100) {
+            if let Some(ref mut stats) = npc.combat_stats {
+                stats.creature_type = combat::monsters::CreatureType::Fiend;
+            }
+        }
+        for seed in 0..60u64 {
+            let mut s = base.clone();
+            s.rng_seed = seed;
+            s.rng_counter = 0;
+            let state_json = serde_json::to_string(&s).unwrap();
+            let output = process_input(&state_json, "attack test goblin");
+            if !output.text.iter().any(|t| t.contains("hit for") || t.contains("CRITICAL HIT")) {
+                continue;
+            }
+            assert!(
+                output.text.iter().any(|t| t.contains("Divine Smite")),
+                "Expected Divine Smite narration, got: {:?}",
+                output.text
+            );
+            assert!(
+                output.text.iter().any(|t| t.contains("extra radiance") && t.contains("Fiend")),
+                "Expected 'extra radiance' and 'Fiend' in narration, got: {:?}",
+                output.text
+            );
+            return;
+        }
+        panic!("Did not land a Paladin hit in 60 seeds; fixture may need adjustment.");
+    }
+
+    #[test]
+    fn test_paladin_divine_smite_long_rest_resets_free_use() {
+        let mut state = paladin_divine_smite_setup();
+        // Consume the free use.
+        state.character.class_features.divine_smite_free_use_available = false;
+        // Exit combat for long rest.
+        state.active_combat = None;
+        state.game_phase = GamePhase::Exploration;
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "long rest");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert!(
+            new_state.character.class_features.divine_smite_free_use_available,
+            "divine_smite_free_use_available should be true after long rest"
+        );
+        assert!(
+            output.text.iter().any(|t| t.contains("Divine Smite")),
+            "Long rest narration should mention Divine Smite refresh, got: {:?}",
+            output.text
+
         );
     }
 
@@ -21943,7 +22394,17 @@ mod tests {
         assert!(
             !all_text.contains("Danger Sense"),
             "Incapacitated Barbarian should NOT trigger Danger Sense. Got: {}",
-            all_text
+            all_text    fn test_divine_smite_backward_compat_default_false() {
+        // Ensure older saves without the field deserialize cleanly.
+        let state = create_test_combat_state();
+        let json = serde_json::to_string(&state).unwrap();
+        // Remove the field from JSON to simulate an older save.
+        let stripped = json.replace("\"divine_smite_free_use_available\":false,", "");
+        let deserialized: GameState = serde_json::from_str(&stripped).unwrap();
+        assert!(
+            !deserialized.character.class_features.divine_smite_free_use_available,
+            "Missing field should default to false"
+
         );
     }
 }

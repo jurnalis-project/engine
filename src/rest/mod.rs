@@ -375,6 +375,13 @@ pub fn perform_long_rest(state: &mut GameState, _rng: &mut impl Rng) -> Vec<Stri
             feature_resets.push("Ki");
         }
     }
+    // Paladin: refresh Divine Smite free use (level 2+).
+    if matches!(class, Class::Paladin) && level >= 2 {
+        if !state.character.class_features.divine_smite_free_use_available {
+            state.character.class_features.divine_smite_free_use_available = true;
+            feature_resets.push("Divine Smite (free use)");
+        }
+    }
     // Turn-scoped rogue flags also clear on a long rest (defensive).
     state.character.class_features.cunning_action_used = false;
     state.character.class_features.sneak_attack_used_this_turn = false;
