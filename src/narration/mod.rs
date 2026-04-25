@@ -9,6 +9,7 @@ pub fn narrate_enter_location(
     rng: &mut impl Rng,
     location: &Location,
     state: &GameState,
+    npc_barks: &[(String, String)],
 ) -> Vec<String> {
     let mut lines = Vec::new();
 
@@ -43,6 +44,11 @@ pub fn narrate_enter_location(
         }
     }
 
+    // NPC ambient barks
+    for (name, bark) in npc_barks {
+        lines.push(format!("{}: {}", name, bark));
+    }
+
     // Items
     if !location.items.is_empty() {
         let item_names: Vec<String> = location
@@ -69,7 +75,12 @@ pub fn narrate_enter_location(
     lines
 }
 
-pub fn narrate_look(rng: &mut impl Rng, location: &Location, state: &GameState) -> Vec<String> {
+pub fn narrate_look(
+    rng: &mut impl Rng,
+    location: &Location,
+    state: &GameState,
+    npc_barks: &[(String, String)],
+) -> Vec<String> {
     let mut lines = Vec::new();
 
     let template = templates::pick(rng, templates::LOOK_LOCATION);
@@ -99,6 +110,11 @@ pub fn narrate_look(rng: &mut impl Rng, location: &Location, state: &GameState) 
         if !npc_names.is_empty() {
             lines.push(templates::NPCS_PRESENT.replace("{npcs}", &npc_names.join(", ")));
         }
+    }
+
+    // NPC ambient barks
+    for (name, bark) in npc_barks {
+        lines.push(format!("{}: {}", name, bark));
     }
 
     if !location.items.is_empty() {
@@ -365,6 +381,169 @@ mod tests {
     use super::*;
     use rand::rngs::StdRng;
     use rand::SeedableRng;
+
+    #[test]
+    fn test_narrate_enter_location_includes_npc_barks() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let state = make_test_state_with_npcs();
+        let loc = state.world.locations.get(&0).unwrap();
+        let barks = vec![
+            ("Aldric the Bold".to_string(), "\"Keep moving.\"".to_string()),
+            (
+                "Brenna the Wise".to_string(),
+                "\"Fine goods here, if you're buying.\"".to_string(),
+            ),
+        ];
+        let lines = narrate_enter_location(&mut rng, loc, &state, &barks);
+        let joined = lines.join("\n");
+
+        assert!(
+            joined.contains("Aldric the Bold: \"Keep moving.\""),
+            "Expected guard bark in output. Got:\n{}",
+            joined
+        );
+        assert!(
+            joined.contains("Brenna the Wise: \"Fine goods here, if you're buying.\""),
+            "Expected merchant bark in output. Got:\n{}",
+            joined
+        );
+    }
+
+    #[test]
+    fn test_narrate_enter_location_no_barks_when_empty() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let state = make_test_state_with_npcs();
+        let loc = state.world.locations.get(&0).unwrap();
+        let barks: Vec<(String, String)> = vec![];
+        let lines = narrate_enter_location(&mut rng, loc, &state, &barks);
+        // Should still have NPC names line but no bark lines
+        let joined = lines.join("\n");
+        assert!(
+            joined.contains("You see"),
+            "Expected NPC names line. Got:\n{}",
+            joined
+        );
+        // No colon-prefixed bark lines
+        assert!(
+            !joined.contains("Aldric the Bold:"),
+            "Expected no bark lines. Got:\n{}",
+            joined
+        );
+    }
+
+    #[test]
+    fn test_narrate_look_includes_npc_barks() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let state = make_test_state_with_npcs();
+        let loc = state.world.locations.get(&0).unwrap();
+        let barks = vec![(
+            "Aldric the Bold".to_string(),
+            "\"Stay out of trouble.\"".to_string(),
+        )];
+        let lines = narrate_look(&mut rng, loc, &state, &barks);
+        let joined = lines.join("\n");
+
+        assert!(
+            joined.contains("Aldric the Bold: \"Stay out of trouble.\""),
+            "Expected bark in look output. Got:\n{}",
+            joined
+        );
+    }
+
+    fn make_test_state_with_npcs() -> crate::state::GameState {
+        use crate::character::{class::Class, create_character, race::Race};
+        use crate::state::*;
+        use crate::types::Ability;
+        use std::collections::{HashMap, HashSet};
+
+        let mut scores = HashMap::new();
+        scores.insert(Ability::Strength, 15);
+        scores.insert(Ability::Dexterity, 14);
+        scores.insert(Ability::Constitution, 13);
+        scores.insert(Ability::Intelligence, 12);
+        scores.insert(Ability::Wisdom, 10);
+        scores.insert(Ability::Charisma, 8);
+
+        let character = create_character(
+            "TestHero".to_string(),
+            Race::Human,
+            Class::Fighter,
+            scores,
+            vec![],
+        );
+
+        let mut npcs = HashMap::new();
+        npcs.insert(
+            0,
+            Npc {
+                id: 0,
+                name: "Aldric the Bold".to_string(),
+                role: NpcRole::Guard,
+                disposition: Disposition::Neutral,
+                dialogue_tags: vec![],
+                location: 0,
+                combat_stats: None,
+                conditions: vec![],
+            },
+        );
+        npcs.insert(
+            1,
+            Npc {
+                id: 1,
+                name: "Brenna the Wise".to_string(),
+                role: NpcRole::Merchant,
+                disposition: Disposition::Friendly,
+                dialogue_tags: vec![],
+                location: 0,
+                combat_stats: None,
+                conditions: vec![],
+            },
+        );
+
+        let mut locations = HashMap::new();
+        locations.insert(
+            0,
+            Location {
+                id: 0,
+                name: "Guard Post".to_string(),
+                description: "A dimly lit guard post.".to_string(),
+                location_type: LocationType::Room,
+                exits: HashMap::new(),
+                npcs: vec![0, 1],
+                items: Vec::new(),
+                triggers: Vec::new(),
+                light_level: LightLevel::Dim,
+                room_features: Vec::new(),
+            },
+        );
+
+        GameState {
+            version: SAVE_VERSION.to_string(),
+            character,
+            current_location: 0,
+            discovered_locations: HashSet::new(),
+            world: WorldState {
+                locations,
+                npcs,
+                items: HashMap::new(),
+                triggers: HashMap::new(),
+                triggered: HashSet::new(),
+            },
+            log: Vec::new(),
+            rng_seed: 42,
+            rng_counter: 0,
+            game_phase: GamePhase::Exploration,
+            active_combat: None,
+            ironman_mode: false,
+            progress: ProgressState::default(),
+            in_world_minutes: 0,
+            last_long_rest_minutes: None,
+            pending_background_pattern: None,
+            pending_subrace: None,
+            pending_disambiguation: None,
+            pending_new_game_confirm: false,
+        }
+    }
 
     #[test]
     fn test_narrate_condition_applied_self() {

@@ -1299,7 +1299,8 @@ fn handle_creation(state: &mut GameState, input: &str, step: CreationStep) -> Ve
             // Narrate entering the first location
             let mut rng = StdRng::seed_from_u64(state.rng_seed + 1000);
             if let Some(loc) = state.world.locations.get(&state.current_location) {
-                lines.extend(narration::narrate_enter_location(&mut rng, loc, state));
+                let barks = collect_npc_barks(&mut rng, loc, state);
+                lines.extend(narration::narrate_enter_location(&mut rng, loc, state, &barks));
             }
 
             lines
@@ -1682,6 +1683,34 @@ fn grant_background_equipment(state: &mut GameState) {
 
 const NPC_TAG: usize = 1 << 31;
 const ROOM_FEATURE_TAG: usize = 1 << 30;
+
+/// Collect ambient bark lines for live NPCs in the given location.
+/// Returns `(npc_name, bark_text)` pairs. Dead NPCs are excluded.
+fn collect_npc_barks(
+    rng: &mut impl rand::Rng,
+    location: &state::Location,
+    state: &GameState,
+) -> Vec<(String, String)> {
+    location
+        .npcs
+        .iter()
+        .filter_map(|id| state.world.npcs.get(id))
+        .filter(|npc| match &npc.combat_stats {
+            Some(stats) => stats.current_hp > 0,
+            None => true,
+        })
+        .map(|npc| {
+            let templates = match npc.role {
+                state::NpcRole::Guard => narration::templates::BARK_GUARD,
+                state::NpcRole::Merchant => narration::templates::BARK_MERCHANT,
+                state::NpcRole::Hermit => narration::templates::BARK_HERMIT,
+                state::NpcRole::Adventurer => narration::templates::BARK_ADVENTURER,
+            };
+            let bark = narration::templates::pick(rng, templates);
+            (npc.name.clone(), bark.to_string())
+        })
+        .collect()
+}
 
 fn npc_candidates(state: &GameState) -> Vec<(usize, String)> {
     let loc = match state.world.locations.get(&state.current_location) {
@@ -2225,7 +2254,10 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
             } else {
                 let loc = state.world.locations.get(&state.current_location).cloned();
                 match loc {
-                    Some(loc) => narration::narrate_look(&mut rng, &loc, state),
+                    Some(loc) => {
+                        let barks = collect_npc_barks(&mut rng, &loc, state);
+                        narration::narrate_look(&mut rng, &loc, state, &barks)
+                    }
                     None => vec!["You are nowhere.".to_string()],
                 }
             }
@@ -2375,7 +2407,8 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
                     }
 
                     if let Some(loc) = loc {
-                        lines.extend(narration::narrate_enter_location(&mut rng, &loc, state));
+                        let barks = collect_npc_barks(&mut rng, &loc, state);
+                        lines.extend(narration::narrate_enter_location(&mut rng, &loc, state, &barks));
 
                         // Check for hostile NPCs to trigger combat
                         let hostile_ids: Vec<u32> = loc
