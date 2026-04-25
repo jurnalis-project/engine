@@ -2983,6 +2983,117 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
                             .replace("{level}", "1"),
                     ]
                 }
+                // ---- Level 3 utility spells (exploration context) ----
+                "Mass Healing Word" => {
+                    if !spells::consume_spell_slot(
+                        spell_def.level,
+                        &mut state.character.spell_slots_remaining,
+                    ) {
+                        return vec![narration::templates::CAST_NO_SLOTS.to_string()];
+                    }
+                    let casting_ability =
+                        spells::spellcasting_ability(&state.character.class.to_string());
+                    let caster_score = state
+                        .character
+                        .ability_scores
+                        .get(&casting_ability)
+                        .copied()
+                        .unwrap_or(10);
+                    let outcome = spells::resolve_mass_healing_word(&mut rng, caster_score);
+                    let mut out = Vec::new();
+                    if let spells::CastOutcome::MassHealingWordResult {
+                        healing,
+                        rolled,
+                        modifier,
+                    } = outcome
+                    {
+                        let new_hp =
+                            (state.character.current_hp + healing).min(state.character.max_hp);
+                        let applied = new_hp - state.character.current_hp;
+                        state.character.current_hp = new_hp;
+                        if applied == 0 && state.character.current_hp == state.character.max_hp {
+                            out.push(
+                                narration::templates::CAST_HEAL_FULL_HP
+                                    .replace("{spell}", "Mass Healing Word")
+                                    .replace("{current}", &state.character.current_hp.to_string())
+                                    .replace("{max}", &state.character.max_hp.to_string()),
+                            );
+                        } else {
+                            out.push(
+                                narration::templates::CAST_MASS_HEALING_WORD
+                                    .replace("{roll}", &rolled.to_string())
+                                    .replace("{mod}", &modifier.to_string())
+                                    .replace("{healing}", &healing.to_string())
+                                    .replace("{current}", &state.character.current_hp.to_string())
+                                    .replace("{max}", &state.character.max_hp.to_string()),
+                            );
+                        }
+                        let slot_idx = 2;
+                        let remaining = state.character.spell_slots_remaining.get(slot_idx).copied().unwrap_or(0);
+                        let max = state.character.spell_slots_max.get(slot_idx).copied().unwrap_or(0);
+                        out.push(
+                            narration::templates::CAST_SLOT_USED
+                                .replace("{remaining}", &remaining.to_string())
+                                .replace("{max}", &max.to_string())
+                                .replace("{level}", "3"),
+                        );
+                    }
+                    out
+                }
+                "Fly" => {
+                    if !spells::consume_spell_slot(
+                        spell_def.level,
+                        &mut state.character.spell_slots_remaining,
+                    ) {
+                        return vec![narration::templates::CAST_NO_SLOTS.to_string()];
+                    }
+                    // Start concentration
+                    if spell_def.concentration {
+                        let _ = spells::begin_concentration(
+                            &mut state.character.class_features.concentration_spell,
+                            spell_def.name,
+                        );
+                    }
+                    let slot_idx = 2;
+                    let remaining = state.character.spell_slots_remaining.get(slot_idx).copied().unwrap_or(0);
+                    let max = state.character.spell_slots_max.get(slot_idx).copied().unwrap_or(0);
+                    vec![
+                        narration::templates::CAST_FLY.to_string(),
+                        narration::templates::CAST_SLOT_USED
+                            .replace("{remaining}", &remaining.to_string())
+                            .replace("{max}", &max.to_string())
+                            .replace("{level}", "3"),
+                    ]
+                }
+                "Dispel Magic" => {
+                    if !spells::consume_spell_slot(
+                        spell_def.level,
+                        &mut state.character.spell_slots_remaining,
+                    ) {
+                        return vec![narration::templates::CAST_NO_SLOTS.to_string()];
+                    }
+                    let mut out = Vec::new();
+                    if let Some(ref conc_spell) = state.character.class_features.concentration_spell {
+                        let spell_name = conc_spell.clone();
+                        state.character.class_features.concentration_spell = None;
+                        out.push(
+                            narration::templates::CAST_DISPEL_MAGIC_SUCCESS
+                                .replace("{spell}", &spell_name),
+                        );
+                    } else {
+                        out.push(narration::templates::CAST_DISPEL_MAGIC_NOTHING.to_string());
+                    }
+                    let slot_idx = 2;
+                    let remaining = state.character.spell_slots_remaining.get(slot_idx).copied().unwrap_or(0);
+                    let max = state.character.spell_slots_max.get(slot_idx).copied().unwrap_or(0);
+                    out.push(
+                        narration::templates::CAST_SLOT_USED
+                            .replace("{remaining}", &remaining.to_string())
+                            .replace("{max}", &max.to_string())
+                            .replace("{level}", "3"),
+                    );
+                    out
+                }
                 _ => {
                     vec![narration::templates::CAST_NOT_IN_COMBAT.to_string()]
                 }
