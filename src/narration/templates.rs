@@ -247,6 +247,50 @@ Combat commands (available during combat):
                       (also: run, sprint)
   end turn          - End your turn (also: end, pass, wait)";
 
+// ---- Environment interaction templates ----
+// Door
+pub const DOOR_OPEN: &str = "You push open the {name}.";
+pub const DOOR_ALREADY_OPEN: &str = "The {name} is already open.";
+pub const DOOR_LOCKED: &str = "The {name} is locked.";
+pub const DOOR_CLOSE: &str = "You pull the {name} closed.";
+pub const DOOR_ALREADY_CLOSED: &str = "The {name} is already closed.";
+pub const DOOR_UNLOCK: &str = "You unlock the {name}.";
+pub const DOOR_NOT_LOCKED: &str = "The {name} is not locked.";
+pub const DOOR_FORCE_SUCCESS: &str =
+    "With a mighty heave, you force the {name} open. {check}";
+pub const DOOR_FORCE_FAIL: &str =
+    "You throw your weight against the {name}, but it holds firm. {check}";
+pub const DOOR_FORCE_ALREADY_OPEN: &str = "The {name} is already open.";
+
+// Chest
+pub const CHEST_OPEN: &str = "You lift the lid of the {name}.";
+pub const CHEST_ALREADY_OPEN: &str = "The {name} is already open.";
+pub const CHEST_LOCKED: &str = "The {name} is locked.";
+pub const CHEST_CLOSE: &str = "You close the lid of the {name}.";
+pub const CHEST_ALREADY_CLOSED: &str = "The {name} is already closed.";
+pub const CHEST_UNLOCK: &str = "You unlock the {name}.";
+pub const CHEST_NOT_LOCKED: &str = "The {name} is not locked.";
+pub const CHEST_FORCE_SUCCESS: &str =
+    "You wrench the {name} open by force. {check}";
+pub const CHEST_FORCE_FAIL: &str =
+    "You strain against the {name}, but it won't budge. {check}";
+
+// Lever
+pub const LEVER_TOGGLE: &str =
+    "You {verb} the {name}. It clicks into a new position.";
+pub const LEVER_WRONG_VERB: &str =
+    "The {name} doesn't work that way. Try push, pull, or press.";
+
+// Climb
+pub const CLIMB_SUCCESS: &str = "You climb the {name} with ease. {check}";
+pub const CLIMB_FAIL: &str =
+    "You try to climb the {name}, but lose your grip and slide back down. {check}";
+pub const CLIMB_NOT_CLIMBABLE: &str = "The {name} is not something you can climb.";
+
+// Generic wrong-verb
+pub const FEATURE_WRONG_VERB: &str =
+    "You can't {verb} the {name}.";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HelpPhase {
     CharacterCreation,
@@ -731,37 +775,53 @@ mod tests {
 
     #[test]
     fn bark_templates_exist_for_all_roles() {
-        assert!(
-            BARK_GUARD.len() >= 3,
-            "Expected at least 3 guard bark templates"
-        );
-        assert!(
-            BARK_MERCHANT.len() >= 3,
-            "Expected at least 3 merchant bark templates"
-        );
-        assert!(
-            BARK_HERMIT.len() >= 3,
-            "Expected at least 3 hermit bark templates"
-        );
-        assert!(
-            BARK_ADVENTURER.len() >= 3,
-            "Expected at least 3 adventurer bark templates"
-        );
+        assert!(BARK_GUARD.len() >= 3, "Expected at least 3 guard bark templates");
+        assert!(BARK_MERCHANT.len() >= 3, "Expected at least 3 merchant bark templates");
+        assert!(BARK_HERMIT.len() >= 3, "Expected at least 3 hermit bark templates");
+        assert!(BARK_ADVENTURER.len() >= 3, "Expected at least 3 adventurer bark templates");
     }
 
     #[test]
     fn bark_templates_are_quoted_strings() {
-        for bark in BARK_GUARD
-            .iter()
-            .chain(BARK_MERCHANT.iter())
-            .chain(BARK_HERMIT.iter())
-            .chain(BARK_ADVENTURER.iter())
-        {
-            assert!(
-                bark.starts_with('"') && bark.ends_with('"'),
-                "Bark template should be wrapped in quotes: {}",
-                bark
-            );
+        for bark in BARK_GUARD.iter().chain(BARK_MERCHANT.iter()).chain(BARK_HERMIT.iter()).chain(BARK_ADVENTURER.iter()) {
+            assert!(bark.starts_with('"') && bark.ends_with('"'), "Bark template should be wrapped in quotes: {}", bark);
         }
+    }
+
+    // ---- Environment interaction template tests ----
+
+    #[test]
+    fn test_door_open_template_has_placeholder() {
+        assert!(super::DOOR_OPEN.contains("{name}"));
+    }
+
+    #[test]
+    fn test_door_templates_produce_correct_text() {
+        let text = super::DOOR_OPEN.replace("{name}", "iron door");
+        assert_eq!(text, "You push open the iron door.");
+        let text = super::DOOR_LOCKED.replace("{name}", "iron door");
+        assert_eq!(text, "The iron door is locked.");
+        let text = super::DOOR_CLOSE.replace("{name}", "iron door");
+        assert_eq!(text, "You pull the iron door closed.");
+    }
+
+    #[test]
+    fn test_chest_templates_produce_correct_text() {
+        let text = super::CHEST_OPEN.replace("{name}", "old chest");
+        assert_eq!(text, "You lift the lid of the old chest.");
+    }
+
+    #[test]
+    fn test_lever_toggle_template() {
+        let text = super::LEVER_TOGGLE.replace("{verb}", "pull").replace("{name}", "lever");
+        assert!(text.contains("pull") && text.contains("lever") && text.contains("clicks"));
+    }
+
+    #[test]
+    fn test_climb_templates() {
+        let text = super::CLIMB_SUCCESS.replace("{name}", "chains").replace("{check}", "[DC 10]");
+        assert!(text.contains("climb the chains"));
+        let text = super::CLIMB_FAIL.replace("{name}", "chains").replace("{check}", "[DC 10]");
+        assert!(text.contains("lose your grip"));
     }
 }
