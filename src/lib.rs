@@ -3987,8 +3987,10 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
     // Allow non-combat commands during combat (these don't consume combat state)
     match &command {
         Command::Look(target) => {
-            if target.is_some() {
-                return vec!["You're in combat! Use 'look' to see the battlefield.".to_string()];
+            if let Some(ref t) = target {
+                // Targeted examine during combat: inspect inventory items,
+                // battlefield NPCs, floor items, and room features.
+                return handle_look_target(state, t);
             }
             let combat = state.active_combat.take().unwrap();
             let result = combat::format_combat_status(state, &combat);
@@ -19647,7 +19649,6 @@ mod tests {
             "Expected creation help overview during ChooseRace. Got:\n{}",
             joined,
         );
-        // State should remain on ChooseRace (help doesn't advance creation).
         let state: GameState = serde_json::from_str(&output.state_json).unwrap();
         assert!(
             matches!(
@@ -19721,6 +19722,127 @@ mod tests {
             ),
             "Expected ChooseBackground phase after help. Got: {:?}",
             state.game_phase,
+        );
+    }
+
+    // ---- Examine command tests (issue #236) ----
+
+    #[test]
+    fn test_examine_inventory_item_during_combat() {
+        let mut state = create_test_combat_state();
+        force_player_turn(&mut state);
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "examine longsword");
+        let all_text = output.text.join("\n");
+
+        assert!(
+            !all_text.contains("You're in combat"),
+            "Targeted examine during combat should work, not show combat error. Got: {:?}",
+            output.text
+        );
+        assert!(
+            all_text.contains("Longsword"),
+            "Should show item name in inspection output. Got: {:?}",
+            output.text
+        );
+    }
+
+    #[test]
+    fn test_examine_npc_during_combat() {
+        let mut state = create_test_combat_state();
+        force_player_turn(&mut state);
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "examine goblin");
+        let all_text = output.text.join("\n");
+
+        assert!(
+            !all_text.contains("You're in combat"),
+            "Targeted examine of NPC during combat should work. Got: {:?}",
+            output.text
+        );
+        assert!(
+            all_text.contains("Goblin"),
+            "Should show NPC name in inspection output. Got: {:?}",
+            output.text
+        );
+    }
+
+    #[test]
+    fn test_examine_unrecognised_target() {
+        let state = create_test_exploration_state();
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "examine xyzzyplugh");
+        let all_text = output.text.join("\n");
+
+        assert!(
+            all_text.contains("You don't see any"),
+            "Unrecognised target should produce 'don't see' message. Got: {:?}",
+            output.text
+        );
+        assert!(
+            all_text.contains("xyzzyplugh"),
+            "Error message should echo the target name. Got: {:?}",
+            output.text
+        );
+    }
+
+    #[test]
+    fn test_examine_floor_item() {
+        let mut state = create_test_exploration_state();
+        let loc_id = state.current_location;
+
+        let floor_item_id = 777;
+        state.world.items.insert(floor_item_id, state::Item {
+            id: floor_item_id,
+            name: "Ruby Gemstone".to_string(),
+            description: "A deep crimson gem that catches the light.".to_string(),
+            item_type: state::ItemType::Misc,
+            location: Some(loc_id),
+            carried_by_player: false,
+            charges_remaining: None,
+        });
+        state.world.locations.get_mut(&loc_id).unwrap().items.push(floor_item_id);
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "examine ruby");
+        let all_text = output.text.join("\n");
+
+        assert!(
+            all_text.contains("Ruby Gemstone"),
+            "Should show floor item name. Got: {:?}",
+            output.text
+        );
+        assert!(
+            all_text.contains("crimson gem"),
+            "Should show floor item description. Got: {:?}",
+            output.text
+        );
+    }
+
+    #[test]
+    fn test_examine_room_feature() {
+        let mut state = create_test_exploration_state();
+        let loc = state.world.locations.get_mut(&state.current_location).unwrap();
+        loc.room_features = vec![state::RoomFeature {
+            name: "crystal fountain".to_string(),
+            description: "Water shimmers with an ethereal glow.".to_string(),
+        }];
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "examine fountain");
+        let all_text = output.text.join("\n");
+
+        assert!(
+            all_text.contains("crystal fountain"),
+            "Should show room feature name. Got: {:?}",
+            output.text
+        );
+        assert!(
+            all_text.contains("ethereal glow"),
+            "Should show room feature description. Got: {:?}",
+            output.text
         );
     }
 }
