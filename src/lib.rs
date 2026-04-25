@@ -3125,6 +3125,28 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
                 recipient, heal_amount, state.character.class_features.lay_on_hands_pool
             )]
         }
+        Command::SecondWind => {
+            if state.character.class != character::class::Class::Fighter {
+                return vec!["Only Fighters have Second Wind.".to_string()];
+            }
+            if !state.character.class_features.second_wind_available {
+                return vec!["You have already used Second Wind. Short or long rest to restore it.".to_string()];
+            }
+            // Roll 1d10 + fighter level
+            let roll = rules::dice::roll_dice(&mut rng, 1, 10)[0];
+            let level = state.character.level.max(1) as i32;
+            let heal_total = roll + level;
+            let missing_hp = state.character.max_hp - state.character.current_hp;
+            let actual_heal = heal_total.min(missing_hp).max(0);
+            state.character.current_hp =
+                (state.character.current_hp + actual_heal).min(state.character.max_hp);
+            state.character.class_features.second_wind_available = false;
+            vec![format!(
+                "You draw on your reserves and regain {} HP (1d10+{}: {}+{}={}). (HP: {}/{})",
+                actual_heal, level, roll, level, heal_total,
+                state.character.current_hp, state.character.max_hp,
+            )]
+        }
         Command::Ki(ability) => {
             if state.character.class != character::class::Class::Monk {
                 return vec!["Only Monks can spend Ki points.".to_string()];
@@ -6299,6 +6321,35 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
             return vec!["You cannot rest during combat.".to_string()];
         }
         // ---- Class-feature commands (combat) ----
+        Command::SecondWind => {
+            if state.character.class != character::class::Class::Fighter {
+                state.active_combat = Some(combat);
+                return vec!["Only Fighters have Second Wind.".to_string()];
+            }
+            if !state.character.class_features.second_wind_available {
+                state.active_combat = Some(combat);
+                return vec!["You have already used Second Wind. Short or long rest to restore it.".to_string()];
+            }
+            if combat.bonus_action_used {
+                state.active_combat = Some(combat);
+                return vec!["You have already used your bonus action this turn.".to_string()];
+            }
+            // Roll 1d10 + fighter level
+            let roll = rules::dice::roll_dice(&mut rng, 1, 10)[0];
+            let level = state.character.level.max(1) as i32;
+            let heal_total = roll + level;
+            let missing_hp = state.character.max_hp - state.character.current_hp;
+            let actual_heal = heal_total.min(missing_hp).max(0);
+            state.character.current_hp =
+                (state.character.current_hp + actual_heal).min(state.character.max_hp);
+            state.character.class_features.second_wind_available = false;
+            combat.bonus_action_used = true;
+            lines.push(format!(
+                "You draw on your reserves and regain {} HP (1d10+{}: {}+{}={}). (HP: {}/{})",
+                actual_heal, level, roll, level, heal_total,
+                state.character.current_hp, state.character.max_hp,
+            ));
+        }
         Command::Rage => {
             if state.character.class != character::class::Class::Barbarian {
                 state.active_combat = Some(combat);
@@ -10085,6 +10136,166 @@ mod tests {
                 .any(|l| l.to_lowercase().contains("bonus action")),
             "Expected 'bonus action' in error. Got: {:?}",
             output.text
+        );
+    }
+
+    // ---- Second Wind (Fighter) ------------------------------------------------
+
+    #[test]
+    fn test_second_wind_happy_path_combat() {
+        // Fighter in combat, damaged, second wind available, bonus action free.
+        let mut state = create_test_combat_state();
+        state.character.class = character::class::Class::Fighter;
+        state.character.class_features.second_wind_available = true;
+        // Damage the fighter
+        state.character.current_hp = 4;
+        let max_hp = state.character.max_hp;
+        force_player_turn(&mut state);
+        if let Some(ref mut combat) = state.active_combat {
+            combat.bonus_action_used = false;
+        }
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "second wind");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        // HP should increase
+        assert!(
+            new_state.character.current_hp > 4,
+            "HP should increase after Second Wind. Got: {}",
+            new_state.character.current_hp
+        );
+        // HP should not exceed max
+        assert!(
+            new_state.character.current_hp <= max_hp,
+            "HP should not exceed max. Got: {}/{}",
+            new_state.character.current_hp,
+            max_hp
+        );
+        // Second wind should be consumed
+        assert!(
+            !new_state.character.class_features.second_wind_available,
+            "Second Wind should be marked as used"
+        );
+        // Bonus action should be consumed
+        let combat = new_state.active_combat.as_ref().unwrap();
+        assert!(
+            combat.bonus_action_used,
+            "Second Wind must consume the bonus action"
+        );
+        // Narration should mention HP and reserves
+        assert!(
+            output.text.iter().any(|l| l.contains("reserves") && l.contains("HP")),
+            "Expected narration about regaining HP. Got: {:?}",
+            output.text
+        );
+    }
+
+    #[test]
+    fn test_second_wind_non_fighter_rejected() {
+        let state = exploration_state_with_class(Class::Rogue);
+        let before = state.character.class_features.clone();
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "second wind");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(new_state.character.class_features, before);
+        assert!(
+            output.text.iter().any(|l| l.to_lowercase().contains("fighter")),
+            "Expected 'Fighter' in error. Got: {:?}",
+            output.text
+        );
+    }
+
+    #[test]
+    fn test_second_wind_already_used_rejected() {
+        let mut state = exploration_state_with_class(Class::Fighter);
+        state.character.class_features.second_wind_available = false;
+        state.character.current_hp = 4;
+        let before_hp = state.character.current_hp;
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "second wind");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(
+            new_state.character.current_hp, before_hp,
+            "HP should not change when Second Wind is already used"
+        );
+        assert!(
+            output.text.iter().any(|l| l.to_lowercase().contains("already")),
+            "Expected 'already' in error. Got: {:?}",
+            output.text
+        );
+    }
+
+    #[test]
+    fn test_second_wind_combat_blocked_when_bonus_action_used() {
+        let mut state = create_test_combat_state();
+        state.character.class = character::class::Class::Fighter;
+        state.character.class_features.second_wind_available = true;
+        state.character.current_hp = 4;
+        let before_hp = state.character.current_hp;
+        force_player_turn(&mut state);
+        if let Some(ref mut combat) = state.active_combat {
+            combat.bonus_action_used = true;
+        }
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "second wind");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(
+            new_state.character.current_hp, before_hp,
+            "HP should not change when bonus action is used"
+        );
+        assert!(
+            new_state.character.class_features.second_wind_available,
+            "Second Wind should NOT be consumed when blocked"
+        );
+        assert!(
+            output.text.iter().any(|l| l.to_lowercase().contains("bonus action")),
+            "Expected 'bonus action' in error. Got: {:?}",
+            output.text
+        );
+    }
+
+    #[test]
+    fn test_second_wind_hp_capped_at_max() {
+        // Fighter at full HP or nearly full -- healing should not exceed max.
+        let mut state = exploration_state_with_class(Class::Fighter);
+        state.character.class_features.second_wind_available = true;
+        // Only 1 HP missing
+        state.character.current_hp = state.character.max_hp - 1;
+        let max_hp = state.character.max_hp;
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "second wind");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(
+            new_state.character.current_hp, max_hp,
+            "HP should be capped at max after Second Wind"
+        );
+        assert!(
+            !new_state.character.class_features.second_wind_available,
+            "Second Wind should still be consumed even if capped"
+        );
+    }
+
+    #[test]
+    fn test_second_wind_short_rest_restores() {
+        // Use Second Wind, then short rest, then verify it's available again.
+        let mut state = exploration_state_with_class(Class::Fighter);
+        state.character.class_features.second_wind_available = true;
+        state.character.current_hp = 4;
+        // Use second wind
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "second wind");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert!(!new_state.character.class_features.second_wind_available);
+        // Now short rest
+        let output2 = process_input(&output.state_json, "short rest");
+        let after_rest: GameState = serde_json::from_str(&output2.state_json).unwrap();
+        assert!(
+            after_rest.character.class_features.second_wind_available,
+            "Second Wind should be restored after short rest"
+        );
+        assert!(
+            output2.text.iter().any(|l| l.contains("Second Wind")),
+            "Rest narration should mention Second Wind. Got: {:?}",
+            output2.text
         );
     }
 

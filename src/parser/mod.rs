@@ -79,6 +79,9 @@ pub enum Command {
     /// Paladin: spend points from the Lay on Hands pool. Bare form heals self;
     /// targeted form aims at an ally (free-form name).
     LayOnHands(String),
+    /// Fighter: use Second Wind (bonus action, 1d10 + fighter level healing,
+    /// once per short/long rest). No argument.
+    SecondWind,
     /// Monk: spend a Ki / Focus point. The argument names the ability invoked
     /// (e.g. "flurry", "patient defense"). Treated as free-form for MVP.
     Ki(String),
@@ -163,6 +166,8 @@ pub fn parse(input: &str) -> Command {
             }
             "dash as bonus" => return Command::BonusDash,
             "disengage as bonus" => return Command::BonusDisengage,
+            // Fighter: "use second wind"
+            "use second wind" => return Command::SecondWind,
             // Paladin: "lay on hands [target]"
             "lay on hands" => return Command::LayOnHands(rest_after_three),
             _ => {}
@@ -286,6 +291,8 @@ pub fn parse(input: &str) -> Command {
             }
             // Barbarian: "enter rage"
             "enter rage" => return Command::Rage,
+            // Fighter: "second wind"
+            "second wind" => return Command::SecondWind,
             // Cleric / Paladin: "channel divinity"
             "channel divinity" => return Command::ChannelDivinity,
             // Bard: "bardic inspiration <target>"
@@ -485,6 +492,8 @@ pub fn parse(input: &str) -> Command {
                 Command::BardicInspiration(args)
             }
         }
+        // Fighter: "wind" (short alias for "second wind")
+        "wind" => Command::SecondWind,
         // Monk: "ki <ability>"
         "ki" | "focus" => {
             if args.is_empty() {
@@ -1029,6 +1038,27 @@ mod tests {
             Command::Unknown(s) => assert!(s.to_lowercase().contains("ki")),
             other => panic!("Expected Unknown, got {:?}", other),
         }
+    }
+
+    // ---- Second Wind (Fighter) ----
+
+    #[test]
+    fn test_second_wind_command() {
+        assert_eq!(parse("second wind"), Command::SecondWind);
+        assert_eq!(parse("Second Wind"), Command::SecondWind);
+        assert_eq!(parse("SECOND WIND"), Command::SecondWind);
+    }
+
+    #[test]
+    fn test_second_wind_use_phrase() {
+        assert_eq!(parse("use second wind"), Command::SecondWind);
+        assert_eq!(parse("Use Second Wind"), Command::SecondWind);
+    }
+
+    #[test]
+    fn test_second_wind_alias_wind() {
+        assert_eq!(parse("wind"), Command::SecondWind);
+        assert_eq!(parse("Wind"), Command::SecondWind);
     }
 
     #[test]
