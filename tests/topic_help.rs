@@ -35,6 +35,7 @@ fn create_combat_state_json() -> String {
         player_disengaging: false,
         action_used: false,
         bonus_action_used: false,
+            action_surge_active: false,
         reaction_used: false,
         free_interaction_used: false,
         npc_dodging: HashMap::new(),

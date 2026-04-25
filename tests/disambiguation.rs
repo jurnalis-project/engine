@@ -493,6 +493,7 @@ fn make_combat_disambiguation_state() -> GameState {
         player_disengaging: false,
         action_used: false,
         bonus_action_used: false,
+            action_surge_active: false,
         reaction_used: false,
         free_interaction_used: false,
         npc_dodging: HashMap::new(),

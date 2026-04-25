@@ -139,6 +139,9 @@ pub enum Command {
     /// Explicit thrown attack. Forces ranged mode for THROWN weapons even
     /// within melee range (overriding the default melee-at-5ft behavior).
     Throw(String),
+    /// Fighter: Action Surge (level 2). Grants one additional action this
+    /// turn. Parsed from "action surge" or "surge".
+    ActionSurge,
     Unknown(String),
 }
 
@@ -311,6 +314,8 @@ pub fn parse(input: &str) -> Command {
                     Command::Attune(rest)
                 };
             }
+            // Fighter: "action surge"
+            "action surge" => return Command::ActionSurge,
             // Scenery interaction: "break down <target>" -> Force
             "break down" => {
                 return if rest.is_empty() {
@@ -482,6 +487,8 @@ pub fn parse(input: &str) -> Command {
         "rest" => Command::Unknown("Short rest or long rest? Try 'short rest' or 'long rest'.".to_string()),
         "objective" | "goal" | "quest" => Command::Objective,
         "map" => Command::Map,
+        // Fighter: "surge" -> Action Surge
+        "surge" => Command::ActionSurge,
         // Barbarian: "rage"
         "rage" => Command::Rage,
         // Bard: "inspire <target>"
@@ -1711,5 +1718,25 @@ mod tests {
     fn test_climb_case_insensitive() {
         assert_eq!(parse("CLIMB CHAINS"), Command::Climb("chains".to_string()));
         assert_eq!(parse("Climb Bookshelf"), Command::Climb("bookshelf".to_string()));
+    }
+
+    // ---- Action Surge (Fighter level 2, issue #278) ----
+
+    #[test]
+    fn test_action_surge_command() {
+        assert_eq!(parse("action surge"), Command::ActionSurge);
+    }
+
+    #[test]
+    fn test_action_surge_alias_surge() {
+        assert_eq!(parse("surge"), Command::ActionSurge);
+    }
+
+    #[test]
+    fn test_action_surge_case_insensitive() {
+        assert_eq!(parse("ACTION SURGE"), Command::ActionSurge);
+        assert_eq!(parse("Action Surge"), Command::ActionSurge);
+        assert_eq!(parse("SURGE"), Command::ActionSurge);
+        assert_eq!(parse("Surge"), Command::ActionSurge);
     }
 }

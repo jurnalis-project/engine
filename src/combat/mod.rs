@@ -81,6 +81,11 @@ pub struct CombatState {
     /// Whether the player has used their bonus action this turn.
     #[serde(default)]
     pub bonus_action_used: bool,
+    /// Fighter Action Surge: when true, the action_used gate is bypassed for
+    /// exactly one additional action. Cleared after the surged action resolves
+    /// or at the start of the next player turn (advance_turn).
+    #[serde(default)]
+    pub action_surge_active: bool,
     /// Whether the player has used their reaction. Resets at the end of the
     /// player's turn (so reactions stay available during NPC turns).
     #[serde(default)]
@@ -365,6 +370,7 @@ impl CombatState {
                     self.player_disengaging = false;
                     self.action_used = false;
                     self.bonus_action_used = false;
+                    self.action_surge_active = false;
                     self.free_interaction_used = false;
                     self.player_shield_ac_bonus = 0;
                     // 2024 SRD Weapon Mastery cleanup at the start of the
@@ -635,6 +641,7 @@ pub fn start_combat(
         player_disengaging: false,
         action_used: false,
         bonus_action_used: false,
+        action_surge_active: false,
         reaction_used: false,
         free_interaction_used: false,
         npc_dodging: HashMap::new(),
@@ -4304,6 +4311,7 @@ mod tests {
             player_disengaging: false,
             action_used: false,
             bonus_action_used: false,
+            action_surge_active: false,
             reaction_used: false,
             free_interaction_used: false,
             npc_dodging: HashMap::new(),
@@ -7229,6 +7237,7 @@ mod tests {
             player_disengaging: false,
             action_used: false,
             bonus_action_used: false,
+            action_surge_active: false,
             reaction_used: false,
             free_interaction_used: false,
             npc_dodging: HashMap::new(),
@@ -7303,6 +7312,7 @@ mod tests {
             player_disengaging: false,
             action_used: false,
             bonus_action_used: false,
+            action_surge_active: false,
             reaction_used: false,
             free_interaction_used: false,
             npc_dodging: HashMap::new(),
@@ -7359,6 +7369,7 @@ mod tests {
             player_disengaging: true, // disengage to avoid OA complexity
             action_used: false,
             bonus_action_used: false,
+            action_surge_active: false,
             reaction_used: false,
             free_interaction_used: false,
             npc_dodging: HashMap::new(),

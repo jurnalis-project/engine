@@ -3051,7 +3051,8 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
         | Command::Grapple(_)
         | Command::EscapeGrapple
         | Command::Shove(_)
-        | Command::ShoveProne(_) => {
+        | Command::ShoveProne(_)
+        | Command::ActionSurge => {
             vec!["You're not in combat.".to_string()]
         }
         Command::NewGame => {
@@ -6375,7 +6376,6 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                 state.active_combat = Some(combat);
                 return vec!["You have already used your bonus action this turn.".to_string()];
             }
-            // Roll 1d10 + fighter level
             let roll = rules::dice::roll_dice(&mut rng, 1, 10)[0];
             let level = state.character.level.max(1) as i32;
             let heal_total = roll + level;
@@ -6390,6 +6390,31 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                 actual_heal, level, roll, level, heal_total,
                 state.character.current_hp, state.character.max_hp,
             ));
+        }
+        Command::ActionSurge => {
+            if state.character.class != character::class::Class::Fighter {
+                state.active_combat = Some(combat);
+                return vec!["Only Fighters can use Action Surge.".to_string()];
+            }
+            if state.character.level < 2 {
+                state.active_combat = Some(combat);
+                return vec!["Action Surge requires Fighter level 2.".to_string()];
+            }
+            if !state.character.class_features.action_surge_available {
+                state.active_combat = Some(combat);
+                return vec!["You have already used Action Surge. It resets after a long rest.".to_string()];
+            }
+            if !combat.action_used {
+                state.active_combat = Some(combat);
+                return vec!["You haven't used your action yet this turn. Use your action first, then surge for an additional one.".to_string()];
+            }
+            if combat.action_surge_active {
+                state.active_combat = Some(combat);
+                return vec!["Action Surge is already active.".to_string()];
+            }
+            combat.action_surge_active = true;
+            state.character.class_features.action_surge_available = false;
+            lines.push("You surge with adrenaline \u{2014} take one additional action!".to_string());
         }
         Command::Rage => {
             if state.character.class != character::class::Class::Barbarian {
@@ -17428,6 +17453,7 @@ mod tests {
             player_disengaging: false,
             action_used: false,
             bonus_action_used: false,
+            action_surge_active: false,
             reaction_used: false,
             free_interaction_used: false,
             npc_dodging: HashMap::new(),
@@ -17506,6 +17532,7 @@ mod tests {
             player_disengaging: false,
             action_used: false,
             bonus_action_used: false,
+            action_surge_active: false,
             reaction_used: false,
             free_interaction_used: false,
             npc_dodging: HashMap::new(),
@@ -17575,6 +17602,7 @@ mod tests {
             player_disengaging: false,
             action_used: false,
             bonus_action_used: false,
+            action_surge_active: false,
             reaction_used: false,
             free_interaction_used: false,
             npc_dodging: HashMap::new(),
@@ -19843,6 +19871,7 @@ mod tests {
             player_disengaging: false,
             action_used: false,
             bonus_action_used: false,
+            action_surge_active: false,
             reaction_used: false,
             free_interaction_used: false,
             npc_dodging: HashMap::new(),
@@ -19985,6 +20014,7 @@ mod tests {
             player_disengaging: false,
             action_used: false,
             bonus_action_used: false,
+            action_surge_active: false,
             reaction_used: false,
             free_interaction_used: false,
             npc_dodging: HashMap::new(),
@@ -21067,6 +21097,7 @@ mod tests {
             death_save_successes: 0,
             death_save_failures: 0,
             bonus_action_used: false,
+            action_surge_active: false,
             action_used: false,
             player_movement_remaining: 30,
             reaction_used: false,
@@ -21502,6 +21533,7 @@ mod tests {
             player_disengaging: false,
             action_used: false,
             bonus_action_used: false,
+            action_surge_active: false,
             reaction_used: false,
             free_interaction_used: false,
             npc_dodging: HashMap::new(),
