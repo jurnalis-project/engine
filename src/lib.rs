@@ -2327,6 +2327,16 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
                                             &state.character,
                                             *ability,
                                         );
+                                        // Danger Sense: Barbarian level 2+ gets advantage
+                                        // on DEX saves unless Incapacitated.
+                                        let danger_sense_active = *ability == Ability::Dexterity
+                                            && character::class::character_has_danger_sense(
+                                                state.character.class,
+                                                state.character.level,
+                                            )
+                                            && !conditions::is_incapacitated(
+                                                &state.character.conditions,
+                                            );
                                         // SRD cover rules: half/three-quarters cover adds a bonus
                                         // to the player's DEX saving throws.
                                         let cover_bonus = if *ability == Ability::Dexterity {
@@ -2345,14 +2355,20 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
                                             state.character.proficiency_bonus(),
                                             is_prof,
                                             effective_dc,
-                                            false,
+                                            danger_sense_active,
                                             disadv,
                                         );
-                                        let narration = narration::narrate_skill_check(
+                                        let mut narration = narration::narrate_skill_check(
                                             &mut rng,
                                             &format!("{} save", ability),
                                             &result,
                                         );
+                                        if danger_sense_active {
+                                            narration = format!(
+                                                "(Danger Sense: advantage on DEX save) {}",
+                                                narration,
+                                            );
+                                        }
                                         Some((result.success, narration))
                                     }
                                     state::TriggerType::PassivePerception => {
@@ -21662,5 +21678,272 @@ mod tests {
         let output = process_input(&state_json, "end turn");
         let text = output.text.join("\n");
         assert!(text.contains("You end your turn."), "Expected generic end-turn text after action was used, got: {}", text);
+    }
+
+    // ---- Danger Sense (Barbarian level 2) ----
+
+    #[test]
+    fn test_danger_sense_trap_dex_save_narration() {
+        use crate::types::Direction;
+
+        // Create a Barbarian at level 2 in exploration.
+        let mut scores = HashMap::new();
+        scores.insert(Ability::Strength, 15);
+        scores.insert(Ability::Dexterity, 14);
+        scores.insert(Ability::Constitution, 13);
+        scores.insert(Ability::Intelligence, 12);
+        scores.insert(Ability::Wisdom, 10);
+        scores.insert(Ability::Charisma, 8);
+
+        let mut character = create_character(
+            "BarbHero".to_string(),
+            Race::Human,
+            Class::Barbarian,
+            scores,
+            vec![Skill::Athletics, Skill::Perception],
+        );
+        character.level = 2;
+
+        let mut rng = StdRng::seed_from_u64(42);
+        let world = world::generate_world(&mut rng, 15);
+
+        let mut state = GameState {
+            version: SAVE_VERSION.to_string(),
+            character,
+            current_location: 0,
+            discovered_locations: [0].into_iter().collect(),
+            world,
+            log: Vec::new(),
+            rng_seed: 42,
+            rng_counter: 100,
+            game_phase: GamePhase::Exploration,
+            active_combat: None,
+            ironman_mode: false,
+            progress: state::ProgressState::default(),
+            in_world_minutes: 0,
+            last_long_rest_minutes: None,
+            pending_background_pattern: None,
+            pending_subrace: None,
+            pending_disambiguation: None,
+            pending_new_game_confirm: false,
+        };
+
+        // Set up a trap in a connected room.
+        let target_loc_id = 999;
+        let trigger_id = 888;
+        let current = state.current_location;
+
+        if let Some(loc) = state.world.locations.get_mut(&current) {
+            loc.exits.insert(Direction::North, target_loc_id);
+        }
+
+        state.world.locations.insert(
+            target_loc_id,
+            state::Location {
+                id: target_loc_id,
+                name: "Trapped Room".to_string(),
+                description: "A suspicious room.".to_string(),
+                location_type: state::LocationType::Room,
+                exits: {
+                    let mut m = HashMap::new();
+                    m.insert(Direction::South, current);
+                    m
+                },
+                npcs: vec![],
+                items: vec![],
+                triggers: vec![trigger_id],
+                light_level: state::LightLevel::Bright,
+                room_features: vec![],
+            },
+        );
+
+        state.world.triggers.insert(
+            trigger_id,
+            state::Trigger {
+                id: trigger_id,
+                location: target_loc_id,
+                trigger_type: state::TriggerType::SavingThrow(Ability::Dexterity),
+                dc: 15,
+                success_text: "You dodge the dart!".to_string(),
+                failure_text: "A dart hits you!".to_string(),
+                one_shot: true,
+                damage_on_failure: 4,
+            },
+        );
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "go north");
+        let all_text = output.text.join("\n");
+
+        // A level-2 Barbarian should trigger Danger Sense narration on DEX saves.
+        assert!(
+            all_text.contains("Danger Sense"),
+            "Expected Danger Sense narration for Barbarian level 2 DEX save. Got: {}",
+            all_text
+        );
+    }
+
+    #[test]
+    fn test_danger_sense_not_triggered_for_non_barbarian() {
+        use crate::types::Direction;
+
+        // Fighter at level 5 should NOT get Danger Sense.
+        let mut state = create_test_exploration_state(); // Fighter
+
+        let target_loc_id = 999;
+        let trigger_id = 888;
+        let current = state.current_location;
+
+        if let Some(loc) = state.world.locations.get_mut(&current) {
+            loc.exits.insert(Direction::North, target_loc_id);
+        }
+
+        state.world.locations.insert(
+            target_loc_id,
+            state::Location {
+                id: target_loc_id,
+                name: "Trapped Room".to_string(),
+                description: "A suspicious room.".to_string(),
+                location_type: state::LocationType::Room,
+                exits: {
+                    let mut m = HashMap::new();
+                    m.insert(Direction::South, current);
+                    m
+                },
+                npcs: vec![],
+                items: vec![],
+                triggers: vec![trigger_id],
+                light_level: state::LightLevel::Bright,
+                room_features: vec![],
+            },
+        );
+
+        state.world.triggers.insert(
+            trigger_id,
+            state::Trigger {
+                id: trigger_id,
+                location: target_loc_id,
+                trigger_type: state::TriggerType::SavingThrow(Ability::Dexterity),
+                dc: 15,
+                success_text: "You dodge the dart!".to_string(),
+                failure_text: "A dart hits you!".to_string(),
+                one_shot: true,
+                damage_on_failure: 4,
+            },
+        );
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "go north");
+        let all_text = output.text.join("\n");
+
+        assert!(
+            !all_text.contains("Danger Sense"),
+            "Fighter should NOT trigger Danger Sense. Got: {}",
+            all_text
+        );
+    }
+
+    #[test]
+    fn test_danger_sense_suppressed_when_incapacitated() {
+        use crate::types::Direction;
+        use crate::conditions::{ActiveCondition, ConditionType, ConditionDuration};
+
+        // Barbarian at level 2 but Incapacitated.
+        let mut scores = HashMap::new();
+        scores.insert(Ability::Strength, 15);
+        scores.insert(Ability::Dexterity, 14);
+        scores.insert(Ability::Constitution, 13);
+        scores.insert(Ability::Intelligence, 12);
+        scores.insert(Ability::Wisdom, 10);
+        scores.insert(Ability::Charisma, 8);
+
+        let mut character = create_character(
+            "BarbHero".to_string(),
+            Race::Human,
+            Class::Barbarian,
+            scores,
+            vec![Skill::Athletics, Skill::Perception],
+        );
+        character.level = 2;
+        character.conditions.push(
+            ActiveCondition::new(ConditionType::Incapacitated, ConditionDuration::Permanent)
+        );
+
+        let mut rng = StdRng::seed_from_u64(42);
+        let world = world::generate_world(&mut rng, 15);
+
+        let mut state = GameState {
+            version: SAVE_VERSION.to_string(),
+            character,
+            current_location: 0,
+            discovered_locations: [0].into_iter().collect(),
+            world,
+            log: Vec::new(),
+            rng_seed: 42,
+            rng_counter: 100,
+            game_phase: GamePhase::Exploration,
+            active_combat: None,
+            ironman_mode: false,
+            progress: state::ProgressState::default(),
+            in_world_minutes: 0,
+            last_long_rest_minutes: None,
+            pending_background_pattern: None,
+            pending_subrace: None,
+            pending_disambiguation: None,
+            pending_new_game_confirm: false,
+        };
+
+        let target_loc_id = 999;
+        let trigger_id = 888;
+        let current = state.current_location;
+
+        if let Some(loc) = state.world.locations.get_mut(&current) {
+            loc.exits.insert(Direction::North, target_loc_id);
+        }
+
+        state.world.locations.insert(
+            target_loc_id,
+            state::Location {
+                id: target_loc_id,
+                name: "Trapped Room".to_string(),
+                description: "A suspicious room.".to_string(),
+                location_type: state::LocationType::Room,
+                exits: {
+                    let mut m = HashMap::new();
+                    m.insert(Direction::South, current);
+                    m
+                },
+                npcs: vec![],
+                items: vec![],
+                triggers: vec![trigger_id],
+                light_level: state::LightLevel::Bright,
+                room_features: vec![],
+            },
+        );
+
+        state.world.triggers.insert(
+            trigger_id,
+            state::Trigger {
+                id: trigger_id,
+                location: target_loc_id,
+                trigger_type: state::TriggerType::SavingThrow(Ability::Dexterity),
+                dc: 15,
+                success_text: "You dodge the dart!".to_string(),
+                failure_text: "A dart hits you!".to_string(),
+                one_shot: true,
+                damage_on_failure: 4,
+            },
+        );
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "go north");
+        let all_text = output.text.join("\n");
+
+        // Incapacitated Barbarian should NOT get Danger Sense advantage.
+        assert!(
+            !all_text.contains("Danger Sense"),
+            "Incapacitated Barbarian should NOT trigger Danger Sense. Got: {}",
+            all_text
+        );
     }
 }
