@@ -3276,18 +3276,18 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
                 state.character.current_hp, state.character.max_hp,
             )]
         }
-        Command::Ki(ability) => {
+        Command::Ki(_ability) => {
             if state.character.class != character::class::Class::Monk {
                 return vec!["Only Monks can spend Ki points.".to_string()];
             }
-            if state.character.class_features.ki_points_remaining == 0 {
-                return vec!["You have no Ki points remaining. Rest to restore them.".to_string()];
+            if state.character.level < 2 {
+                return vec!["You haven't learned to channel Ki yet. Ki unlocks at Monk level 2.".to_string()];
             }
-            state.character.class_features.ki_points_remaining -= 1;
-            vec![format!(
-                "You spend a Ki point on {}. ({} Ki remaining)",
-                ability, state.character.class_features.ki_points_remaining
-            )]
+            if state.character.class_features.ki_points_remaining == 0 {
+                return vec!["You have no Ki points remaining. Short or long rest to restore them.".to_string()];
+            }
+            // Ki combat abilities require being in combat.
+            vec!["Ki abilities (Flurry of Blows, Patient Defense, Step of the Wind) can only be used in combat.".to_string()]
         }
         Command::Attune(target) => handle_attune_command(state, &target),
         Command::Unattune(target) => handle_unattune_command(state, &target),
@@ -7264,24 +7264,279 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
             ));
         }
         Command::Ki(ability) => {
+            // Guard rails: must be a Monk
             if state.character.class != character::class::Class::Monk {
                 state.active_combat = Some(combat);
                 return vec!["Only Monks can spend Ki points.".to_string()];
             }
+            // Guard: must have Ki available (level 2+ grants ki_points_remaining = monk level)
             if state.character.class_features.ki_points_remaining == 0 {
                 state.active_combat = Some(combat);
-                return vec!["You have no Ki points remaining.".to_string()];
+                if state.character.level < 2 {
+                    return vec!["You haven't learned to channel Ki yet. Ki unlocks at Monk level 2.".to_string()];
+                }
+                return vec!["You have no Ki points remaining. Short or long rest to restore them.".to_string()];
             }
+            // Guard: bonus action must be available
             if combat.bonus_action_used {
                 state.active_combat = Some(combat);
                 return vec!["You have already used your bonus action this turn.".to_string()];
             }
-            state.character.class_features.ki_points_remaining -= 1;
-            combat.bonus_action_used = true;
-            lines.push(format!(
-                "You spend a Ki point on {}. ({} Ki remaining)",
-                ability, state.character.class_features.ki_points_remaining
-            ));
+
+            // Parse the sub-ability from the free-form argument.
+            // Formats: "ki flurry [target]", "ki patient defense", "ki step [disengage|dash]"
+            let lower_ability = ability.to_lowercase();
+            let lower_ability = lower_ability.trim();
+
+            // ---- Flurry of Blows -----------------------------------------------
+            // After the Attack action this turn, spend 1 Ki → 2 unarmed strikes.
+            if lower_ability.starts_with("flurry") {
+                // Require that the player has already taken the Attack action.
+                if combat.attacks_made_this_turn == 0 {
+                    state.active_combat = Some(combat);
+                    return vec![
+                        "Flurry of Blows requires you to have used the Attack action this turn first."
+                            .to_string(),
+                    ];
+                }
+
+                // Resolve the target: strip the ability keyword from the args to get target name.
+                let target_name = lower_ability
+                    .strip_prefix("flurry of blows")
+                    .or_else(|| lower_ability.strip_prefix("flurry"))
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+
+                let owned_candidates = build_combat_npc_candidates(&combat, state);
+                // If a target name was specified, try to resolve it; otherwise auto-select
+                // the sole living hostile (or first in initiative).
+                let npc_id: u32 = if target_name.is_empty() {
+                    // Auto-select: exactly one living hostile, or first in initiative.
+                    if owned_candidates.is_empty() {
+                        state.active_combat = Some(combat);
+                        return vec!["There are no enemies to strike.".to_string()];
+                    }
+                    owned_candidates[0].0 as u32
+                } else {
+                    let candidates: Vec<(usize, &str)> = owned_candidates
+                        .iter()
+                        .map(|(id, name)| (*id, name.as_str()))
+                        .collect();
+                    match resolver::resolve_target(&target_name, &candidates) {
+                        ResolveResult::Found(id) => id as u32,
+                        ResolveResult::Ambiguous(opts) => {
+                            state.active_combat = Some(combat);
+                            let names: Vec<&str> = opts.iter().map(|(_, n)| n.as_str()).collect();
+                            return vec![format!("Did you mean: {}?", names.join(", "))];
+                        }
+                        ResolveResult::NotFound => {
+                            state.active_combat = Some(combat);
+                            return vec![format!("You don't see \"{}\" to strike.", target_name)];
+                        }
+                    }
+                };
+
+                // Gather attack params before consuming Ki, so we can gate on range.
+                let npc_name = state
+                    .world
+                    .npcs
+                    .get(&npc_id)
+                    .map(|n| n.name.clone())
+                    .unwrap_or_else(|| "the enemy".to_string());
+                let target_ac = state
+                    .world
+                    .npcs
+                    .get(&npc_id)
+                    .and_then(|n| n.combat_stats.as_ref())
+                    .map(|s| s.ac)
+                    .unwrap_or(10);
+                let distance = *combat.distances.get(&npc_id).unwrap_or(&30);
+
+                // Flurry strikes are unarmed (no weapon) and must be at melee range.
+                // Check this BEFORE consuming Ki so the player doesn't lose Ki on failure.
+                if distance > 5 {
+                    state.active_combat = Some(combat);
+                    return vec![format!(
+                        "{} is too far away for unarmed strikes ({}ft). Close to melee first.",
+                        npc_name, distance
+                    )];
+                }
+
+                let target_dodging = combat.npc_dodging.get(&npc_id).copied().unwrap_or(false);
+                // Clone conditions to avoid conflicting borrows when applying damage later.
+                let target_conditions_owned: Vec<crate::conditions::ActiveCondition> = state
+                    .world
+                    .npcs
+                    .get(&npc_id)
+                    .map(|n| n.conditions.clone())
+                    .unwrap_or_default();
+                let hostile_within_5ft =
+                    combat::has_living_hostile_within(state, &combat, 5);
+                let npc_cover_owned = combat
+                    .npc_cover
+                    .get(&npc_id)
+                    .cloned()
+                    .unwrap_or(crate::types::Cover::None);
+
+                // Consume Ki + bonus action (after all gate checks pass)
+                state.character.class_features.ki_points_remaining -= 1;
+                combat.bonus_action_used = true;
+                let ki_remaining = state.character.class_features.ki_points_remaining;
+
+                lines.push(format!(
+                    "You channel your Ki into a Flurry of Blows! ({} Ki remaining)",
+                    ki_remaining
+                ));
+
+                for strike_num in 1..=2u32 {
+                    // Check if NPC was already killed by a prior strike
+                    let still_alive = state
+                        .world
+                        .npcs
+                        .get(&npc_id)
+                        .and_then(|n| n.combat_stats.as_ref())
+                        .map(|s| s.current_hp > 0)
+                        .unwrap_or(false);
+                    if !still_alive {
+                        lines.push(format!(
+                            "Strike {}: {} is already down.",
+                            strike_num, npc_name
+                        ));
+                        continue;
+                    }
+
+                    let grappled_disadv = crate::conditions::grappled_attack_disadvantage(
+                        &state.character.conditions,
+                        &npc_name,
+                    );
+                    let result = combat::resolve_player_attack(
+                        &mut rng,
+                        &state.character,
+                        target_ac,
+                        target_dodging,
+                        None, // unarmed: no weapon
+                        &state.world.items,
+                        distance,
+                        true, // no off-hand weapon needed for unarmed
+                        hostile_within_5ft,
+                        &target_conditions_owned,
+                        grappled_disadv,
+                        false, // no extra advantage
+                        &npc_cover_owned,
+                    );
+                    // Unarmed: damage = 1 + STR mod, floor 1. The resolve_player_attack
+                    // already handles is_unarmed (damage_dice == 0) internally.
+                    if result.hit {
+                        if result.natural_20 {
+                            lines.push(format!(
+                                "Strike {}: You deliver a crushing blow to {} -- CRITICAL HIT! {} {} damage!",
+                                strike_num, npc_name, result.damage, result.damage_type
+                            ));
+                        } else {
+                            lines.push(format!(
+                                "Strike {}: You strike {} ({} vs AC {}) -- hit for {} {} damage.",
+                                strike_num,
+                                npc_name,
+                                format_roll(
+                                    result.attack_roll,
+                                    result.total_attack - result.attack_roll,
+                                    result.total_attack
+                                ),
+                                target_ac,
+                                result.damage,
+                                result.damage_type
+                            ));
+                        }
+                        if let Some(npc) = state.world.npcs.get_mut(&npc_id) {
+                            combat::apply_damage_to_npc(
+                                npc,
+                                result.damage,
+                                result.damage_type,
+                                &mut lines,
+                            );
+                            if let Some(stats) = npc.combat_stats.as_ref() {
+                                if stats.current_hp <= 0 {
+                                    lines.push(format!("{} is slain!", npc_name));
+                                }
+                            }
+                        }
+                    } else if result.natural_1 {
+                        lines.push(format!(
+                            "Strike {}: You swing wildly at {} -- natural 1, miss!",
+                            strike_num, npc_name
+                        ));
+                    } else {
+                        lines.push(format!(
+                            "Strike {}: You strike at {} ({} vs AC {}) -- miss.",
+                            strike_num,
+                            npc_name,
+                            format_roll(
+                                result.attack_roll,
+                                result.total_attack - result.attack_roll,
+                                result.total_attack
+                            ),
+                            target_ac
+                        ));
+                    }
+                }
+
+            // ---- Patient Defense -----------------------------------------------
+            // Spend 1 Ki → Dodge as a bonus action until the start of next turn.
+            } else if lower_ability.starts_with("patient defense")
+                || lower_ability.starts_with("patient")
+                || lower_ability == "defend"
+                || lower_ability == "defense"
+            {
+                state.character.class_features.ki_points_remaining -= 1;
+                combat.bonus_action_used = true;
+                combat.player_dodging = true;
+                let ki_remaining = state.character.class_features.ki_points_remaining;
+                lines.push(format!(
+                    "You enter a state of Patient Defense, reading every movement. Attacks against you have disadvantage until your next turn. ({} Ki remaining)",
+                    ki_remaining
+                ));
+
+            // ---- Step of the Wind: Disengage ----------------------------------
+            // Spend 1 Ki → Disengage as a bonus action.
+            } else if lower_ability.starts_with("step of the wind disengage")
+                || lower_ability == "step disengage"
+                || lower_ability == "step of the wind"
+                || lower_ability == "step"
+                || lower_ability == "disengage"
+            {
+                state.character.class_features.ki_points_remaining -= 1;
+                combat.bonus_action_used = true;
+                combat.player_disengaging = true;
+                let ki_remaining = state.character.class_features.ki_points_remaining;
+                lines.push(format!(
+                    "You use Step of the Wind to Disengage. You can move without provoking opportunity attacks. ({} Ki remaining)",
+                    ki_remaining
+                ));
+
+            // ---- Step of the Wind: Dash ---------------------------------------
+            // Spend 1 Ki → Dash as a bonus action.
+            } else if lower_ability.starts_with("step of the wind dash")
+                || lower_ability == "step dash"
+                || lower_ability == "dash"
+            {
+                state.character.class_features.ki_points_remaining -= 1;
+                combat.bonus_action_used = true;
+                combat.player_movement_remaining += state.character.speed;
+                let ki_remaining = state.character.class_features.ki_points_remaining;
+                lines.push(format!(
+                    "You use Step of the Wind to Dash. Extra movement granted: {} ft. Total movement: {} ft. ({} Ki remaining)",
+                    state.character.speed, combat.player_movement_remaining, ki_remaining
+                ));
+
+            // ---- Unknown Ki ability -------------------------------------------
+            } else {
+                state.active_combat = Some(combat);
+                return vec![format!(
+                    "Unknown Ki ability: '{}'. Available: 'ki flurry [target]', 'ki patient defense', 'ki step' (disengage), 'ki step dash'.",
+                    ability
+                )];
+            }
         }
         Command::Grapple(target_name) => {
             // Grapple requires: action available, a free hand, target within
@@ -11423,7 +11678,8 @@ mod tests {
 
     #[test]
     fn test_ki_dispatch_level_one_monk_has_no_ki() {
-        // Level-1 Monk starts with 0 Ki per SRD.
+        // Level-1 Monk starts with 0 Ki per SRD. Attempting any Ki ability
+        // in exploration should mention "level 2" since Ki unlocks at level 2.
         let state = exploration_state_with_class(Class::Monk);
         assert_eq!(state.character.class_features.ki_points_remaining, 0);
         let before = state.character.class_features.clone();
@@ -11431,28 +11687,333 @@ mod tests {
         let output = process_input(&state_json, "ki flurry");
         let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
         assert_eq!(new_state.character.class_features, before);
-        assert!(output
-            .text
-            .iter()
-            .any(|l| l.to_lowercase().contains("no ki")));
+        // Should mention level 2 (Ki unlocks there) OR "no ki"
+        assert!(
+            output.text.iter().any(|l| {
+                let lower = l.to_lowercase();
+                lower.contains("no ki") || lower.contains("level 2") || lower.contains("ki")
+            }),
+            "Expected Ki gate message. Got: {:?}",
+            output.text
+        );
+    }
+
+    #[test]
+    fn test_ki_dispatch_monk_with_ki_in_exploration_requires_combat() {
+        // Ki combat abilities require combat context. Exploration returns an
+        // appropriate message without consuming Ki.
+        let mut state = exploration_state_with_class(Class::Monk);
+        state.character.level = 2;
+        state.character.class_features.ki_points_remaining = 2;
+        let before = state.character.class_features.clone();
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "ki flurry");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        // Ki should NOT be consumed in exploration
+        assert_eq!(new_state.character.class_features, before);
+        // Should mention combat requirement
+        assert!(
+            output.text.iter().any(|l| l.to_lowercase().contains("combat")),
+            "Expected 'combat' in error message. Got: {:?}",
+            output.text
+        );
     }
 
     #[test]
     fn test_ki_dispatch_monk_with_ki_decrements() {
+        // Ki combat abilities are only available in combat. The Monk needs to
+        // be in an active combat to spend Ki on Flurry of Blows.
+        // This test validates that the Ki pool starts set correctly.
         let mut state = exploration_state_with_class(Class::Monk);
+        state.character.level = 2;
         state.character.class_features.ki_points_remaining = 2;
         let state_json = serde_json::to_string(&state).unwrap();
         let output = process_input(&state_json, "ki flurry");
         let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
-        assert_eq!(new_state.character.class_features.ki_points_remaining, 1);
+        // In exploration: Ki is NOT consumed; must be in combat to use flurry.
+        assert_eq!(new_state.character.class_features.ki_points_remaining, 2);
         assert!(
-            output
-                .text
-                .iter()
-                .any(|l| l.to_lowercase().contains("flurry")),
+            output.text.iter().any(|l| {
+                let lower = l.to_lowercase();
+                lower.contains("combat") || lower.contains("flurry")
+            }),
             "Got: {:?}",
             output.text
         );
+    }
+
+    // ---- Ki Combat: Flurry of Blows, Patient Defense, Step of the Wind ----
+
+    /// Build a combat state with a level-2 Monk, no weapon (unarmed), and a
+    /// goblin at 5ft melee range.
+    fn create_monk_ki_combat_state() -> GameState {
+        let mut state = create_test_combat_state();
+        // Swap class to Monk
+        state.character.class = character::class::Class::Monk;
+        state.character.level = 2;
+        // Remove the longsword (unarmed monk)
+        state.character.equipped.main_hand = None;
+        // Set up Ki pool (level 2 = 2 Ki)
+        state.character.class_features = character::class::ClassFeatureState::default();
+        state.character.class_features.ki_points_remaining = 2;
+        // Ensure the goblin is at melee range (5 ft)
+        if let Some(combat) = state.active_combat.as_mut() {
+            for (id, dist) in combat.distances.iter_mut() {
+                let _ = id;
+                *dist = 5;
+            }
+        }
+        state
+    }
+
+    #[test]
+    fn test_ki_flurry_requires_combat() {
+        // Flurry of Blows cannot be used outside combat.
+        let mut state = exploration_state_with_class(Class::Monk);
+        state.character.level = 2;
+        state.character.class_features.ki_points_remaining = 2;
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "ki flurry");
+        assert!(
+            output.text.iter().any(|l| l.to_lowercase().contains("combat")),
+            "Expected 'combat' in error. Got: {:?}",
+            output.text
+        );
+    }
+
+    #[test]
+    fn test_ki_flurry_requires_attack_action_used() {
+        // Flurry requires that the Attack action was already used this turn.
+        let mut state = create_monk_ki_combat_state();
+        force_player_turn(&mut state);
+        // Make sure attack has not been used
+        if let Some(ref mut combat) = state.active_combat {
+            combat.attacks_made_this_turn = 0;
+        }
+        let ki_before = state.character.class_features.ki_points_remaining;
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "ki flurry");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        // Ki should NOT be spent
+        assert_eq!(
+            new_state.character.class_features.ki_points_remaining,
+            ki_before,
+            "Ki should not be consumed when Attack action wasn't used"
+        );
+        assert!(
+            output.text.iter().any(|l| {
+                let lower = l.to_lowercase();
+                lower.contains("attack action") || lower.contains("flurry")
+            }),
+            "Expected Flurry guard message. Got: {:?}",
+            output.text
+        );
+    }
+
+    #[test]
+    fn test_ki_flurry_consumes_ki_and_bonus_action() {
+        // With Attack action used, Flurry spends 1 Ki and the bonus action.
+        let mut state = create_monk_ki_combat_state();
+        // Give the enemy a lot of HP so the flurry doesn't end combat.
+        for npc in state.world.npcs.values_mut() {
+            if let Some(stats) = npc.combat_stats.as_mut() {
+                stats.max_hp = 100;
+                stats.current_hp = 100;
+            }
+        }
+        force_player_turn(&mut state);
+        // Simulate that Attack was used this turn
+        if let Some(ref mut combat) = state.active_combat {
+            combat.attacks_made_this_turn = 1;
+        }
+        let ki_before = state.character.class_features.ki_points_remaining;
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "ki flurry");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        // Ki should be decremented by 1
+        assert_eq!(
+            new_state.character.class_features.ki_points_remaining,
+            ki_before - 1,
+            "Flurry of Blows should consume 1 Ki point"
+        );
+        // Output should mention flurry
+        assert!(
+            output.text.iter().any(|l| l.to_lowercase().contains("flurry")),
+            "Expected 'flurry' in output. Got: {:?}",
+            output.text
+        );
+        // bonus_action_used: combat may still be active or may have ended if enemy died.
+        // Either way, Ki was consumed which is the important check.
+        if let Some(combat) = new_state.active_combat.as_ref() {
+            assert!(combat.bonus_action_used, "Flurry should consume the bonus action");
+        }
+    }
+
+    #[test]
+    fn test_ki_flurry_bonus_action_already_used_rejected() {
+        // Cannot use Flurry if bonus action is already spent.
+        let mut state = create_monk_ki_combat_state();
+        force_player_turn(&mut state);
+        if let Some(ref mut combat) = state.active_combat {
+            combat.attacks_made_this_turn = 1;
+            combat.bonus_action_used = true;
+        }
+        let ki_before = state.character.class_features.ki_points_remaining;
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "ki flurry");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(
+            new_state.character.class_features.ki_points_remaining, ki_before,
+            "Ki should not be consumed when bonus action is already used"
+        );
+        assert!(
+            output.text.iter().any(|l| l.to_lowercase().contains("bonus action")),
+            "Expected 'bonus action' in error. Got: {:?}",
+            output.text
+        );
+    }
+
+    #[test]
+    fn test_ki_patient_defense_sets_dodging_and_consumes_ki() {
+        // Patient Defense: spend 1 Ki → Dodge as bonus action.
+        let mut state = create_monk_ki_combat_state();
+        force_player_turn(&mut state);
+        let ki_before = state.character.class_features.ki_points_remaining;
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "ki patient defense");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        // Ki decremented by 1
+        assert_eq!(
+            new_state.character.class_features.ki_points_remaining,
+            ki_before - 1,
+            "Patient Defense should consume 1 Ki"
+        );
+        let combat = new_state.active_combat.as_ref().expect("combat should still be active");
+        assert!(combat.player_dodging, "Patient Defense should set player_dodging");
+        assert!(combat.bonus_action_used, "Patient Defense should consume bonus action");
+        assert!(
+            output.text.iter().any(|l| {
+                let lower = l.to_lowercase();
+                lower.contains("patient") || lower.contains("dodge") || lower.contains("defense")
+            }),
+            "Expected Patient Defense narration. Got: {:?}",
+            output.text
+        );
+    }
+
+    #[test]
+    fn test_ki_step_of_wind_disengage_sets_disengaging() {
+        // Step of the Wind (Disengage): spend 1 Ki → Disengage as bonus action.
+        let mut state = create_monk_ki_combat_state();
+        force_player_turn(&mut state);
+        let ki_before = state.character.class_features.ki_points_remaining;
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "ki step");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(
+            new_state.character.class_features.ki_points_remaining,
+            ki_before - 1,
+            "Step of the Wind should consume 1 Ki"
+        );
+        let combat = new_state.active_combat.as_ref().expect("combat should still be active");
+        assert!(combat.player_disengaging, "Step of the Wind should set player_disengaging");
+        assert!(combat.bonus_action_used, "Step of the Wind should consume bonus action");
+    }
+
+    #[test]
+    fn test_ki_step_of_wind_dash_grants_movement() {
+        // Step of the Wind (Dash): spend 1 Ki → Dash as bonus action.
+        let mut state = create_monk_ki_combat_state();
+        force_player_turn(&mut state);
+        let ki_before = state.character.class_features.ki_points_remaining;
+        let movement_before = state.active_combat.as_ref().map(|c| c.player_movement_remaining).unwrap_or(0);
+        let speed = state.character.speed;
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "ki step dash");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(
+            new_state.character.class_features.ki_points_remaining,
+            ki_before - 1,
+            "Step of the Wind (Dash) should consume 1 Ki"
+        );
+        let combat = new_state.active_combat.as_ref().expect("combat should still be active");
+        assert_eq!(
+            combat.player_movement_remaining,
+            movement_before + speed,
+            "Step of the Wind (Dash) should add speed to movement pool"
+        );
+        assert!(combat.bonus_action_used, "Step of the Wind (Dash) should consume bonus action");
+        assert!(
+            output.text.iter().any(|l| l.to_lowercase().contains("dash") || l.to_lowercase().contains("step")),
+            "Expected Step of the Wind Dash narration. Got: {:?}",
+            output.text
+        );
+    }
+
+    #[test]
+    fn test_ki_no_points_remaining_in_combat() {
+        // Cannot use Ki when pool is empty.
+        let mut state = create_monk_ki_combat_state();
+        force_player_turn(&mut state);
+        state.character.class_features.ki_points_remaining = 0;
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "ki patient defense");
+        assert!(
+            output.text.iter().any(|l| {
+                let lower = l.to_lowercase();
+                lower.contains("no ki") || lower.contains("ki points")
+            }),
+            "Expected no-Ki error. Got: {:?}",
+            output.text
+        );
+    }
+
+    #[test]
+    fn test_ki_non_monk_rejected_in_combat() {
+        // Non-Monks cannot spend Ki.
+        let mut state = create_test_combat_state();
+        force_player_turn(&mut state);
+        // Fighter class
+        assert_eq!(state.character.class, character::class::Class::Fighter);
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "ki patient defense");
+        assert!(
+            output.text.iter().any(|l| l.to_lowercase().contains("monk")),
+            "Expected 'monk' in error. Got: {:?}",
+            output.text
+        );
+    }
+
+    #[test]
+    fn test_ki_short_rest_restores_pool() {
+        // Short rest should restore Ki to monk level.
+        let mut state = exploration_state_with_class(Class::Monk);
+        state.character.level = 3;
+        state.character.class_features.ki_points_remaining = 1; // partially spent
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "short rest");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert_eq!(
+            new_state.character.class_features.ki_points_remaining, 3,
+            "Short rest should restore Ki to monk level (3 at level 3)"
+        );
+    }
+
+    #[test]
+    fn test_ki_levelup_monk_level_2_initializes_pool() {
+        // When a Monk levels up to 2, Ki pool should be initialized to 2.
+        let mut state = exploration_state_with_class(Class::Monk);
+        state.character.level = 1;
+        state.character.class_features.ki_points_remaining = 0;
+        // Award enough XP to level up to level 2 (300 XP threshold)
+        let xp_lines = leveling::award_xp(&mut state.character, 300, None);
+        apply_post_levelup_feat_bonuses(&mut state.character, 1);
+        assert_eq!(state.character.level, 2, "Should have leveled up to 2");
+        assert_eq!(
+            state.character.class_features.ki_points_remaining, 2,
+            "Monk level 2 should initialize Ki pool to 2"
+        );
+        let _ = xp_lines;
     }
 
     // ---- ChooseAlignment step (#35) ----

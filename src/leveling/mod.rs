@@ -342,6 +342,13 @@ pub fn perform_level_up(character: &mut Character) -> LevelUpReport {
     character.class_features.action_surge_available = true;
     character.class_features.arcane_recovery_used_today = false;
 
+    // 5a. Monk: initialize Ki pool at level 2 (Ki points = monk level).
+    // On subsequent levels, the pool grows by 1 each level; we set it to
+    // the new level count so the character starts the new level fully refreshed.
+    if character.class == Class::Monk && new_level >= 2 {
+        character.class_features.ki_points_remaining = new_level;
+    }
+
     // 6. Look up class features unlocked at this level.
     let new_features = class::new_class_features_at_level(character.class, new_level);
 

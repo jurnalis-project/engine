@@ -323,6 +323,44 @@ pub fn narrate_character_sheet(state: &GameState) -> Vec<String> {
         );
     }
 
+    if matches!(c.class, crate::character::class::Class::Monk) {
+        lines.push(String::new());
+        lines.push("Monk Features:".to_string());
+        if c.level >= 2 {
+            // Ki points = monk level; restored on short or long rest.
+            let ki_max = c.level;
+            lines.push(format!(
+                "  Ki Points: {}/{} (restored on short or long rest)",
+                c.class_features.ki_points_remaining, ki_max
+            ));
+            lines.push(
+                "  Ki abilities (spend as bonus action in combat):".to_string(),
+            );
+            lines.push(
+                "    - ki flurry [target]    : Flurry of Blows — 2 unarmed strikes (requires Attack action first)".to_string(),
+            );
+            lines.push(
+                "    - ki patient defense    : Patient Defense — Dodge until next turn".to_string(),
+            );
+            lines.push(
+                "    - ki step               : Step of the Wind — Disengage as bonus action".to_string(),
+            );
+            lines.push(
+                "    - ki step dash          : Step of the Wind — Dash as bonus action".to_string(),
+            );
+        } else {
+            lines.push(
+                "  Ki: Not yet available (unlocks at level 2).".to_string(),
+            );
+        }
+        if c.equipped.body.is_none() {
+            lines.push(
+                "  Unarmored Defense: AC uses 10 + DEX modifier + WIS modifier while unarmored."
+                    .to_string(),
+            );
+        }
+    }
+
     lines
 }
 
