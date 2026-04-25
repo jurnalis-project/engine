@@ -550,12 +550,52 @@ pub fn roll_initiative(
         .collect()
 }
 
-/// Start combat: roll initiative, set distances, create CombatState.
+/// Assign cover levels to NPCs at combat start based on location type.
+///
+/// Each NPC has a chance (varying by location type) to receive cover.
+/// Room and Ruins locations can grant Half or Three-Quarters cover;
+/// Cave, Corridor, and Clearing only grant Half. The assignment is
+/// deterministic for a given RNG state.
+pub fn assign_npc_cover(
+    rng: &mut impl Rng,
+    npc_ids: &[NpcId],
+    location_type: crate::state::LocationType,
+) -> HashMap<NpcId, Cover> {
+    use crate::state::LocationType;
+    let mut cover_map = HashMap::new();
+
+    // Cover chance (percentage) and whether three-quarters is possible.
+    let (chance, allows_three_quarters) = match location_type {
+        LocationType::Room => (30, true),
+        LocationType::Ruins => (40, true),
+        LocationType::Cave => (20, false),
+        LocationType::Corridor => (10, false),
+        LocationType::Clearing => (10, false),
+    };
+
+    for &npc_id in npc_ids {
+        let roll: u32 = rng.gen_range(1..=100);
+        if roll <= chance {
+            let cover = if allows_three_quarters && rng.gen_range(0..3) == 0 {
+                // ~33% chance of three-quarters when eligible
+                Cover::ThreeQuarters
+            } else {
+                Cover::Half
+            };
+            cover_map.insert(npc_id, cover);
+        }
+    }
+
+    cover_map
+}
+
+/// Start combat: roll initiative, set distances, assign NPC cover, create CombatState.
 pub fn start_combat(
     rng: &mut impl Rng,
     player: &Character,
     hostile_npc_ids: &[NpcId],
     npcs: &HashMap<NpcId, crate::state::Npc>,
+    location_type: crate::state::LocationType,
 ) -> CombatState {
     let npc_stats: Vec<(NpcId, &CombatStats)> = hostile_npc_ids
         .iter()
@@ -609,7 +649,7 @@ pub fn start_combat(
         death_save_successes: 0,
         death_save_failures: 0,
         player_cover: Cover::None,
-        npc_cover: HashMap::new(),
+        npc_cover: assign_npc_cover(rng, hostile_npc_ids, location_type),
         npc_reactions_used: std::collections::HashSet::new(),
     }
 }
@@ -2710,7 +2750,7 @@ mod tests {
     fn test_start_combat_sets_distances() {
         let mut rng = StdRng::seed_from_u64(42);
         let state = test_state_with_goblin();
-        let combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
         let dist = combat.distances.get(&0).unwrap();
         assert!(*dist >= 20 && *dist <= 30);
         assert!(*dist % 5 == 0);
@@ -2720,7 +2760,7 @@ mod tests {
     fn test_start_combat_initiative_order() {
         let mut rng = StdRng::seed_from_u64(42);
         let state = test_state_with_goblin();
-        let combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
         assert_eq!(combat.initiative_order.len(), 2);
         assert_eq!(combat.round, 1);
     }
@@ -2848,7 +2888,7 @@ mod tests {
     fn test_npc_within_player_reach_unarmed_at_5ft() {
         let mut rng = StdRng::seed_from_u64(42);
         let state = test_state_with_goblin();
-        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
 
         combat.distances.insert(0, 5);
         assert!(
@@ -2894,7 +2934,7 @@ mod tests {
         );
         state.character.equipped.main_hand = Some(700);
 
-        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
         combat.distances.insert(0, 10);
         assert!(
             npc_within_player_reach(&state, &combat, 0),
@@ -2912,7 +2952,7 @@ mod tests {
     fn test_npc_within_player_reach_dead_npc_not_threatened() {
         let mut rng = StdRng::seed_from_u64(42);
         let mut state = test_state_with_goblin();
-        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
 
         // Kill the goblin.
         state
@@ -2935,7 +2975,7 @@ mod tests {
     fn test_has_living_hostile_within() {
         let mut state = test_state_with_goblin();
         let mut rng = StdRng::seed_from_u64(42);
-        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
 
         combat.distances.insert(0, 5);
         assert!(has_living_hostile_within(&state, &combat, 5));
@@ -3355,7 +3395,7 @@ mod tests {
     fn test_approach_reduces_distance() {
         let mut rng = StdRng::seed_from_u64(42);
         let state = test_state_with_goblin();
-        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
         let initial_dist = *combat.distances.get(&0).unwrap();
         combat.player_movement_remaining = 30;
 
@@ -3369,7 +3409,7 @@ mod tests {
     fn test_approach_stops_at_5ft() {
         let mut rng = StdRng::seed_from_u64(42);
         let state = test_state_with_goblin();
-        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
         combat.distances.insert(0, 10);
         combat.player_movement_remaining = 30;
 
@@ -3381,7 +3421,7 @@ mod tests {
     fn test_retreat_increases_distance() {
         let mut rng = StdRng::seed_from_u64(42);
         let mut state = test_state_with_goblin();
-        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
         combat.distances.insert(0, 20);
         combat.player_movement_remaining = 30;
         combat.player_disengaging = true; // Avoid opportunity attacks for simpler test
@@ -3406,7 +3446,7 @@ mod tests {
             .attacks[0]
             .reach = 10;
 
-        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
         combat.distances.insert(0, 10);
         combat.player_movement_remaining = 30;
         combat.player_disengaging = false;
@@ -3434,7 +3474,7 @@ mod tests {
             .attacks[0]
             .reach = 5;
 
-        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
         combat.distances.insert(0, 10);
         combat.player_movement_remaining = 30;
         combat.player_disengaging = false;
@@ -3462,7 +3502,7 @@ mod tests {
             .attacks[0]
             .reach = 10;
 
-        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
         combat.distances.insert(0, 5);
         combat.player_movement_remaining = 5; // Move to 10ft, still within reach 10
         combat.player_disengaging = false;
@@ -3493,7 +3533,7 @@ mod tests {
             .attacks[0]
             .reach = 5;
 
-        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
         combat.distances.insert(0, 5);
 
         // First call: old=5, new=u32::MAX — should potentially fire OA
@@ -3538,7 +3578,7 @@ mod tests {
             .attacks[0]
             .reach = 5;
 
-        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
         combat.distances.insert(0, 5);
         combat.player_movement_remaining = 30;
         combat.player_disengaging = true;
@@ -3559,7 +3599,7 @@ mod tests {
     fn test_npc_reactions_cleared_on_new_round() {
         let mut rng = StdRng::seed_from_u64(42);
         let mut state = test_state_with_goblin();
-        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
 
         // Mark NPC reaction used
         combat.npc_reactions_used.insert(0);
@@ -3591,7 +3631,7 @@ mod tests {
             .unwrap()
             .current_hp = 0;
         let mut rng = StdRng::seed_from_u64(42);
-        let combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
         assert_eq!(combat.check_end(&state), Some(true));
     }
 
@@ -3603,7 +3643,7 @@ mod tests {
         let mut state = test_state_with_goblin();
         state.character.current_hp = 0;
         let mut rng = StdRng::seed_from_u64(42);
-        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
         combat.death_save_failures = 3;
         assert_eq!(combat.check_end(&state), Some(false));
     }
@@ -3612,7 +3652,7 @@ mod tests {
     fn test_combat_not_ended() {
         let state = test_state_with_goblin();
         let mut rng = StdRng::seed_from_u64(42);
-        let combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
         assert_eq!(combat.check_end(&state), None);
     }
 
@@ -3682,7 +3722,7 @@ mod tests {
     fn test_two_hostiles_kill_one_combat_continues() {
         let mut state = test_state_with_two_goblins();
         let mut rng = StdRng::seed_from_u64(42);
-        let combat = start_combat(&mut rng, &state.character, &[0, 1], &state.world.npcs);
+        let combat = start_combat(&mut rng, &state.character, &[0, 1], &state.world.npcs, crate::state::LocationType::Room);
 
         // Kill only the first goblin
         state
@@ -3707,7 +3747,7 @@ mod tests {
     fn test_two_hostiles_kill_both_victory() {
         let mut state = test_state_with_two_goblins();
         let mut rng = StdRng::seed_from_u64(42);
-        let combat = start_combat(&mut rng, &state.character, &[0, 1], &state.world.npcs);
+        let combat = start_combat(&mut rng, &state.character, &[0, 1], &state.world.npcs, crate::state::LocationType::Room);
 
         // Kill both goblins
         state
@@ -3832,7 +3872,7 @@ mod tests {
         );
 
         let mut rng = StdRng::seed_from_u64(42);
-        let mut combat = start_combat(&mut rng, &state.character, &[0, 1], &state.world.npcs);
+        let mut combat = start_combat(&mut rng, &state.character, &[0, 1], &state.world.npcs, crate::state::LocationType::Room);
 
         // Advance through turns, dead NPC should be skipped
         let mut found_dead_npc_turn = false;
@@ -3849,7 +3889,7 @@ mod tests {
     fn test_npc_ai_melee_in_range() {
         let mut rng = StdRng::seed_from_u64(42);
         let mut state = test_state_with_goblin();
-        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
         combat.distances.insert(0, 5); // In melee range
 
         let lines = resolve_npc_turn(&mut rng, 0, &mut state, &mut combat);
@@ -3866,7 +3906,7 @@ mod tests {
     fn test_npc_ai_ranged_out_of_melee() {
         let mut rng = StdRng::seed_from_u64(42);
         let mut state = test_state_with_goblin();
-        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
         combat.distances.insert(0, 30); // Out of melee, in ranged
 
         let lines = resolve_npc_turn(&mut rng, 0, &mut state, &mut combat);
@@ -3903,7 +3943,7 @@ mod tests {
             range_normal: 0,
             range_long: 0,
         }];
-        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
         combat.distances.insert(0, 60); // Far away
 
         let lines = resolve_npc_turn(&mut rng, 0, &mut state, &mut combat);
@@ -3945,7 +3985,7 @@ mod tests {
             range_normal: 0,
             range_long: 0,
         }];
-        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
         // Distance 35: with speed 30, NPC moves to 5ft (melee range)
         combat.distances.insert(0, 35);
 
@@ -3987,7 +4027,7 @@ mod tests {
             range_normal: 80,
             range_long: 320,
         }];
-        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
         // Distance 350: with speed 30, NPC moves to 320ft (at ranged long range)
         combat.distances.insert(0, 350);
 
@@ -4028,7 +4068,7 @@ mod tests {
             range_normal: 0,
             range_long: 0,
         }];
-        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
         // Distance 60: with speed 30, NPC moves to 30ft — still NOT in melee range
         combat.distances.insert(0, 60);
 
@@ -4505,7 +4545,7 @@ mod tests {
     fn test_dodge_disadvantage_shown_in_npc_attack_text() {
         let state = test_state_with_goblin();
         let mut rng = StdRng::seed_from_u64(42);
-        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
 
         // Place goblin in melee range and set player dodging
         combat.distances.insert(0, 5);
@@ -4536,7 +4576,7 @@ mod tests {
     fn test_no_disadvantage_text_when_not_dodging() {
         let state = test_state_with_goblin();
         let mut rng = StdRng::seed_from_u64(42);
-        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
 
         // Place goblin in melee range, player NOT dodging
         combat.distances.insert(0, 5);
@@ -4610,7 +4650,7 @@ mod tests {
     fn test_combat_state_has_four_independent_resource_flags() {
         let mut rng = StdRng::seed_from_u64(42);
         let state = test_state_with_goblin();
-        let combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
 
         // Fresh combat should have all resources available.
         assert!(!combat.action_used, "Action should start available");
@@ -4630,7 +4670,7 @@ mod tests {
         // Per SRD: reaction resets at end of previous turn so it's available during NPC turns.
         let mut rng = StdRng::seed_from_u64(42);
         let state = test_state_with_goblin();
-        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
 
         // Simulate player consuming reaction (e.g. opportunity attack during NPC turn)
         combat.reaction_used = true;
@@ -4648,7 +4688,7 @@ mod tests {
         // action/bonus/free reset at start of the new player turn (existing convention).
         let mut rng = StdRng::seed_from_u64(42);
         let mut state = test_state_with_goblin();
-        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
 
         combat.action_used = true;
         combat.bonus_action_used = true;
@@ -4691,7 +4731,7 @@ mod tests {
     fn test_pending_reaction_defaults_to_none_and_serialises() {
         let mut rng = StdRng::seed_from_u64(42);
         let state = test_state_with_goblin();
-        let combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
 
         assert!(
             combat.pending_reaction.is_none(),
@@ -4708,7 +4748,7 @@ mod tests {
     fn test_pending_reaction_opportunity_attack_round_trips() {
         let mut rng = StdRng::seed_from_u64(42);
         let state = test_state_with_goblin();
-        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
 
         combat.pending_reaction = Some(PendingReaction::OpportunityAttack {
             fleeing_npc_id: 0,
@@ -4739,7 +4779,7 @@ mod tests {
     fn test_pending_reaction_shield_round_trips() {
         let mut rng = StdRng::seed_from_u64(42);
         let state = test_state_with_goblin();
-        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
 
         combat.pending_reaction = Some(PendingReaction::Shield {
             attacker_npc_id: 0,
@@ -4771,7 +4811,7 @@ mod tests {
         // Backwards-compat: old saves serialised `player_action_used` should still deserialize.
         let mut rng = StdRng::seed_from_u64(42);
         let state = test_state_with_goblin();
-        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
         combat.action_used = true; // Mark as used, so alias must carry the value.
 
         let mut json = serde_json::to_value(&combat).unwrap();
@@ -4989,7 +5029,7 @@ mod tests {
         state.character.current_hp = 1000;
         state.character.max_hp = 1000;
 
-        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
         combat.distances.insert(0, 5);
 
         let lines = resolve_npc_turn(&mut rng, 0, &mut state, &mut combat);
@@ -5020,7 +5060,7 @@ mod tests {
         state.character.current_hp = 1000;
         state.character.max_hp = 1000;
 
-        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
         combat.distances.insert(0, 5);
 
         let lines = resolve_npc_turn(&mut rng, 0, &mut state, &mut combat);
@@ -5054,7 +5094,7 @@ mod tests {
         state.character.current_hp = 1;
         state.character.max_hp = 10_000; // ensure damage < max_hp per hit
 
-        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
         combat.distances.insert(0, 5);
 
         let lines = resolve_npc_turn(&mut rng, 0, &mut state, &mut combat);
@@ -5247,7 +5287,7 @@ mod tests {
     #[test]
     fn test_vex_mastery_marks_target_and_is_consumed_on_next_attack() {
         let player = test_character();
-        let mut combat = start_combat(&mut StdRng::seed_from_u64(1), &player, &[], &HashMap::new());
+        let mut combat = start_combat(&mut StdRng::seed_from_u64(1), &player, &[], &HashMap::new(), crate::state::LocationType::Room);
         let hit = attack_result(true, 7, DamageType::Slashing);
         let mut narr = Vec::new();
         assert!(apply_vex_mastery(true, &hit, 42, &mut combat, &mut narr));
@@ -5262,7 +5302,7 @@ mod tests {
     fn test_vex_requires_damage() {
         // Per spec, Vex requires the hit to deal damage.
         let player = test_character();
-        let mut combat = start_combat(&mut StdRng::seed_from_u64(1), &player, &[], &HashMap::new());
+        let mut combat = start_combat(&mut StdRng::seed_from_u64(1), &player, &[], &HashMap::new(), crate::state::LocationType::Room);
         let zero_dmg_hit = attack_result(true, 0, DamageType::Slashing);
         let mut narr = Vec::new();
         assert!(!apply_vex_mastery(
@@ -5278,7 +5318,7 @@ mod tests {
     #[test]
     fn test_sap_mastery_marks_then_consumes() {
         let player = test_character();
-        let mut combat = start_combat(&mut StdRng::seed_from_u64(1), &player, &[], &HashMap::new());
+        let mut combat = start_combat(&mut StdRng::seed_from_u64(1), &player, &[], &HashMap::new(), crate::state::LocationType::Room);
         let hit = attack_result(true, 5, DamageType::Slashing);
         let mut narr = Vec::new();
         assert!(apply_sap_mastery(true, &hit, 7, &mut combat, &mut narr));
@@ -5292,7 +5332,7 @@ mod tests {
     #[test]
     fn test_sap_on_miss_is_noop() {
         let player = test_character();
-        let mut combat = start_combat(&mut StdRng::seed_from_u64(1), &player, &[], &HashMap::new());
+        let mut combat = start_combat(&mut StdRng::seed_from_u64(1), &player, &[], &HashMap::new(), crate::state::LocationType::Room);
         let missed = attack_result(false, 0, DamageType::Slashing);
         let mut narr = Vec::new();
         assert!(!apply_sap_mastery(true, &missed, 7, &mut combat, &mut narr));
@@ -5302,7 +5342,7 @@ mod tests {
     #[test]
     fn test_slow_mastery_applies_10ft_reduction() {
         let player = test_character();
-        let mut combat = start_combat(&mut StdRng::seed_from_u64(1), &player, &[], &HashMap::new());
+        let mut combat = start_combat(&mut StdRng::seed_from_u64(1), &player, &[], &HashMap::new(), crate::state::LocationType::Room);
         let hit = attack_result(true, 5, DamageType::Slashing);
         let mut narr = Vec::new();
         assert!(apply_slow_mastery(true, &hit, 7, &mut combat, &mut narr));
@@ -5315,7 +5355,7 @@ mod tests {
     #[test]
     fn test_slow_requires_damage() {
         let player = test_character();
-        let mut combat = start_combat(&mut StdRng::seed_from_u64(1), &player, &[], &HashMap::new());
+        let mut combat = start_combat(&mut StdRng::seed_from_u64(1), &player, &[], &HashMap::new(), crate::state::LocationType::Room);
         let zero_dmg_hit = attack_result(true, 0, DamageType::Slashing);
         let mut narr = Vec::new();
         assert!(!apply_slow_mastery(
@@ -5332,7 +5372,7 @@ mod tests {
     fn test_push_mastery_moves_target_10ft_away() {
         use crate::combat::monsters::Size;
         let player = test_character();
-        let mut combat = start_combat(&mut StdRng::seed_from_u64(1), &player, &[], &HashMap::new());
+        let mut combat = start_combat(&mut StdRng::seed_from_u64(1), &player, &[], &HashMap::new(), crate::state::LocationType::Room);
         combat.distances.insert(7, 5);
         let hit = attack_result(true, 5, DamageType::Bludgeoning);
         let mut narr = Vec::new();
@@ -5345,7 +5385,7 @@ mod tests {
     fn test_push_mastery_respects_size_limit() {
         use crate::combat::monsters::Size;
         let player = test_character();
-        let mut combat = start_combat(&mut StdRng::seed_from_u64(1), &player, &[], &HashMap::new());
+        let mut combat = start_combat(&mut StdRng::seed_from_u64(1), &player, &[], &HashMap::new(), crate::state::LocationType::Room);
         combat.distances.insert(7, 5);
         let hit = attack_result(true, 5, DamageType::Bludgeoning);
         let mut narr = Vec::new();
@@ -5374,6 +5414,7 @@ mod tests {
             &state.character,
             &[],
             &HashMap::new(),
+            crate::state::LocationType::Room,
         );
         let _ = &mut combat; // unused for this test; kept for future use
         let hit = attack_result(true, 5, DamageType::Bludgeoning);
@@ -5431,6 +5472,7 @@ mod tests {
             &state.character,
             &[],
             &HashMap::new(),
+            crate::state::LocationType::Room,
         );
         combat.distances.insert(7, 5);
         let mut rng = StdRng::seed_from_u64(3);
@@ -5464,6 +5506,7 @@ mod tests {
             &state.character,
             &[],
             &HashMap::new(),
+            crate::state::LocationType::Room,
         );
         combat.distances.insert(7, 5);
         combat.distances.insert(8, 5);
@@ -5482,7 +5525,7 @@ mod tests {
     #[test]
     fn test_nick_mastery_fires_once_per_turn() {
         let player = test_character();
-        let mut combat = start_combat(&mut StdRng::seed_from_u64(1), &player, &[], &HashMap::new());
+        let mut combat = start_combat(&mut StdRng::seed_from_u64(1), &player, &[], &HashMap::new(), crate::state::LocationType::Room);
         // First Nick swing: applies, consumes the once-per-turn slot.
         assert!(apply_nick_mastery(true, &mut combat));
         assert!(combat.nick_used_this_turn);
@@ -5495,7 +5538,7 @@ mod tests {
     #[test]
     fn test_nick_mastery_no_op_without_mastery() {
         let player = test_character();
-        let mut combat = start_combat(&mut StdRng::seed_from_u64(1), &player, &[], &HashMap::new());
+        let mut combat = start_combat(&mut StdRng::seed_from_u64(1), &player, &[], &HashMap::new(), crate::state::LocationType::Room);
         assert!(!apply_nick_mastery(false, &mut combat));
         assert!(!combat.nick_used_this_turn);
     }
@@ -5578,7 +5621,7 @@ mod tests {
         let mut state = test_state_with_goblin();
         state.character.class_features.sneak_attack_used_this_turn = true;
         state.character.class_features.cunning_action_used = true;
-        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
         // Force current_turn to the NPC slot before advancing.
         combat.current_turn = combat
             .initiative_order
@@ -5643,7 +5686,7 @@ mod tests {
         let mut state = test_state_with_goblin();
         state.character.current_hp = 0;
         let mut rng = StdRng::seed_from_u64(42);
-        let combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
         // Fresh dying: 0 successes, 0 failures -- combat continues.
         assert_eq!(
             combat.check_end(&state),
@@ -5657,7 +5700,7 @@ mod tests {
         let mut state = test_state_with_goblin();
         state.character.current_hp = 0;
         let mut rng = StdRng::seed_from_u64(42);
-        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
         combat.death_save_failures = 3;
         assert_eq!(
             combat.check_end(&state),
@@ -5671,7 +5714,7 @@ mod tests {
         let mut state = test_state_with_goblin();
         state.character.current_hp = 0;
         let mut rng = StdRng::seed_from_u64(42);
-        let combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
         assert!(combat.is_player_dying(&state));
     }
 
@@ -5679,7 +5722,7 @@ mod tests {
     fn test_is_player_dying_false_when_hp_positive() {
         let state = test_state_with_goblin();
         let mut rng = StdRng::seed_from_u64(42);
-        let combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
         assert!(!combat.is_player_dying(&state));
     }
 
@@ -5688,7 +5731,7 @@ mod tests {
         let mut state = test_state_with_goblin();
         state.character.current_hp = 0;
         let mut rng = StdRng::seed_from_u64(42);
-        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
         let outcome = combat.apply_death_save_roll(&mut state.character, 15);
         assert_eq!(outcome, DeathSaveOutcome::Success);
         assert_eq!(combat.death_save_successes, 1);
@@ -5700,7 +5743,7 @@ mod tests {
         let mut state = test_state_with_goblin();
         state.character.current_hp = 0;
         let mut rng = StdRng::seed_from_u64(42);
-        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
         let outcome = combat.apply_death_save_roll(&mut state.character, 5);
         assert_eq!(outcome, DeathSaveOutcome::Failure);
         assert_eq!(combat.death_save_successes, 0);
@@ -5712,7 +5755,7 @@ mod tests {
         let mut state = test_state_with_goblin();
         state.character.current_hp = 0;
         let mut rng = StdRng::seed_from_u64(42);
-        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
         let outcome = combat.apply_death_save_roll(&mut state.character, 1);
         assert_eq!(outcome, DeathSaveOutcome::CritFailure);
         assert_eq!(combat.death_save_failures, 2);
@@ -5724,7 +5767,7 @@ mod tests {
         state.character.current_hp = 0;
         state.character.max_hp = 20;
         let mut rng = StdRng::seed_from_u64(42);
-        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
         combat.death_save_successes = 1;
         combat.death_save_failures = 2;
         let outcome = combat.apply_death_save_roll(&mut state.character, 20);
@@ -5746,7 +5789,7 @@ mod tests {
         state.character.current_hp = 0;
         state.character.max_hp = 20;
         let mut rng = StdRng::seed_from_u64(42);
-        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
         combat.death_save_successes = 2;
         let outcome = combat.apply_death_save_roll(&mut state.character, 10);
         assert_eq!(outcome, DeathSaveOutcome::Stable);
@@ -5763,7 +5806,7 @@ mod tests {
         let mut state = test_state_with_goblin();
         state.character.current_hp = 0;
         let mut rng = StdRng::seed_from_u64(42);
-        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
         combat.death_save_failures = 2;
         let outcome = combat.apply_death_save_roll(&mut state.character, 5);
         assert_eq!(outcome, DeathSaveOutcome::Dead);
@@ -5781,7 +5824,7 @@ mod tests {
         state.character.current_hp = 0;
         state.character.max_hp = 20;
         let mut rng = StdRng::seed_from_u64(42);
-        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
         let outcome = combat.apply_damage_while_dying(&mut state.character, 5, false);
         assert_eq!(outcome, DeathSaveOutcome::Failure);
         assert_eq!(combat.death_save_failures, 1);
@@ -5793,7 +5836,7 @@ mod tests {
         state.character.current_hp = 0;
         state.character.max_hp = 20;
         let mut rng = StdRng::seed_from_u64(42);
-        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
         let outcome = combat.apply_damage_while_dying(&mut state.character, 5, true);
         assert_eq!(outcome, DeathSaveOutcome::CritFailure);
         assert_eq!(combat.death_save_failures, 2);
@@ -5805,7 +5848,7 @@ mod tests {
         state.character.current_hp = 0;
         state.character.max_hp = 20;
         let mut rng = StdRng::seed_from_u64(42);
-        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
         // damage >= max_hp in one hit is instant death (massive damage SRD rule).
         let outcome = combat.apply_damage_while_dying(&mut state.character, 20, false);
         assert_eq!(outcome, DeathSaveOutcome::Dead);
@@ -5819,7 +5862,7 @@ mod tests {
         state.character.current_hp = 0;
         state.character.max_hp = 20;
         let mut rng = StdRng::seed_from_u64(42);
-        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
         combat.death_save_successes = 1;
         combat.death_save_failures = 2;
         // Simulate healing.
@@ -5834,7 +5877,7 @@ mod tests {
     fn test_fresh_combat_has_zero_death_save_counters() {
         let state = test_state_with_goblin();
         let mut rng = StdRng::seed_from_u64(42);
-        let combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
         assert_eq!(combat.death_save_successes, 0);
         assert_eq!(combat.death_save_failures, 0);
     }
@@ -5843,7 +5886,7 @@ mod tests {
     fn test_death_save_state_serde_roundtrip() {
         let state = test_state_with_goblin();
         let mut rng = StdRng::seed_from_u64(42);
-        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
         combat.death_save_successes = 2;
         combat.death_save_failures = 1;
         let json = serde_json::to_string(&combat).unwrap();
@@ -5858,7 +5901,7 @@ mod tests {
         // deserialize, defaulting the counters to 0.
         let state = test_state_with_goblin();
         let mut rng = StdRng::seed_from_u64(42);
-        let combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
         let mut json: serde_json::Value = serde_json::to_value(&combat).unwrap();
         json.as_object_mut().unwrap().remove("death_save_successes");
         json.as_object_mut().unwrap().remove("death_save_failures");
@@ -6037,7 +6080,7 @@ mod tests {
 
         // Set up a minimal CombatState where the player is NOT the current turn
         // so that advance_turn will land on Player next.
-        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
         // Force the initiative order so Player is always index 1 (we just
         // need to advance to the player's turn exactly once).
         combat.initiative_order = vec![(Combatant::Npc(0), 20), (Combatant::Player, 10)];
@@ -6265,6 +6308,48 @@ mod tests {
         }
     }
 
+    // ---- NPC cover assignment tests ----
+
+    #[test]
+    fn test_assign_npc_cover_returns_map_with_valid_cover_levels() {
+        use crate::state::LocationType;
+        let mut rng = StdRng::seed_from_u64(42);
+        let npc_ids = vec![1, 2, 3, 4, 5];
+        let cover_map = assign_npc_cover(&mut rng, &npc_ids, LocationType::Room);
+        // Cover map may be empty (RNG decided no NPCs get cover) or populated.
+        // All values must be Half or ThreeQuarters (never Total or None).
+        for (id, cover) in &cover_map {
+            assert!(npc_ids.contains(id), "NPC id {} not in input list", id);
+            assert!(
+                *cover == Cover::Half || *cover == Cover::ThreeQuarters,
+                "NPC cover must be Half or ThreeQuarters, got {:?}",
+                cover
+            );
+        }
+    }
+
+    #[test]
+    fn test_assign_npc_cover_deterministic() {
+        use crate::state::LocationType;
+        let npc_ids = vec![10, 20, 30];
+        let map1 = assign_npc_cover(&mut StdRng::seed_from_u64(99), &npc_ids, LocationType::Ruins);
+        let map2 = assign_npc_cover(&mut StdRng::seed_from_u64(99), &npc_ids, LocationType::Ruins);
+        assert_eq!(map1, map2, "NPC cover assignment must be deterministic");
+    }
+
+    #[test]
+    fn test_assign_npc_cover_corridor_only_half() {
+        use crate::state::LocationType;
+        // Run many seeds; corridor should only produce Half, never ThreeQuarters
+        let npc_ids = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+        for seed in 0..50 {
+            let map = assign_npc_cover(&mut StdRng::seed_from_u64(seed), &npc_ids, LocationType::Corridor);
+            for cover in map.values() {
+                assert_eq!(*cover, Cover::Half, "Corridor should only produce Half cover, seed {}", seed);
+            }
+        }
+    }
+
     // ---- Shove tests (2024 SRD) ----
 
     /// Find a seed where the NPC fails its best-of(STR,DEX) save against our
@@ -6301,7 +6386,7 @@ mod tests {
         let seed = find_shove_success_seed();
         let mut rng = StdRng::seed_from_u64(seed);
         let mut state = test_state_with_goblin();
-        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
         combat.distances.insert(0, 5);
         let initial_dist = 5u32;
 
@@ -6332,7 +6417,7 @@ mod tests {
         let seed = find_shove_success_seed();
         let mut rng = StdRng::seed_from_u64(seed);
         let mut state = test_state_with_goblin();
-        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
         combat.distances.insert(0, 5);
 
         let mut rng2 = StdRng::seed_from_u64(seed);
@@ -6354,7 +6439,7 @@ mod tests {
         let seed = find_shove_fail_seed();
         let mut rng = StdRng::seed_from_u64(seed);
         let mut state = test_state_with_goblin();
-        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs);
+        let mut combat = start_combat(&mut rng, &state.character, &[0], &state.world.npcs, crate::state::LocationType::Room);
         combat.distances.insert(0, 5);
         let initial_dist = 5u32;
 

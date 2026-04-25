@@ -2432,6 +2432,7 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
                                 &state.character,
                                 &hostile_ids,
                                 &state.world.npcs,
+                                loc.location_type,
                             );
                             lines.push(String::new());
                             lines.extend(combat::format_initiative(&combat_state, state));
@@ -12365,8 +12366,14 @@ mod tests {
         // Start combat
         let mut rng = rand::rngs::StdRng::seed_from_u64(state.rng_seed + state.rng_counter);
         state.rng_counter += 1;
-        let combat_state =
-            combat::start_combat(&mut rng, &state.character, &[npc_id], &state.world.npcs);
+        let loc_type = state.world.locations.get(&state.current_location)
+            .map(|l| l.location_type)
+            .unwrap_or(state::LocationType::Room);
+        let mut combat_state =
+            combat::start_combat(&mut rng, &state.character, &[npc_id], &state.world.npcs, loc_type);
+        // Clear NPC cover in test helpers so existing tests are not affected
+        // by the new RNG-based cover assignment.
+        combat_state.npc_cover.clear();
         state.active_combat = Some(combat_state);
         state
     }
@@ -12432,7 +12439,11 @@ mod tests {
         // Start combat
         let mut rng = rand::rngs::StdRng::seed_from_u64(state.rng_seed + state.rng_counter);
         state.rng_counter += 1;
-        let combat_state = combat::start_combat(&mut rng, &state.character, &[npc_id], &state.world.npcs);
+        let loc_type = state.world.locations.get(&state.current_location)
+            .map(|l| l.location_type)
+            .unwrap_or(state::LocationType::Room);
+        let mut combat_state = combat::start_combat(&mut rng, &state.character, &[npc_id], &state.world.npcs, loc_type);
+        combat_state.npc_cover.clear();
         state.active_combat = Some(combat_state);
         state
     }
