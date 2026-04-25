@@ -6337,6 +6337,370 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                         }
                     }
                 }
+                // ---- Level 3 spells ----
+                "Fireball" => {
+                    let targets: Vec<spells::SpellTarget> = build_spell_targets(&combat, state);
+                    if targets.is_empty() {
+                        state.character.spell_slots_remaining[2] += 1; // refund
+                        lines.push(narration::templates::CAST_FIREBALL_NO_TARGETS.to_string());
+                        state.active_combat = Some(combat);
+                        return lines;
+                    }
+                    let outcome = spells::resolve_save_half_aoe(
+                        &mut rng, caster_score, prof_bonus, &targets,
+                        8, 6, crate::types::Ability::Dexterity,
+                    );
+                    if let spells::CastOutcome::SaveHalfAoE { total_rolled, half_damage: _, dc, results } = outcome {
+                        lines.push(
+                            narration::templates::CAST_FIREBALL_INTRO
+                                .replace("{damage}", &total_rolled.to_string())
+                                .replace("{dc}", &dc.to_string()),
+                        );
+                        for result in &results {
+                            let save_str = format!(
+                                "{} vs DC {}",
+                                format_roll(result.save_result.roll, result.save_result.modifier, result.save_result.total),
+                                result.save_result.dc
+                            );
+                            if result.save_result.saved {
+                                lines.push(
+                                    narration::templates::CAST_FIREBALL_SAVE
+                                        .replace("{target}", &result.name)
+                                        .replace("{save_result}", &save_str)
+                                        .replace("{damage}", &result.damage_taken.to_string()),
+                                );
+                            } else {
+                                lines.push(
+                                    narration::templates::CAST_FIREBALL_FAIL
+                                        .replace("{target}", &result.name)
+                                        .replace("{save_result}", &save_str)
+                                        .replace("{damage}", &result.damage_taken.to_string()),
+                                );
+                            }
+                        }
+                        let slot_idx = 2; // level 3 -> index 2
+                        let remaining = state.character.spell_slots_remaining.get(slot_idx).copied().unwrap_or(0);
+                        let max = state.character.spell_slots_max.get(slot_idx).copied().unwrap_or(0);
+                        lines.push(
+                            narration::templates::CAST_SLOT_USED
+                                .replace("{remaining}", &remaining.to_string())
+                                .replace("{max}", &max.to_string())
+                                .replace("{level}", "3"),
+                        );
+                        // Apply damage to NPCs
+                        for result in &results {
+                            for (_, npc) in state.world.npcs.iter_mut() {
+                                if npc.name == result.name {
+                                    let _dealt = combat::apply_damage_to_npc(
+                                        npc, result.damage_taken,
+                                        state::DamageType::Fire, &mut lines,
+                                    );
+                                    if let Some(stats) = npc.combat_stats.as_ref() {
+                                        if stats.current_hp <= 0 {
+                                            lines.push(format!("{} is slain!", result.name));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    combat.action_used = true;
+                }
+                "Lightning Bolt" => {
+                    let targets: Vec<spells::SpellTarget> = build_spell_targets(&combat, state);
+                    if targets.is_empty() {
+                        state.character.spell_slots_remaining[2] += 1; // refund
+                        lines.push(narration::templates::CAST_LIGHTNING_BOLT_NO_TARGETS.to_string());
+                        state.active_combat = Some(combat);
+                        return lines;
+                    }
+                    let outcome = spells::resolve_save_half_aoe(
+                        &mut rng, caster_score, prof_bonus, &targets,
+                        8, 6, crate::types::Ability::Dexterity,
+                    );
+                    if let spells::CastOutcome::SaveHalfAoE { total_rolled, half_damage: _, dc, results } = outcome {
+                        lines.push(
+                            narration::templates::CAST_LIGHTNING_BOLT_INTRO
+                                .replace("{damage}", &total_rolled.to_string())
+                                .replace("{dc}", &dc.to_string()),
+                        );
+                        for result in &results {
+                            let save_str = format!(
+                                "{} vs DC {}",
+                                format_roll(result.save_result.roll, result.save_result.modifier, result.save_result.total),
+                                result.save_result.dc
+                            );
+                            if result.save_result.saved {
+                                lines.push(
+                                    narration::templates::CAST_LIGHTNING_BOLT_SAVE
+                                        .replace("{target}", &result.name)
+                                        .replace("{save_result}", &save_str)
+                                        .replace("{damage}", &result.damage_taken.to_string()),
+                                );
+                            } else {
+                                lines.push(
+                                    narration::templates::CAST_LIGHTNING_BOLT_FAIL
+                                        .replace("{target}", &result.name)
+                                        .replace("{save_result}", &save_str)
+                                        .replace("{damage}", &result.damage_taken.to_string()),
+                                );
+                            }
+                        }
+                        let slot_idx = 2;
+                        let remaining = state.character.spell_slots_remaining.get(slot_idx).copied().unwrap_or(0);
+                        let max = state.character.spell_slots_max.get(slot_idx).copied().unwrap_or(0);
+                        lines.push(
+                            narration::templates::CAST_SLOT_USED
+                                .replace("{remaining}", &remaining.to_string())
+                                .replace("{max}", &max.to_string())
+                                .replace("{level}", "3"),
+                        );
+                        // Apply damage to NPCs
+                        for result in &results {
+                            for (_, npc) in state.world.npcs.iter_mut() {
+                                if npc.name == result.name {
+                                    let _dealt = combat::apply_damage_to_npc(
+                                        npc, result.damage_taken,
+                                        state::DamageType::Lightning, &mut lines,
+                                    );
+                                    if let Some(stats) = npc.combat_stats.as_ref() {
+                                        if stats.current_hp <= 0 {
+                                            lines.push(format!("{} is slain!", result.name));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    combat.action_used = true;
+                }
+                "Spirit Guardians" => {
+                    // AoE WIS save, 3d8 radiant. Concentration already handled above.
+                    let targets: Vec<spells::SpellTarget> = build_spell_targets(&combat, state);
+                    if targets.is_empty() {
+                        state.character.spell_slots_remaining[2] += 1; // refund
+                        lines.push(narration::templates::CAST_SPIRIT_GUARDIANS_NO_TARGETS.to_string());
+                        state.active_combat = Some(combat);
+                        return lines;
+                    }
+                    let outcome = spells::resolve_spirit_guardians(
+                        &mut rng, caster_score, prof_bonus, &targets,
+                    );
+                    if let spells::CastOutcome::SpiritGuardians { total_rolled, half_damage: _, dc, results } = outcome {
+                        lines.push(
+                            narration::templates::CAST_SPIRIT_GUARDIANS_INTRO
+                                .replace("{damage}", &total_rolled.to_string())
+                                .replace("{dc}", &dc.to_string()),
+                        );
+                        for result in &results {
+                            let save_str = format!(
+                                "{} vs DC {}",
+                                format_roll(result.save_result.roll, result.save_result.modifier, result.save_result.total),
+                                result.save_result.dc
+                            );
+                            if result.save_result.saved {
+                                lines.push(
+                                    narration::templates::CAST_SPIRIT_GUARDIANS_SAVE
+                                        .replace("{target}", &result.name)
+                                        .replace("{save_result}", &save_str)
+                                        .replace("{damage}", &result.damage_taken.to_string()),
+                                );
+                            } else {
+                                lines.push(
+                                    narration::templates::CAST_SPIRIT_GUARDIANS_FAIL
+                                        .replace("{target}", &result.name)
+                                        .replace("{save_result}", &save_str)
+                                        .replace("{damage}", &result.damage_taken.to_string()),
+                                );
+                            }
+                        }
+                        let slot_idx = 2;
+                        let remaining = state.character.spell_slots_remaining.get(slot_idx).copied().unwrap_or(0);
+                        let max = state.character.spell_slots_max.get(slot_idx).copied().unwrap_or(0);
+                        lines.push(
+                            narration::templates::CAST_SLOT_USED
+                                .replace("{remaining}", &remaining.to_string())
+                                .replace("{max}", &max.to_string())
+                                .replace("{level}", "3"),
+                        );
+                        // Apply damage to NPCs
+                        for result in &results {
+                            for (_, npc) in state.world.npcs.iter_mut() {
+                                if npc.name == result.name {
+                                    let _dealt = combat::apply_damage_to_npc(
+                                        npc, result.damage_taken,
+                                        state::DamageType::Radiant, &mut lines,
+                                    );
+                                    if let Some(stats) = npc.combat_stats.as_ref() {
+                                        if stats.current_hp <= 0 {
+                                            lines.push(format!("{} is slain!", result.name));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    combat.action_used = true;
+                }
+                "Fear" => {
+                    // AoE WIS save, Frightened on fail. Concentration handled above.
+                    let targets: Vec<spells::SpellTarget> = build_spell_targets(&combat, state);
+                    if targets.is_empty() {
+                        state.character.spell_slots_remaining[2] += 1; // refund
+                        lines.push(narration::templates::CAST_FEAR_NO_TARGETS.to_string());
+                        state.active_combat = Some(combat);
+                        return lines;
+                    }
+                    let outcome = spells::resolve_fear(
+                        &mut rng, caster_score, prof_bonus, &targets,
+                    );
+                    if let spells::CastOutcome::FearResult { dc: _, results } = outcome {
+                        lines.push(
+                            narration::templates::CAST_FEAR_INTRO
+                                .replace("{dc}", &spells::spell_save_dc(caster_score, prof_bonus).to_string()),
+                        );
+                        for result in &results {
+                            let save_str = format!(
+                                "{} vs DC {}",
+                                format_roll(result.save_result.roll, result.save_result.modifier, result.save_result.total),
+                                result.save_result.dc
+                            );
+                            if result.frightened {
+                                lines.push(
+                                    narration::templates::CAST_FEAR_FAIL
+                                        .replace("{target}", &result.name)
+                                        .replace("{save_result}", &save_str),
+                                );
+                                // Apply Frightened condition to the NPC
+                                if let Some(npc) = state.world.npcs.get_mut(&result.id) {
+                                    use crate::conditions::{ActiveCondition, ConditionType, ConditionDuration};
+                                    let cond = ActiveCondition::new(
+                                        ConditionType::Frightened,
+                                        ConditionDuration::Rounds(10), // concentration, up to 1 minute
+                                    ).with_source(state.character.name.clone());
+                                    npc.conditions.push(cond);
+                                }
+                            } else {
+                                lines.push(
+                                    narration::templates::CAST_FEAR_SAVE
+                                        .replace("{target}", &result.name)
+                                        .replace("{save_result}", &save_str),
+                                );
+                            }
+                        }
+                        let slot_idx = 2;
+                        let remaining = state.character.spell_slots_remaining.get(slot_idx).copied().unwrap_or(0);
+                        let max = state.character.spell_slots_max.get(slot_idx).copied().unwrap_or(0);
+                        lines.push(
+                            narration::templates::CAST_SLOT_USED
+                                .replace("{remaining}", &remaining.to_string())
+                                .replace("{max}", &max.to_string())
+                                .replace("{level}", "3"),
+                        );
+                    }
+                    combat.action_used = true;
+                }
+                "Mass Healing Word" => {
+                    // Self-heal 1d4 + mod. SRD bonus action spell; uses bonus_action_used.
+                    if combat.bonus_action_used {
+                        state.character.spell_slots_remaining[2] += 1; // refund
+                        state.active_combat = Some(combat);
+                        return vec!["You have already used your bonus action this turn.".to_string()];
+                    }
+                    let outcome = spells::resolve_mass_healing_word(&mut rng, caster_score);
+                    if let spells::CastOutcome::MassHealingWordResult { healing, rolled, modifier } = outcome {
+                        let new_hp = (state.character.current_hp + healing).min(state.character.max_hp);
+                        let applied = new_hp - state.character.current_hp;
+                        state.character.current_hp = new_hp;
+                        if applied == 0 && state.character.current_hp == state.character.max_hp {
+                            lines.push(
+                                narration::templates::CAST_HEAL_FULL_HP
+                                    .replace("{spell}", "Mass Healing Word")
+                                    .replace("{current}", &state.character.current_hp.to_string())
+                                    .replace("{max}", &state.character.max_hp.to_string()),
+                            );
+                        } else {
+                            lines.push(
+                                narration::templates::CAST_MASS_HEALING_WORD
+                                    .replace("{roll}", &rolled.to_string())
+                                    .replace("{mod}", &modifier.to_string())
+                                    .replace("{healing}", &healing.to_string())
+                                    .replace("{current}", &state.character.current_hp.to_string())
+                                    .replace("{max}", &state.character.max_hp.to_string()),
+                            );
+                        }
+                        let slot_idx = 2;
+                        let remaining = state.character.spell_slots_remaining.get(slot_idx).copied().unwrap_or(0);
+                        let max = state.character.spell_slots_max.get(slot_idx).copied().unwrap_or(0);
+                        lines.push(
+                            narration::templates::CAST_SLOT_USED
+                                .replace("{remaining}", &remaining.to_string())
+                                .replace("{max}", &max.to_string())
+                                .replace("{level}", "3"),
+                        );
+                    }
+                    combat.bonus_action_used = true;
+                }
+                "Revivify" => {
+                    // Raises a dying player (0 HP) to 1 HP. Consumes a level-3 slot.
+                    if state.character.current_hp > 0 {
+                        state.character.spell_slots_remaining[2] += 1; // refund
+                        lines.push(narration::templates::CAST_REVIVIFY_NOT_DYING.to_string());
+                    } else {
+                        // Player is dying (0 HP); set to 1 HP and clear death saves
+                        state.character.current_hp = 1;
+                        combat.death_save_successes = 0;
+                        combat.death_save_failures = 0;
+                        lines.push(narration::templates::CAST_REVIVIFY_SUCCESS.to_string());
+                        let slot_idx = 2;
+                        let remaining = state.character.spell_slots_remaining.get(slot_idx).copied().unwrap_or(0);
+                        let max = state.character.spell_slots_max.get(slot_idx).copied().unwrap_or(0);
+                        lines.push(
+                            narration::templates::CAST_SLOT_USED
+                                .replace("{remaining}", &remaining.to_string())
+                                .replace("{max}", &max.to_string())
+                                .replace("{level}", "3"),
+                        );
+                    }
+                    combat.action_used = true;
+                }
+                "Fly" => {
+                    // Narration-only self-buff. Concentration handled above.
+                    lines.push(narration::templates::CAST_FLY.to_string());
+                    let slot_idx = 2;
+                    let remaining = state.character.spell_slots_remaining.get(slot_idx).copied().unwrap_or(0);
+                    let max = state.character.spell_slots_max.get(slot_idx).copied().unwrap_or(0);
+                    lines.push(
+                        narration::templates::CAST_SLOT_USED
+                            .replace("{remaining}", &remaining.to_string())
+                            .replace("{max}", &max.to_string())
+                            .replace("{level}", "3"),
+                    );
+                    combat.action_used = true;
+                }
+                "Dispel Magic" => {
+                    // Clears player's concentration spell (if any).
+                    if let Some(ref conc_spell) = state.character.class_features.concentration_spell {
+                        let spell_name = conc_spell.clone();
+                        state.character.class_features.concentration_spell = None;
+                        lines.push(
+                            narration::templates::CAST_DISPEL_MAGIC_SUCCESS
+                                .replace("{spell}", &spell_name),
+                        );
+                    } else {
+                        lines.push(narration::templates::CAST_DISPEL_MAGIC_NOTHING.to_string());
+                    }
+                    let slot_idx = 2;
+                    let remaining = state.character.spell_slots_remaining.get(slot_idx).copied().unwrap_or(0);
+                    let max = state.character.spell_slots_max.get(slot_idx).copied().unwrap_or(0);
+                    lines.push(
+                        narration::templates::CAST_SLOT_USED
+                            .replace("{remaining}", &remaining.to_string())
+                            .replace("{max}", &max.to_string())
+                            .replace("{level}", "3"),
+                    );
+                    combat.action_used = true;
+                }
                 // ---- Flavor cantrips (Mage Hand, Light, Guidance, Minor Illusion) ----
                 "Mage Hand" => {
                     lines.push(narration::templates::CAST_MAGE_HAND.to_string());
