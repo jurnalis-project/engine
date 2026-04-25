@@ -7022,11 +7022,48 @@ fn render_map(state: &GameState) -> Vec<String> {
             let marker = if id == state.current_location {
                 "*"
             } else {
-                " "
+                "-"
             };
-            let mut exits: Vec<String> = loc.exits.keys().map(|d| d.to_string()).collect();
-            exits.sort();
-            lines.push(format!("{} {} -> {}", marker, loc.name, exits.join(", ")));
+
+            let loc_type = match loc.location_type {
+                state::LocationType::Room => "Room",
+                state::LocationType::Corridor => "Corridor",
+                state::LocationType::Cave => "Cave",
+                state::LocationType::Clearing => "Clearing",
+                state::LocationType::Ruins => "Ruins",
+            };
+
+            let light = match loc.light_level {
+                state::LightLevel::Bright => "Bright",
+                state::LightLevel::Dim => "Dim",
+                state::LightLevel::Dark => "Dark",
+            };
+
+            lines.push(format!("{} {} [{}] ({})", marker, loc.name, loc_type, light));
+
+            // Collect and sort exits by direction name
+            let mut exit_entries: Vec<_> = loc
+                .exits
+                .iter()
+                .map(|(dir, &dest_id)| {
+                    let dest_name = if state.discovered_locations.contains(&dest_id) {
+                        state
+                            .world
+                            .locations
+                            .get(&dest_id)
+                            .map(|d| d.name.as_str())
+                            .unwrap_or("Undiscovered")
+                    } else {
+                        "Undiscovered"
+                    };
+                    (dir.to_string(), dest_name.to_string())
+                })
+                .collect();
+            exit_entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+            for (dir, dest) in exit_entries {
+                lines.push(format!("  {} -> {}", dir, dest));
+            }
         }
     }
     lines
@@ -14344,6 +14381,261 @@ mod tests {
                 line
             );
         }
+    }
+
+    #[test]
+    fn test_map_command_shows_location_type_and_light_level() {
+        let mut state = create_test_exploration_state();
+
+        // Manually set the current location's type and light level for deterministic assertion
+        if let Some(loc) = state.world.locations.get_mut(&state.current_location) {
+            loc.location_type = state::LocationType::Cave;
+            loc.light_level = state::LightLevel::Dim;
+        }
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "map");
+
+        // The current location line should contain LocationType and LightLevel
+        let current_loc_line = output
+            .text
+            .iter()
+            .find(|t| t.starts_with("*"))
+            .expect("Should have a current location marker line");
+        assert!(
+            current_loc_line.contains("[Cave]"),
+            "Current location line should contain [Cave], got: {:?}",
+            current_loc_line
+        );
+        assert!(
+            current_loc_line.contains("(Dim)"),
+            "Current location line should contain (Dim), got: {:?}",
+            current_loc_line
+        );
+    }
+
+    #[test]
+    fn test_map_command_shows_exit_destinations() {
+        let mut state = create_test_exploration_state();
+
+        // Set up two connected locations: current (id=0) and neighbor (id=999)
+        let neighbor_id = 999;
+        let current_id = state.current_location;
+
+        // Add exit from current location to neighbor
+        if let Some(loc) = state.world.locations.get_mut(&current_id) {
+            loc.exits.insert(types::Direction::East, neighbor_id);
+        }
+
+        // Create the neighbor location
+        state.world.locations.insert(
+            neighbor_id,
+            state::Location {
+                id: neighbor_id,
+                name: "Hidden Cavern".to_string(),
+                description: "A dark cavern.".to_string(),
+                location_type: state::LocationType::Cave,
+                exits: {
+                    let mut m = HashMap::new();
+                    m.insert(types::Direction::West, current_id);
+                    m
+                },
+                npcs: vec![],
+                items: vec![],
+                triggers: vec![],
+                light_level: state::LightLevel::Dark,
+                room_features: vec![],
+            },
+        );
+
+        // Neighbor is NOT discovered, so it should show as "Undiscovered"
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "map");
+
+        let has_undiscovered_exit = output
+            .text
+            .iter()
+            .any(|t| t.contains("east") && t.contains("Undiscovered"));
+        assert!(
+            has_undiscovered_exit,
+            "Should show 'Undiscovered' for unvisited exit destination, got: {:?}",
+            output.text
+        );
+    }
+
+    #[test]
+    fn test_map_command_shows_discovered_exit_destination_name() {
+        let mut state = create_test_exploration_state();
+
+        let neighbor_id = 999;
+        let current_id = state.current_location;
+
+        // Add exit from current location to neighbor
+        if let Some(loc) = state.world.locations.get_mut(&current_id) {
+            loc.exits.insert(types::Direction::North, neighbor_id);
+        }
+
+        // Create the neighbor location
+        state.world.locations.insert(
+            neighbor_id,
+            state::Location {
+                id: neighbor_id,
+                name: "Crystal Chamber".to_string(),
+                description: "A sparkling chamber.".to_string(),
+                location_type: state::LocationType::Room,
+                exits: {
+                    let mut m = HashMap::new();
+                    m.insert(types::Direction::South, current_id);
+                    m
+                },
+                npcs: vec![],
+                items: vec![],
+                triggers: vec![],
+                light_level: state::LightLevel::Bright,
+                room_features: vec![],
+            },
+        );
+
+        // Mark the neighbor as discovered
+        state.discovered_locations.insert(neighbor_id);
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "map");
+
+        // The exit from current location should show the neighbor's name
+        let has_named_exit = output
+            .text
+            .iter()
+            .any(|t| t.contains("north") && t.contains("Crystal Chamber"));
+        assert!(
+            has_named_exit,
+            "Should show destination name for discovered exit, got: {:?}",
+            output.text
+        );
+
+        // The neighbor should also appear as a discovered (non-current) location
+        let has_neighbor_line = output
+            .text
+            .iter()
+            .any(|t| t.starts_with("-") && t.contains("Crystal Chamber"));
+        assert!(
+            has_neighbor_line,
+            "Discovered non-current location should have '-' marker, got: {:?}",
+            output.text
+        );
+    }
+
+    #[test]
+    fn test_map_command_multi_room_with_mixed_exits() {
+        let mut state = create_test_exploration_state();
+
+        let current_id = state.current_location;
+        let discovered_id = 998;
+        let undiscovered_id = 999;
+
+        // Modify current location exits
+        if let Some(loc) = state.world.locations.get_mut(&current_id) {
+            loc.exits.insert(types::Direction::North, discovered_id);
+            loc.exits.insert(types::Direction::East, undiscovered_id);
+            loc.location_type = state::LocationType::Ruins;
+            loc.light_level = state::LightLevel::Bright;
+        }
+
+        // Create discovered neighbor
+        state.world.locations.insert(
+            discovered_id,
+            state::Location {
+                id: discovered_id,
+                name: "Guard Post".to_string(),
+                description: "A guarded post.".to_string(),
+                location_type: state::LocationType::Room,
+                exits: {
+                    let mut m = HashMap::new();
+                    m.insert(types::Direction::South, current_id);
+                    m
+                },
+                npcs: vec![],
+                items: vec![],
+                triggers: vec![],
+                light_level: state::LightLevel::Dim,
+                room_features: vec![],
+            },
+        );
+        state.discovered_locations.insert(discovered_id);
+
+        // Create undiscovered neighbor (exists but NOT in discovered_locations)
+        state.world.locations.insert(
+            undiscovered_id,
+            state::Location {
+                id: undiscovered_id,
+                name: "Secret Vault".to_string(),
+                description: "A hidden vault.".to_string(),
+                location_type: state::LocationType::Cave,
+                exits: {
+                    let mut m = HashMap::new();
+                    m.insert(types::Direction::West, current_id);
+                    m
+                },
+                npcs: vec![],
+                items: vec![],
+                triggers: vec![],
+                light_level: state::LightLevel::Dark,
+                room_features: vec![],
+            },
+        );
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "map");
+
+        // Current location shows with * marker, type, and light
+        let current_line = output
+            .text
+            .iter()
+            .find(|t| t.starts_with("*"))
+            .expect("Should have current location marker");
+        assert!(
+            current_line.contains("[Ruins]") && current_line.contains("(Bright)"),
+            "Current location should show [Ruins] (Bright), got: {:?}",
+            current_line
+        );
+
+        // Guard Post shows with - marker, type, and light
+        let guard_line = output
+            .text
+            .iter()
+            .find(|t| t.starts_with("-") && t.contains("Guard Post"));
+        assert!(
+            guard_line.is_some(),
+            "Discovered non-current location should show with '-' marker, got: {:?}",
+            output.text
+        );
+        let guard_line = guard_line.unwrap();
+        assert!(
+            guard_line.contains("[Room]") && guard_line.contains("(Dim)"),
+            "Guard Post should show [Room] (Dim), got: {:?}",
+            guard_line
+        );
+
+        // Exit lines under current location
+        let exit_north = output
+            .text
+            .iter()
+            .any(|t| t.contains("north") && t.contains("Guard Post"));
+        assert!(
+            exit_north,
+            "North exit should show 'Guard Post' (discovered), got: {:?}",
+            output.text
+        );
+
+        let exit_east = output
+            .text
+            .iter()
+            .any(|t| t.contains("east") && t.contains("Undiscovered"));
+        assert!(
+            exit_east,
+            "East exit should show 'Undiscovered', got: {:?}",
+            output.text
+        );
     }
 
     #[test]
