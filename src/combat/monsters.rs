@@ -610,6 +610,7 @@ pub fn monster_to_combat_stats(def: &MonsterDef) -> CombatStats {
         special_traits: def.special_traits.iter()
             .map(|(n, d)| (n.to_string(), d.to_string()))
             .collect(),
+        spells: Vec::new(),
     }
 }
 

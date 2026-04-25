@@ -185,6 +185,14 @@ pub struct Npc {
     pub conditions: Vec<ActiveCondition>,
 }
 
+/// A spell known by an NPC combatant. MVP: name + level only; the engine
+/// narrates the cast as Flavor and uses the level for Counterspell checks.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NpcSpell {
+    pub name: String,
+    pub level: u32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CombatStats {
     pub max_hp: i32,
@@ -224,6 +232,10 @@ pub struct CombatStats {
     /// Free-form special traits as `(name, description)` pairs.
     #[serde(default)]
     pub special_traits: Vec<(String, String)>,
+    /// Spells known by this NPC. Used for NPC spellcasting AI and
+    /// Counterspell reaction eligibility. Defaults to empty for older saves.
+    #[serde(default)]
+    pub spells: Vec<NpcSpell>,
 }
 
 impl Default for CombatStats {
@@ -247,6 +259,7 @@ impl Default for CombatStats {
             languages: Vec::new(),
             multiattack: default_multiattack(),
             special_traits: Vec::new(),
+            spells: Vec::new(),
         }
     }
 }
@@ -1072,5 +1085,50 @@ mod tests {
             let loaded: RoomFeatureKind = serde_json::from_str(&json).unwrap();
             assert_eq!(loaded, kind);
         }
+    }
+
+    #[test]
+    fn test_npc_spell_struct_roundtrips() {
+        let spell = NpcSpell {
+            name: "Fireball".to_string(),
+            level: 3,
+        };
+        let json = serde_json::to_string(&spell).unwrap();
+        let loaded: NpcSpell = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded.name, "Fireball");
+        assert_eq!(loaded.level, 3);
+    }
+
+    #[test]
+    fn test_combat_stats_spells_defaults_empty() {
+        // Older saves without the `spells` field should deserialize to empty Vec.
+        let json = r#"{
+            "max_hp": 40,
+            "current_hp": 40,
+            "ac": 15,
+            "speed": 30,
+            "ability_scores": {},
+            "attacks": [],
+            "proficiency_bonus": 2
+        }"#;
+        let stats: CombatStats = serde_json::from_str(json).unwrap();
+        assert!(stats.spells.is_empty());
+    }
+
+    #[test]
+    fn test_combat_stats_with_spells_roundtrips() {
+        let mut stats = CombatStats::default();
+        stats.max_hp = 40;
+        stats.current_hp = 40;
+        stats.spells = vec![
+            NpcSpell { name: "Fireball".to_string(), level: 3 },
+            NpcSpell { name: "Hold Person".to_string(), level: 2 },
+        ];
+        let json = serde_json::to_string(&stats).unwrap();
+        let loaded: CombatStats = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded.spells.len(), 2);
+        assert_eq!(loaded.spells[0].name, "Fireball");
+        assert_eq!(loaded.spells[0].level, 3);
+        assert_eq!(loaded.spells[1].name, "Hold Person");
     }
 }
