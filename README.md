@@ -5,7 +5,7 @@
   [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 </div>
 
-A stateless, deterministic text-based CRPG engine implementing SRD 5.1 (d20) mechanics. The engine is a standalone Rust library crate — it carries no server, no persistent state, and no runtime dependencies beyond `serde` and `rand`. Embed it in any application or run it directly via the included `jurnalis-cli` binary.
+A stateless, deterministic text-based CRPG engine implementing SRD 2024 (d20) mechanics. The engine is a standalone Rust library crate — it carries no server, no persistent state, and no runtime dependencies beyond `serde` and `rand`. Embed it in any application or run it directly via the included `jurnalis-cli` binary.
 
 All game state is serialized to JSON and owned by the caller. On every call the caller passes the current state in; the engine returns the updated state alongside text output. This makes the engine trivially embeddable in web backends, desktop apps, and test harnesses alike.
 
@@ -13,7 +13,7 @@ All game state is serialized to JSON and owned by the caller. On every call the 
 
 ## Features
 
-- **Full SRD 5.1 mechanics** — d20 ability checks, saving throws, skill checks, initiative, combat turns with attack rolls and damage, spell slots, short and long rests, conditions, and AC calculations.
+- **Full SRD 2024 mechanics** — d20 ability checks, saving throws, skill checks, initiative, combat turns with attack rolls and damage, spell slots, short and long rests, conditions, and AC calculations.
 - **12 character classes** — Barbarian, Bard, Cleric, Druid, Fighter, Monk, Paladin, Ranger, Rogue, Sorcerer, Warlock, Wizard.
 - **3 playable races** — Human, Elf, Dwarf, each with accurate racial trait bonuses.
 - **Stateless design** — the engine holds zero mutable state. State is serialized to JSON after every call and passed back in on the next. Safe to use across threads, processes, or network boundaries.

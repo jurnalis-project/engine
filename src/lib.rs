@@ -2790,7 +2790,7 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
             };
             // Ritual cast path: the player asked to cast as a ritual, which
             // bypasses slot consumption but only works for spells with the
-            // Ritual tag. Per SRD 5.1 rituals take 10 minutes longer; since
+            // Ritual tag. Per SRD 2024 rituals take 10 minutes longer; since
             // we don't have a time system, we narrate flavor only.
             if ritual {
                 if !spell_def.ritual {
@@ -4217,7 +4217,7 @@ fn resolve_npc_spell(
 ///
 /// If the player is currently concentrating on a spell and takes damage,
 /// they make a Constitution saving throw against DC max(10, damage / 2)
-/// per SRD 5.1. On failure the concentration spell drops; on success it
+/// per SRD 2024. On failure the concentration spell drops; on success it
 /// holds. No-op if the player isn't concentrating or `damage_taken <= 0`.
 fn check_player_concentration_on_damage(
     rng: &mut StdRng,
@@ -5301,7 +5301,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
             lines.push("You leave your cover, exposing yourself to attacks.".to_string());
         }
         Command::BonusDash => {
-            // SRD 5.1: bonus-action Dash is Rogue Cunning Action only.
+            // SRD 2024: bonus-action Dash is Rogue Cunning Action only.
             // Other classes do not have this ability.
             if state.character.class != character::class::Class::Rogue {
                 state.active_combat = Some(combat);
@@ -5323,7 +5323,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
             ));
         }
         Command::BonusDisengage => {
-            // SRD 5.1: bonus-action Disengage is Rogue Cunning Action only.
+            // SRD 2024: bonus-action Disengage is Rogue Cunning Action only.
             if state.character.class != character::class::Class::Rogue {
                 state.active_combat = Some(combat);
                 return vec![
@@ -8646,7 +8646,7 @@ fn resolve_use_item(
                 Some(state::ItemType::Consumable { ref effect }) => {
                     let result = match effect.as_str() {
                         "heal_srd_potion" => {
-                            // SRD 5.1 Potion of Healing: 2d4 + 2 HP.
+                            // SRD 2024 Potion of Healing: 2d4 + 2 HP.
                             let rolls = rules::dice::roll_dice(rng, 2, 4);
                             let roll_total: i32 = rolls.iter().sum::<i32>() + 2;
                             let old_hp = state.character.current_hp;
@@ -8852,7 +8852,7 @@ fn use_magic_wand(
 /// Spellcaster classes (Bard/Cleric/Druid/Paladin/Ranger/Sorcerer/Warlock/
 /// Wizard) read the scroll normally and consume it on any attempt. Non-casters
 /// must pass a DC 10 Arcana check to cast successfully; on a failure the
-/// scroll is still consumed (SRD 5.1 spell scroll rules).
+/// scroll is still consumed (SRD 2024 spell scroll rules).
 ///
 /// Full spell resolution is deferred — MVP narrates the invocation only.
 fn use_magic_scroll(
@@ -8908,7 +8908,7 @@ fn use_magic_scroll(
     (lines, true)
 }
 
-/// Return true if the character has spellcasting at class level 1+ (SRD 5.1
+/// Return true if the character has spellcasting at class level 1+ (SRD 2024
 /// full and half-casters are listed; Fighter/Rogue/Monk/Barbarian are not).
 /// Multi-class and subclass-granted casting are out of scope for this MVP.
 fn character_is_spellcaster(c: &character::Character) -> bool {
@@ -9735,7 +9735,7 @@ fn magic_weapon_bonuses(state: &GameState, weapon_id: Option<crate::types::ItemI
 /// Apply a magic weapon's attack/damage bonuses to an AttackResult in place.
 /// Re-evaluates `hit` and `total_attack` with the attack bonus, and adds
 /// `damage_bonus` to damage on hit (crits already double dice; the flat
-/// bonus is NOT doubled, per SRD 5.1).
+/// bonus is NOT doubled, per SRD 2024).
 fn apply_magic_weapon_bonuses(
     result: &mut combat::AttackResult,
     attack_bonus: i32,
@@ -14718,7 +14718,7 @@ mod tests {
     fn test_attack_then_bonus_dash_allowed_on_same_turn() {
         // Attack consumes action; movement goes to zero; player can still
         // spend a bonus action (e.g. bonus dash) before ending the turn.
-        // Rogue is used because bonus-action Dash requires Cunning Action (SRD 5.1).
+        // Rogue is used because bonus-action Dash requires Cunning Action (SRD 2024).
         let mut state = create_test_rogue_combat_state();
         // Ensure goblin survives the attack so combat persists through bonus action.
         if let Some(npc) = state.world.npcs.get_mut(&100) {
@@ -14875,7 +14875,7 @@ mod tests {
     fn test_ranged_attack_at_distance_5_with_other_hostile_in_melee_has_disadvantage() {
         // Integration: verify hostile_within_5ft wiring at every relevant call site
         // by firing at a target at exactly 5 ft (the documented trigger boundary).
-        // SRD 5.1: ranged attacks within 5 ft of ANY living hostile have disadvantage.
+        // SRD 2024: ranged attacks within 5 ft of ANY living hostile have disadvantage.
         let mut state = create_test_combat_state();
         force_player_turn(&mut state);
 
@@ -16100,7 +16100,7 @@ mod tests {
         );
     }
 
-    /// Hypothesis: Shield is reaction-only per SRD 5.1. Typing `cast shield`
+    /// Hypothesis: Shield is reaction-only per SRD 2024. Typing `cast shield`
     /// on the player's turn should be rejected, not consume an action or slot.
     #[test]
     fn test_cast_shield_on_player_turn_is_rejected_as_reaction_only() {
@@ -17237,7 +17237,7 @@ mod tests {
 
     #[test]
     fn test_bonus_dash_rejected_for_non_rogue() {
-        // SRD 5.1: bonus-action Dash is only available to Rogues via Cunning Action.
+        // SRD 2024: bonus-action Dash is only available to Rogues via Cunning Action.
         // A Fighter should not be able to use it.
         let mut state = create_test_combat_state();
         force_player_turn(&mut state);
@@ -17533,7 +17533,7 @@ mod tests {
 
     #[test]
     fn test_srd_potion_of_healing_heals_2d4_plus_2() {
-        // SRD 5.1 Potion of Healing: 2d4 + 2 HP healing.
+        // SRD 2024 Potion of Healing: 2d4 + 2 HP healing.
         // Test across multiple seeds to verify the range (min 4, max 10).
         let mut min_heal = i32::MAX;
         let mut max_heal = i32::MIN;

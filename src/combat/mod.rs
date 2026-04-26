@@ -410,7 +410,7 @@ impl CombatState {
 
     /// Called at the end of the player's turn, before advancing initiative.
     ///
-    /// Per SRD 5.1, the reaction refreshes at the end of the previous turn so
+    /// Per SRD 2024, the reaction refreshes at the end of the previous turn so
     /// that reactions remain available during subsequent NPC turns.
     pub fn end_player_turn(&mut self) {
         self.reaction_used = false;
@@ -989,7 +989,7 @@ pub fn resolve_player_attack(
     };
 
     // Unarmed strikes (no weapon, damage_dice == 0) flow through the standard
-    // attack-roll pipeline per SRD 5.1 Rules Glossary ("Unarmed Strike"):
+    // attack-roll pipeline per SRD 2024 Rules Glossary ("Unarmed Strike"):
     //   attack roll bonus = STR mod + proficiency bonus
     //   on hit: Bludgeoning damage = 1 + STR mod
     // Advantage/disadvantage from conditions applies automatically on the
@@ -1719,7 +1719,7 @@ pub fn resolve_npc_turn(
     // ---- Standard AI: melee if in range -> ranged if in range -> approach ----
 
     // Try to attack at the current distance; if not in range, move then
-    // re-check. This mirrors SRD 5.1: movement and action are independent
+    // re-check. This mirrors SRD 2024: movement and action are independent
     // resources on the same turn.
     let attack_lines = resolve_npc_attack_action(
         rng,
@@ -3196,7 +3196,7 @@ pub fn apply_nick_mastery(has_mastery: bool, combat: &mut CombatState) -> bool {
 // ---- Rogue: Sneak Attack --------------------------------------------------
 
 /// Number of Sneak Attack dice (d6) a Rogue rolls at the given character
-/// level per SRD 5.1: `ceil(level / 2)`, equivalent to `floor((level + 1) / 2)`.
+/// level per SRD 2024: `ceil(level / 2)`, equivalent to `floor((level + 1) / 2)`.
 ///
 /// Examples: level 1 -> 1d6, level 2 -> 1d6, level 3 -> 2d6, level 11 -> 6d6,
 /// level 20 -> 10d6.
@@ -3204,7 +3204,7 @@ pub fn sneak_attack_dice_for_level(level: u32) -> u32 {
     (level + 1) / 2
 }
 
-/// True when a weapon's properties qualify for Sneak Attack per SRD 5.1:
+/// True when a weapon's properties qualify for Sneak Attack per SRD 2024:
 /// a Finesse melee weapon OR a ranged weapon. `is_ranged_attack` is the
 /// orchestrator's resolution of whether this specific attack is being used
 /// at range (thrown weapons only qualify when actually thrown from range).
@@ -4555,7 +4555,7 @@ mod tests {
     }
 
     // Hypothesis: resolve_npc_turn() moves the NPC toward the player but
-    // returns immediately without re-checking for an attack. Per SRD 5.1
+    // returns immediately without re-checking for an attack. Per SRD 2024
     // (line 507), movement and action are independent — a creature may move
     // then act on the same turn. After closing distance, the NPC should
     // attempt a melee (or ranged) attack if now in range.
@@ -6176,7 +6176,7 @@ mod tests {
 
     #[test]
     fn test_sneak_attack_dice_for_level_matches_srd() {
-        // SRD 5.1: ceil(level / 2) d6 -- floor((level+1)/2) d6.
+        // SRD 2024: ceil(level / 2) d6 -- floor((level+1)/2) d6.
         assert_eq!(sneak_attack_dice_for_level(1), 1);
         assert_eq!(sneak_attack_dice_for_level(2), 1);
         assert_eq!(sneak_attack_dice_for_level(3), 2);

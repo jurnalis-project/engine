@@ -184,7 +184,7 @@ impl std::fmt::Display for Mastery {
     }
 }
 
-/// SRD 5.1 cover levels. A creature behind cover gains a bonus to AC and
+/// SRD 2024 cover levels. A creature behind cover gains a bonus to AC and
 /// Dexterity saving throws based on how much of its body is obscured.
 /// See `docs/specs/cover-rules.md` and SRD "Cover" (Playing the Game).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -220,7 +220,7 @@ impl Cover {
     }
 }
 
-/// Tool proficiency categories per SRD 5.1. Defined in `types.rs` because
+/// Tool proficiency categories per SRD 2024. Defined in `types.rs` because
 /// `character`, `equipment`, and `rules` all reference it and feature modules
 /// cannot depend on each other directly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

@@ -52,7 +52,7 @@ pub struct GameState {
     #[serde(default)]
     pub in_world_minutes: u64,
     /// `in_world_minutes` at the start of the most recent completed long rest,
-    /// used to enforce the SRD 5.1 "one long rest per 24 hours" rule.
+    /// used to enforce the SRD 2024 "one long rest per 24 hours" rule.
     /// `None` if the character has never taken a long rest.
     #[serde(default)]
     pub last_long_rest_minutes: Option<u64>,

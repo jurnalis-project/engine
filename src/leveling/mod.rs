@@ -1,5 +1,5 @@
 // jurnalis-engine/src/leveling/mod.rs
-// Leveling and XP progression per SRD 5.1.
+// Leveling and XP progression per SRD 2024.
 //
 // Dependencies: types.rs, state/, character/. This module does NOT depend on
 // combat/, narration/, parser/, world/, or equipment/. Cross-module wiring

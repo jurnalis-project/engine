@@ -7,7 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// SRD 5.1 magic item rarity tiers. Ordered from most common to most rare.
+/// SRD 2024 magic item rarity tiers. Ordered from most common to most rare.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Rarity {
     Common,
@@ -19,7 +19,7 @@ pub enum Rarity {
 }
 
 /// Maximum number of items a character may be attuned to simultaneously.
-/// Per SRD 5.1.
+/// Per SRD 2024.
 pub const MAX_ATTUNED_ITEMS: usize = 3;
 
 /// Wondrous item effects. Kept coarse-grained for MVP; many variants are
@@ -97,7 +97,7 @@ pub struct MagicItemDef {
     pub kind: MagicItemKind,
 }
 
-/// SRD 5.1 core magic weapons. Only mechanically-modelled weapons are
+/// SRD 2024 core magic weapons. Only mechanically-modelled weapons are
 /// included; deferred variants (Flame Tongue, Vorpal Sword, Holy Avenger)
 /// are documented in docs/specs/magic-items.md.
 pub const SRD_MAGIC_WEAPONS: &[MagicItemDef] = &[
@@ -131,7 +131,7 @@ pub const SRD_MAGIC_WEAPONS: &[MagicItemDef] = &[
         kind: MagicItemKind::MagicWeapon { base_weapon: "Handaxe", attack_bonus: 3, damage_bonus: 3 } },
 ];
 
-/// SRD 5.1 core magic armor.
+/// SRD 2024 core magic armor.
 pub const SRD_MAGIC_ARMOR: &[MagicItemDef] = &[
     // +1 / +2 / +3 Chain Mail
     MagicItemDef { name: "+1 Chain Mail", rarity: Rarity::Rare, requires_attunement: false,
@@ -156,7 +156,7 @@ pub const SRD_MAGIC_ARMOR: &[MagicItemDef] = &[
         kind: MagicItemKind::MagicArmor { base_armor: "Leather", ac_bonus: 3 } },
 ];
 
-/// SRD 5.1 core wondrous items.
+/// SRD 2024 core wondrous items.
 pub const SRD_WONDROUS: &[MagicItemDef] = &[
     MagicItemDef { name: "Bag of Holding", rarity: Rarity::Uncommon, requires_attunement: false,
         kind: MagicItemKind::Wondrous { effect: WondrousEffect::BagOfHolding } },
@@ -172,7 +172,7 @@ pub const SRD_WONDROUS: &[MagicItemDef] = &[
         kind: MagicItemKind::Wondrous { effect: WondrousEffect::BeltOfGiantStrength(21) } },
 ];
 
-/// SRD 5.1 core potions.
+/// SRD 2024 core potions.
 pub const SRD_POTIONS: &[MagicItemDef] = &[
     MagicItemDef { name: "Potion of Healing", rarity: Rarity::Common, requires_attunement: false,
         kind: MagicItemKind::Potion { effect: PotionEffect::Healing { dice: 2, die: 4, bonus: 2 } } },
@@ -190,7 +190,7 @@ pub const SRD_POTIONS: &[MagicItemDef] = &[
         kind: MagicItemKind::Potion { effect: PotionEffect::Climbing } },
 ];
 
-/// SRD 5.1 core scrolls. `spell_name` is free-form; actual spell resolution
+/// SRD 2024 core scrolls. `spell_name` is free-form; actual spell resolution
 /// is deferred (MVP narrates only).
 pub const SRD_SCROLLS: &[MagicItemDef] = &[
     MagicItemDef { name: "Scroll of Magic Missile", rarity: Rarity::Common, requires_attunement: false,
@@ -201,7 +201,7 @@ pub const SRD_SCROLLS: &[MagicItemDef] = &[
         kind: MagicItemKind::Scroll { spell_name: "Cure Wounds", spell_level: 1 } },
 ];
 
-/// SRD 5.1 core wands. All carry 7 charges in this MVP.
+/// SRD 2024 core wands. All carry 7 charges in this MVP.
 pub const SRD_WANDS: &[MagicItemDef] = &[
     MagicItemDef { name: "Wand of Magic Missiles", rarity: Rarity::Uncommon, requires_attunement: false,
         kind: MagicItemKind::Wand { spell_name: "Magic Missile", charges_max: 7 } },
