@@ -4030,6 +4030,7 @@ fn resolve_single_npc_attack(
         "fires"
     };
     if result.hit {
+        let was_dying = state.character.current_hp <= 0;
         state.character.current_hp -= result.damage;
         if result.natural_20 {
             lines.push(format!(
@@ -4047,6 +4048,16 @@ fn resolve_single_npc_attack(
                 result.damage,
                 result.damage_type
             ));
+        }
+        // Damage-while-dying: if the player was already at 0 HP when
+        // this hit landed, add a death save failure (two on a crit).
+        if was_dying {
+            let ds_outcome = combat.apply_damage_while_dying(
+                &mut state.character,
+                result.damage,
+                result.natural_20,
+            );
+            lines.extend(combat::narrate_damage_while_dying_outcome(ds_outcome));
         }
         // Concentration check: if the player is concentrating on a spell,
         // they must make a CON save (DC = max(10, damage/2)) to maintain it.
@@ -4078,7 +4089,7 @@ fn resolve_single_npc_attack(
 fn resolve_npc_spell(
     rng: &mut StdRng,
     state: &mut GameState,
-    _combat: &mut combat::CombatState,
+    combat: &mut combat::CombatState,
     npc_id: types::NpcId,
     spell_name: &str,
     _spell_level: u32,
@@ -4108,6 +4119,7 @@ fn resolve_npc_spell(
             let outcome = spells::resolve_fire_bolt(rng, int_score, proficiency_bonus, player_ac);
             if let spells::CastOutcome::FireBolt { attack, damage } = outcome {
                 if attack.hit {
+                    let was_dying = state.character.current_hp <= 0;
                     if attack.natural_20 {
                         lines.push(
                             T::NPC_CAST_FIRE_BOLT_CRIT
@@ -4126,6 +4138,14 @@ fn resolve_npc_spell(
                         );
                     }
                     state.character.current_hp -= damage;
+                    if was_dying {
+                        let ds_outcome = combat.apply_damage_while_dying(
+                            &mut state.character,
+                            damage,
+                            attack.natural_20,
+                        );
+                        lines.extend(combat::narrate_damage_while_dying_outcome(ds_outcome));
+                    }
                     check_player_concentration_on_damage(rng, state, damage, &mut lines);
                 } else if attack.natural_1 {
                     lines.push(
@@ -4147,6 +4167,7 @@ fn resolve_npc_spell(
         "Magic Missile" => {
             let outcome = spells::resolve_magic_missile(rng);
             if let spells::CastOutcome::MagicMissile { darts, total_damage } = outcome {
+                let was_dying = state.character.current_hp <= 0;
                 let d1 = darts.first().copied().unwrap_or(0);
                 let d2 = darts.get(1).copied().unwrap_or(0);
                 let d3 = darts.get(2).copied().unwrap_or(0);
@@ -4159,6 +4180,17 @@ fn resolve_npc_spell(
                         .replace("{total}", &total_damage.to_string()),
                 );
                 state.character.current_hp -= total_damage;
+                // Magic Missile auto-hits (no attack roll, never crits).
+                // SRD: all three darts strike simultaneously — one damage
+                // event, one death save failure.
+                if was_dying {
+                    let ds_outcome = combat.apply_damage_while_dying(
+                        &mut state.character,
+                        total_damage,
+                        false,
+                    );
+                    lines.extend(combat::narrate_damage_while_dying_outcome(ds_outcome));
+                }
                 check_player_concentration_on_damage(rng, state, total_damage, &mut lines);
             }
         }
@@ -4166,9 +4198,13 @@ fn resolve_npc_spell(
             let outcome = spells::resolve_scorching_ray(rng, int_score, proficiency_bonus, player_ac);
             if let spells::CastOutcome::ScorchingRay { rays, total_damage } = outcome {
                 lines.push(T::NPC_CAST_SCORCHING_RAY_INTRO.replace("{caster}", &caster_name));
+                // Each ray is a separate attack; per SRD each hitting ray
+                // adds a death save failure independently when the player
+                // is at 0 HP.
                 for (i, ray) in rays.iter().enumerate() {
                     let n = i + 1;
                     if ray.attack.hit {
+                        let was_dying = state.character.current_hp <= 0;
                         if ray.attack.natural_20 {
                             lines.push(
                                 T::NPC_CAST_SCORCHING_RAY_CRIT
@@ -4186,6 +4222,15 @@ fn resolve_npc_spell(
                                     .replace("{damage}", &ray.damage.to_string()),
                             );
                         }
+                        state.character.current_hp -= ray.damage;
+                        if was_dying {
+                            let ds_outcome = combat.apply_damage_while_dying(
+                                &mut state.character,
+                                ray.damage,
+                                ray.attack.natural_20,
+                            );
+                            lines.extend(combat::narrate_damage_while_dying_outcome(ds_outcome));
+                        }
                     } else {
                         lines.push(
                             T::NPC_CAST_SCORCHING_RAY_MISS
@@ -4196,10 +4241,13 @@ fn resolve_npc_spell(
                                 .replace("{ac}", &player_ac.to_string()),
                         );
                     }
+                    // Stop if the player is dead (three failures).
+                    if combat.death_save_failures >= 3 {
+                        break;
+                    }
                 }
                 if total_damage > 0 {
                     lines.push(T::NPC_CAST_SCORCHING_RAY_TOTAL.replace("{total}", &total_damage.to_string()));
-                    state.character.current_hp -= total_damage;
                     check_player_concentration_on_damage(rng, state, total_damage, &mut lines);
                 }
             }
@@ -24474,6 +24522,253 @@ mod tests {
             !text.contains("Counterspell"),
             "Should not offer Counterspell at 0 HP. Got: {}",
             text
+        );
+    }
+
+    // Hypothesis: When an NPC spell (e.g. Magic Missile) hits a player already
+    // at 0 HP, `resolve_npc_spell` subtracts HP but never calls
+    // `CombatState::apply_damage_while_dying`, so no death save failure is
+    // recorded. The fix: capture `was_dying` before damage, then call
+    // `apply_damage_while_dying` and narrate the outcome when `was_dying` is
+    // true.
+    #[test]
+    fn test_npc_spell_damage_at_0_hp_adds_death_save_failure() {
+        // Build a Fighter (no Counterspell) at 0 HP in combat against an NPC
+        // mage that knows Magic Missile (auto-hit, guaranteed damage).
+        let mut state = create_test_exploration_state();
+        state.character.current_hp = 0;
+        state.character.max_hp = 30;
+
+        let npc_id: types::NpcId = 100;
+        let loc_id = state.current_location;
+        state.world.npcs.insert(
+            npc_id,
+            state::Npc {
+                id: npc_id,
+                name: "Evil Mage".to_string(),
+                role: state::NpcRole::Guard,
+                disposition: state::Disposition::Hostile,
+                dialogue_tags: vec![],
+                location: loc_id,
+                combat_stats: Some(state::CombatStats {
+                    max_hp: 40,
+                    current_hp: 40,
+                    ac: 12,
+                    speed: 30,
+                    ability_scores: {
+                        let mut m = HashMap::new();
+                        m.insert(Ability::Intelligence, 16);
+                        m
+                    },
+                    attacks: vec![state::NpcAttack {
+                        name: "Staff".to_string(),
+                        hit_bonus: 2,
+                        damage_dice: 1,
+                        damage_die: 6,
+                        damage_bonus: 0,
+                        damage_type: state::DamageType::Bludgeoning,
+                        reach: 5,
+                        range_normal: 0,
+                        range_long: 0,
+                    }],
+                    proficiency_bonus: 2,
+                    cr: 1.0,
+                    spells: vec![
+                        state::NpcSpell { name: "Magic Missile".to_string(), level: 1 },
+                    ],
+                    spell_slots: {
+                        let mut m = HashMap::new();
+                        m.insert(1, 4);
+                        m
+                    },
+                    ..Default::default()
+                }),
+                conditions: Vec::new(),
+            },
+        );
+        if let Some(loc) = state.world.locations.get_mut(&loc_id) {
+            loc.npcs.push(npc_id);
+        }
+
+        // Give player a weapon
+        let weapon_id = 200;
+        state.world.items.insert(
+            weapon_id,
+            state::Item {
+                id: weapon_id,
+                name: "Longsword".to_string(),
+                description: "A sturdy blade.".to_string(),
+                item_type: state::ItemType::Weapon {
+                    damage_dice: 1, damage_die: 8,
+                    damage_type: state::DamageType::Slashing,
+                    properties: crate::equipment::VERSATILE,
+                    category: state::WeaponCategory::Martial,
+                    versatile_die: 10, range_normal: 0, range_long: 0,
+                },
+                location: None,
+                carried_by_player: true,
+                charges_remaining: None,
+            },
+        );
+        state.character.inventory.push(weapon_id);
+        state.character.equipped.main_hand = Some(weapon_id);
+
+        // Build combat: player first in initiative, NPC at distance 30
+        // (outside melee, so NPC will cast a spell instead of melee attack).
+        state.active_combat = Some(combat::CombatState {
+            initiative_order: vec![
+                (combat::Combatant::Player, 20),
+                (combat::Combatant::Npc(npc_id), 10),
+            ],
+            round: 1,
+            distances: {
+                let mut d = HashMap::new();
+                d.insert(npc_id, 30);
+                d
+            },
+            player_movement_remaining: 30,
+            ..Default::default()
+        });
+
+        // Player is dying; pass turn with "wait" so the NPC takes its turn
+        // and casts Magic Missile.
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "wait");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        let text = output.text.join("\n");
+
+        // Magic Missile is auto-hit. The narration template says "conjures
+        // three darts of force" rather than the literal spell name.
+        assert!(
+            text.contains("darts of force") || text.contains("Magic Missile"),
+            "NPC should cast Magic Missile. Got: {}",
+            text,
+        );
+
+        // The player was at 0 HP when the spell hit, so at least one death
+        // save failure must have been recorded.
+        let combat = new_state.active_combat.as_ref()
+            .expect("combat should still be active");
+        assert!(
+            combat.death_save_failures >= 1,
+            "Spell damage at 0 HP should add at least 1 death save failure, got {}. Output: {}",
+            combat.death_save_failures,
+            text,
+        );
+        // Narration should mention the death save failure.
+        assert!(
+            text.to_lowercase().contains("death save failure") || text.to_lowercase().contains("dying target"),
+            "Expected death save failure narration. Got: {}",
+            text,
+        );
+    }
+
+    // Same scenario but with Fire Bolt (attack roll, can crit). We call
+    // resolve_npc_spell directly so the test is seed-independent: using
+    // INT 30 (+10) + PB 6 = +16 to hit guarantees a hit on any roll >= 2
+    // (auto-hit on nat-20, miss only on nat-1).  We iterate a small pool of
+    // seeds until we get a non-nat-1 result, which typically succeeds on the
+    // first or second attempt.
+    #[test]
+    fn test_npc_fire_bolt_at_0_hp_adds_death_save_failure() {
+        let npc_id: types::NpcId = 100;
+
+        // Build a Fighter at 0 HP.
+        let mut state = create_test_exploration_state();
+        state.character.current_hp = 0;
+        state.character.max_hp = 30;
+
+        let loc_id = state.current_location;
+
+        // NPC mage with INT 30 so the spell attack roll hits on any d20 >= 2.
+        // No physical attacks (reach 0) so resolve_npc_spell is the only path.
+        state.world.npcs.insert(
+            npc_id,
+            state::Npc {
+                id: npc_id,
+                name: "Evil Mage".to_string(),
+                role: state::NpcRole::Guard,
+                disposition: state::Disposition::Hostile,
+                dialogue_tags: vec![],
+                location: loc_id,
+                combat_stats: Some(state::CombatStats {
+                    max_hp: 40,
+                    current_hp: 40,
+                    ac: 12,
+                    speed: 30,
+                    ability_scores: {
+                        let mut m = HashMap::new();
+                        m.insert(Ability::Intelligence, 30); // +10 → always hits unless nat-1
+                        m
+                    },
+                    attacks: vec![],
+                    proficiency_bonus: 6,
+                    cr: 1.0,
+                    spells: vec![
+                        state::NpcSpell { name: "Fire Bolt".to_string(), level: 0 },
+                    ],
+                    spell_slots: HashMap::new(), // cantrip, no slots needed
+                    ..Default::default()
+                }),
+                conditions: Vec::new(),
+            },
+        );
+        if let Some(loc) = state.world.locations.get_mut(&loc_id) {
+            loc.npcs.push(npc_id);
+        }
+
+        // Build a minimal CombatState (current_turn not used here).
+        let mut combat = combat::CombatState {
+            initiative_order: vec![
+                (combat::Combatant::Player, 20),
+                (combat::Combatant::Npc(npc_id), 10),
+            ],
+            round: 1,
+            distances: {
+                let mut d = HashMap::new();
+                d.insert(npc_id, 30);
+                d
+            },
+            player_movement_remaining: 30,
+            ..Default::default()
+        };
+
+        // Try seeds 0..20; with INT 30 a hit occurs on any d20 != 1 (95%).
+        // We expect success within the first few attempts.
+        let mut hit_found = false;
+        for seed in 0u64..20 {
+            let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+            let mut test_state = state.clone();
+            let mut test_combat = combat.clone();
+
+            let lines = resolve_npc_spell(
+                &mut rng,
+                &mut test_state,
+                &mut test_combat,
+                npc_id,
+                "Fire Bolt",
+                0,
+            );
+            let text = lines.join("\n");
+
+            // A hit produces "fire damage" narration; a nat-1 or miss does not.
+            // The template is "hurls a bolt of fire … {damage} fire damage!"
+            if text.contains("fire damage") || text.contains("CRITICAL HIT") {
+                assert!(
+                    test_combat.death_save_failures >= 1,
+                    "Fire Bolt hit at 0 HP must add a death save failure \
+                     (got {}). seed={}, output: {}",
+                    test_combat.death_save_failures,
+                    seed,
+                    text,
+                );
+                hit_found = true;
+                break;
+            }
+        }
+        assert!(
+            hit_found,
+            "No Fire Bolt hit found in first 20 seeds — check INT/PB values"
         );
     }
 }
