@@ -13108,40 +13108,52 @@ mod tests {
 
     #[test]
     fn test_look_at_npc_returns_rich_description() {
-        let state = create_test_exploration_state();
-        let loc = state.world.locations.get(&state.current_location).unwrap();
-        if let Some(&npc_id) = loc.npcs.first() {
-            let npc = state.world.npcs.get(&npc_id).unwrap();
-            let npc_name = npc.name.clone();
-            let state_json = serde_json::to_string(&state).unwrap();
-            // Use first word of NPC name (e.g. "Orin" from "Orin the Quiet")
-            let first_word: String = npc_name.split_whitespace().next().unwrap().to_lowercase();
-            let output = process_input(&state_json, &format!("look {}", first_word));
-            let all_text = output.text.join("\n");
-            // First line should be the NPC's full name
-            assert_eq!(
-                output.text[0], npc_name,
-                "First line should be NPC name. Got: {:?}",
-                output.text
-            );
-            // Should include role info
-            assert!(
-                all_text.to_lowercase().contains("merchant")
-                    || all_text.to_lowercase().contains("guard")
-                    || all_text.to_lowercase().contains("hermit")
-                    || all_text.to_lowercase().contains("adventurer"),
-                "Expected role description in output. Got: {:?}",
-                output.text
-            );
-            // Should include disposition info
-            assert!(
-                all_text.to_lowercase().contains("friendly")
-                    || all_text.to_lowercase().contains("neutral")
-                    || all_text.to_lowercase().contains("hostil"),
-                "Expected disposition description in output. Got: {:?}",
-                output.text
-            );
-        }
+        let mut state = create_test_exploration_state();
+        let loc_id = state.current_location;
+        // Place a known NPC in the current room so the test is never vacuous.
+        let test_npc_id: u32 = 900;
+        state.world.npcs.insert(
+            test_npc_id,
+            state::Npc {
+                id: test_npc_id,
+                name: "Petra the Keeper".to_string(),
+                role: state::NpcRole::Guard,
+                disposition: state::Disposition::Hostile,
+                dialogue_tags: vec![],
+                location: loc_id,
+                combat_stats: None,
+                conditions: vec![],
+            },
+        );
+        state
+            .world
+            .locations
+            .get_mut(&loc_id)
+            .unwrap()
+            .npcs
+            .push(test_npc_id);
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "look petra");
+        let all_text = output.text.join("\n");
+        // First line should be the NPC's display name with disposition tag
+        assert_eq!(
+            output.text[0], "Petra the Keeper [hostile]",
+            "First line should be NPC display name with tag. Got: {:?}",
+            output.text
+        );
+        // Should include role info
+        assert!(
+            all_text.to_lowercase().contains("guard"),
+            "Expected role description in output. Got: {:?}",
+            output.text
+        );
+        // Should include disposition info
+        assert!(
+            all_text.to_lowercase().contains("hostil"),
+            "Expected disposition description in output. Got: {:?}",
+            output.text
+        );
     }
 
     #[test]
@@ -13183,6 +13195,175 @@ mod tests {
         assert!(
             all_text.contains("Pack Tactics"),
             "Expected trait name in output. Got: {:?}",
+            output.text
+        );
+    }
+
+    #[test]
+    fn test_examine_npc_returns_description_with_disposition_tag() {
+        // `examine <npc>` should return the same rich description as `look <npc>`,
+        // including the disposition tag on the first line.
+        let mut state = create_test_exploration_state();
+        let loc_id = state.current_location;
+        let npc_id: u32 = 901;
+        state.world.npcs.insert(
+            npc_id,
+            state::Npc {
+                id: npc_id,
+                name: "Aldric the Bold".to_string(),
+                role: state::NpcRole::Merchant,
+                disposition: state::Disposition::Neutral,
+                dialogue_tags: vec![],
+                location: loc_id,
+                combat_stats: None,
+                conditions: vec![],
+            },
+        );
+        state
+            .world
+            .locations
+            .get_mut(&loc_id)
+            .unwrap()
+            .npcs
+            .push(npc_id);
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "examine aldric");
+        let all_text = output.text.join("\n");
+        // Merchants always show [merchant] tag regardless of disposition
+        assert_eq!(
+            output.text[0], "Aldric the Bold [merchant]",
+            "First line should include [merchant] tag. Got: {:?}",
+            output.text
+        );
+        assert!(
+            all_text.to_lowercase().contains("merchant"),
+            "Should include merchant role description. Got: {:?}",
+            output.text
+        );
+    }
+
+    #[test]
+    fn test_examine_npc_fuzzy_match_partial_name() {
+        // Fuzzy matching: `examine petra` should match "Petra the Keeper".
+        let mut state = create_test_exploration_state();
+        let loc_id = state.current_location;
+        let npc_id: u32 = 902;
+        state.world.npcs.insert(
+            npc_id,
+            state::Npc {
+                id: npc_id,
+                name: "Petra the Keeper".to_string(),
+                role: state::NpcRole::Hermit,
+                disposition: state::Disposition::Neutral,
+                dialogue_tags: vec![],
+                location: loc_id,
+                combat_stats: None,
+                conditions: vec![],
+            },
+        );
+        state
+            .world
+            .locations
+            .get_mut(&loc_id)
+            .unwrap()
+            .npcs
+            .push(npc_id);
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "examine petra");
+        assert_eq!(
+            output.text[0], "Petra the Keeper [neutral]",
+            "Fuzzy match on first name should resolve to full NPC. Got: {:?}",
+            output.text
+        );
+    }
+
+    #[test]
+    fn test_examine_npc_not_in_room_returns_not_found() {
+        // When examining an NPC who exists in the world but is NOT in the
+        // current room, the player should get a clear "not here" message.
+        let mut state = create_test_exploration_state();
+        let other_loc_id = 999;
+        state.world.locations.insert(
+            other_loc_id,
+            state::Location {
+                id: other_loc_id,
+                name: "Distant Room".to_string(),
+                description: "Far away.".to_string(),
+                location_type: state::LocationType::Room,
+                exits: HashMap::new(),
+                npcs: vec![903],
+                items: vec![],
+                triggers: vec![],
+                light_level: state::LightLevel::Bright,
+                room_features: vec![],
+            },
+        );
+        let npc_id: u32 = 903;
+        state.world.npcs.insert(
+            npc_id,
+            state::Npc {
+                id: npc_id,
+                name: "Fiona the Lost".to_string(),
+                role: state::NpcRole::Adventurer,
+                disposition: state::Disposition::Friendly,
+                dialogue_tags: vec![],
+                location: other_loc_id,
+                combat_stats: None,
+                conditions: vec![],
+            },
+        );
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "examine fiona");
+        let all_text = output.text.join("\n");
+        assert!(
+            all_text.contains("You don't see any"),
+            "NPC not in current room should return 'don't see' message. Got: {:?}",
+            output.text
+        );
+    }
+
+    #[test]
+    fn test_examine_npc_neutral_disposition_tag() {
+        // Friendly disposition NPCs show [neutral] tag (not [friendly]).
+        let mut state = create_test_exploration_state();
+        let loc_id = state.current_location;
+        let npc_id: u32 = 904;
+        state.world.npcs.insert(
+            npc_id,
+            state::Npc {
+                id: npc_id,
+                name: "Rowan the Wise".to_string(),
+                role: state::NpcRole::Hermit,
+                disposition: state::Disposition::Friendly,
+                dialogue_tags: vec![],
+                location: loc_id,
+                combat_stats: None,
+                conditions: vec![],
+            },
+        );
+        state
+            .world
+            .locations
+            .get_mut(&loc_id)
+            .unwrap()
+            .npcs
+            .push(npc_id);
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "look rowan");
+        assert_eq!(
+            output.text[0], "Rowan the Wise [neutral]",
+            "Friendly NPCs should show [neutral] tag. Got: {:?}",
+            output.text
+        );
+        // Should include disposition sentence
+        let all_text = output.text.join("\n");
+        assert!(
+            all_text.contains("friendly"),
+            "Disposition sentence should mention 'friendly'. Got: {:?}",
             output.text
         );
     }
