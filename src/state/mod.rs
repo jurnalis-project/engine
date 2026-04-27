@@ -298,6 +298,16 @@ pub enum NpcRole {
     Adventurer,
 }
 
+impl NpcRole {
+    /// Returns true for roles that can plausibly act as combat allies
+    /// (Guards, Adventurers). Non-combatant roles (Merchant, Hermit)
+    /// return false and are excluded from ally-adjacency checks such as
+    /// the Rogue's Sneak Attack trigger.
+    pub fn is_combatant(self) -> bool {
+        matches!(self, NpcRole::Guard | NpcRole::Adventurer)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Disposition {
     Friendly,
