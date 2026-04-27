@@ -1,6 +1,7 @@
 // jurnalis-engine/src/world/npc.rs
-use crate::state::{Disposition, Location, Npc, NpcRole};
-use crate::types::{LocationId, NpcId};
+use crate::equipment::{SRD_ARMOR, SRD_WEAPONS};
+use crate::state::{Disposition, Item, ItemType, Location, Npc, NpcRole};
+use crate::types::{ItemId, LocationId, NpcId};
 use rand::Rng;
 use std::collections::HashMap;
 
@@ -146,6 +147,143 @@ pub fn generate_npcs(
     }
 
     npcs
+}
+
+/// Consumables available in merchant shops. (name, description, effect, cost_cp)
+const MERCHANT_CONSUMABLES: &[(&str, &str, &str, u32)] = &[
+    ("Torch", "A wooden torch soaked in pitch. Provides light.", "light", 1),
+    ("Rations", "A day's worth of dried food.", "nourish", 50),
+    ("Healing Potion", "A small vial of red liquid that restores vitality.", "heal_srd_potion", 5000),
+];
+
+/// Generate inventory items for all Merchant NPCs. Each merchant stocks 8-12
+/// items drawn from SRD weapons, armor, and consumables. The selection is
+/// weighted: simple weapons and light armor are more common.
+///
+/// Returns the created items (keyed by ItemId). The caller must insert them
+/// into `WorldState.items`. Item IDs start at `next_item_id` and are assigned
+/// contiguously.
+///
+/// Side-effect: each Merchant NPC's `inventory` field is populated with the
+/// IDs of the items generated for it.
+pub fn generate_merchant_items(
+    rng: &mut impl Rng,
+    npcs: &mut HashMap<NpcId, Npc>,
+    next_item_id: ItemId,
+) -> HashMap<ItemId, Item> {
+    let mut items = HashMap::new();
+    let mut current_id = next_item_id;
+
+    // Iterate by sorted NPC ID for deterministic generation.
+    let mut npc_ids: Vec<NpcId> = npcs.keys().copied().collect();
+    npc_ids.sort();
+
+    for npc_id in npc_ids {
+        let npc = npcs.get_mut(&npc_id).unwrap();
+        if npc.role != NpcRole::Merchant {
+            continue;
+        }
+
+        let item_count = rng.gen_range(8..=12);
+        let mut inventory = Vec::with_capacity(item_count);
+
+        for _ in 0..item_count {
+            let item = match rng.gen_range(0..3) {
+                0 => {
+                    // Weapon: simple 2x more likely than martial
+                    let simple: Vec<_> = SRD_WEAPONS.iter()
+                        .filter(|w| w.category == crate::state::WeaponCategory::Simple)
+                        .collect();
+                    let martial: Vec<_> = SRD_WEAPONS.iter()
+                        .filter(|w| w.category == crate::state::WeaponCategory::Martial)
+                        .collect();
+                    let w = if rng.gen_bool(0.67) && !simple.is_empty() {
+                        simple[rng.gen_range(0..simple.len())]
+                    } else if !martial.is_empty() {
+                        martial[rng.gen_range(0..martial.len())]
+                    } else {
+                        simple[rng.gen_range(0..simple.len())]
+                    };
+                    Item {
+                        id: current_id,
+                        name: w.name.to_string(),
+                        description: format!("A {}.", w.name.to_lowercase()),
+                        item_type: ItemType::Weapon {
+                            damage_dice: w.damage_dice,
+                            damage_die: w.damage_die,
+                            damage_type: w.damage_type,
+                            properties: w.properties,
+                            category: w.category,
+                            versatile_die: w.versatile_die,
+                            range_normal: w.range_normal,
+                            range_long: w.range_long,
+                        },
+                        location: None,
+                        carried_by_player: false,
+                        charges_remaining: None,
+                    }
+                }
+                1 => {
+                    // Armor: light/shields more likely than heavy
+                    let light: Vec<_> = SRD_ARMOR.iter()
+                        .filter(|a| matches!(
+                            a.category,
+                            crate::state::ArmorCategory::Light | crate::state::ArmorCategory::Shield
+                        ))
+                        .collect();
+                    let heavier: Vec<_> = SRD_ARMOR.iter()
+                        .filter(|a| !matches!(
+                            a.category,
+                            crate::state::ArmorCategory::Light | crate::state::ArmorCategory::Shield
+                        ))
+                        .collect();
+                    let a = if rng.gen_bool(0.6) && !light.is_empty() {
+                        light[rng.gen_range(0..light.len())]
+                    } else if !heavier.is_empty() {
+                        heavier[rng.gen_range(0..heavier.len())]
+                    } else {
+                        light[rng.gen_range(0..light.len())]
+                    };
+                    Item {
+                        id: current_id,
+                        name: a.name.to_string(),
+                        description: format!("A set of {} armor.", a.name.to_lowercase()),
+                        item_type: ItemType::Armor {
+                            category: a.category,
+                            base_ac: a.base_ac,
+                            max_dex_bonus: a.max_dex_bonus,
+                            str_requirement: a.str_requirement,
+                            stealth_disadvantage: a.stealth_disadvantage,
+                        },
+                        location: None,
+                        carried_by_player: false,
+                        charges_remaining: None,
+                    }
+                }
+                _ => {
+                    // Consumable
+                    let c = MERCHANT_CONSUMABLES[rng.gen_range(0..MERCHANT_CONSUMABLES.len())];
+                    Item {
+                        id: current_id,
+                        name: c.0.to_string(),
+                        description: c.1.to_string(),
+                        item_type: ItemType::Consumable { effect: c.2.to_string() },
+                        location: None,
+                        carried_by_player: false,
+                        charges_remaining: None,
+                    }
+                }
+            };
+
+            inventory.push(current_id);
+            items.insert(current_id, item);
+            current_id += 1;
+        }
+
+        npc.inventory = inventory;
+    }
+
+    items
 }
 
 #[cfg(test)]
