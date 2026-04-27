@@ -4575,6 +4575,11 @@ fn append_player_turn_prompt(
     };
     lines.push(hp_header);
 
+    // Show compact active-effects line in the turn prompt
+    if let Some(effects_line) = format_combat_effects_compact(state) {
+        lines.push(effects_line);
+    }
+
     lines.push(format!(
         "Your turn! (Round {}, HP: {}/{})",
         combat.round, state.character.current_hp, state.character.max_hp
