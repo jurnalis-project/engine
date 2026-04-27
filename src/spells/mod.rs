@@ -696,27 +696,73 @@ pub fn spell_save_dc(ability_score: i32, proficiency_bonus: i32) -> i32 {
 #[derive(Debug, Clone)]
 pub struct SpellAttackResult {
     pub roll: i32,
+    /// Second d20 when advantage or disadvantage applies; `None` for normal rolls.
+    pub roll_second: Option<i32>,
     pub modifier: i32,
     pub total: i32,
     pub hit: bool,
     pub natural_20: bool,
     pub natural_1: bool,
+    /// True when the roll was made with disadvantage (after advantage/disadvantage cancellation).
+    pub disadvantage: bool,
 }
 
 /// Roll a spell attack against a target AC.
+///
+/// When `disadvantage` is true (e.g. hostile creature within 5 ft for ranged
+/// spell attacks per SRD 2024 "Ranged Attacks in Close Combat"), two d20s are
+/// rolled and the lower is kept.
 pub fn roll_spell_attack(
     rng: &mut impl Rng,
     ability_score: i32,
     proficiency_bonus: i32,
     target_ac: i32,
+    disadvantage: bool,
 ) -> SpellAttackResult {
-    let roll = roll_d20(rng);
+    let roll1 = roll_d20(rng);
+    let roll2 = roll_d20(rng);
+    let roll = if disadvantage { roll1.min(roll2) } else { roll1 };
     let modifier = spell_attack_modifier(ability_score, proficiency_bonus);
     let total = roll + modifier;
     let natural_20 = roll == 20;
     let natural_1 = roll == 1;
     let hit = natural_20 || (!natural_1 && total >= target_ac);
-    SpellAttackResult { roll, modifier, total, hit, natural_20, natural_1 }
+    SpellAttackResult {
+        roll,
+        roll_second: if disadvantage { Some(roll2) } else { None },
+        modifier,
+        total,
+        hit,
+        natural_20,
+        natural_1,
+        disadvantage,
+    }
+}
+
+/// Format spell attack roll details, showing dual-roll label when
+/// advantage or disadvantage applies. Mirrors `combat::format_attack_roll_details`.
+pub fn format_spell_attack_details(result: &SpellAttackResult) -> String {
+    let base = format!(
+        "{}{}={}",
+        result.roll,
+        if result.modifier >= 0 {
+            format!("+{}", result.modifier)
+        } else {
+            format!("{}", result.modifier)
+        },
+        result.total,
+    );
+    match result.roll_second {
+        Some(other_roll) if result.disadvantage => format!(
+            "{} / {} \u{2192} {} ({}) (disadvantage: hostile within 5 ft \u{2014} keeping {})",
+            result.roll.max(other_roll),
+            result.roll.min(other_roll),
+            result.roll,
+            base,
+            result.roll,
+        ),
+        _ => base,
+    }
 }
 
 /// Result of a spell save.
@@ -918,13 +964,17 @@ pub struct SpellTarget {
 }
 
 /// Resolve a Fire Bolt cast against a single target.
+///
+/// `disadvantage` should be `true` when a hostile creature is within 5 ft
+/// (SRD 2024 "Ranged Attacks in Close Combat").
 pub fn resolve_fire_bolt(
     rng: &mut impl Rng,
     ability_score: i32,
     proficiency_bonus: i32,
     target_ac: i32,
+    disadvantage: bool,
 ) -> CastOutcome {
-    let attack = roll_spell_attack(rng, ability_score, proficiency_bonus, target_ac);
+    let attack = roll_spell_attack(rng, ability_score, proficiency_bonus, target_ac, disadvantage);
     let damage = if attack.hit {
         let rolls = roll_dice(rng, 1, 10);
         let base: i32 = rolls.iter().sum();
@@ -1050,13 +1100,17 @@ pub fn resolve_healing_word(rng: &mut impl Rng, caster_ability_score: i32) -> Ca
 
 /// Resolve Guiding Bolt (level 1). Ranged spell attack; 4d6 radiant on hit,
 /// doubled on crit.
+///
+/// `disadvantage` should be `true` when a hostile creature is within 5 ft
+/// (SRD 2024 "Ranged Attacks in Close Combat").
 pub fn resolve_guiding_bolt(
     rng: &mut impl Rng,
     caster_ability_score: i32,
     caster_proficiency_bonus: i32,
     target_ac: i32,
+    disadvantage: bool,
 ) -> CastOutcome {
-    let attack = roll_spell_attack(rng, caster_ability_score, caster_proficiency_bonus, target_ac);
+    let attack = roll_spell_attack(rng, caster_ability_score, caster_proficiency_bonus, target_ac, disadvantage);
     let damage = if attack.hit {
         let rolls = roll_dice(rng, 4, 6);
         let base: i32 = rolls.iter().sum();
@@ -1117,13 +1171,17 @@ pub fn resolve_faerie_fire(
 
 /// Resolve Eldritch Blast (cantrip). Ranged spell attack; 1d10 force on hit,
 /// doubled on crit. (SRD adds more beams at higher levels; level 1 = one beam.)
+///
+/// `disadvantage` should be `true` when a hostile creature is within 5 ft
+/// (SRD 2024 "Ranged Attacks in Close Combat").
 pub fn resolve_eldritch_blast(
     rng: &mut impl Rng,
     caster_ability_score: i32,
     caster_proficiency_bonus: i32,
     target_ac: i32,
+    disadvantage: bool,
 ) -> CastOutcome {
-    let attack = roll_spell_attack(rng, caster_ability_score, caster_proficiency_bonus, target_ac);
+    let attack = roll_spell_attack(rng, caster_ability_score, caster_proficiency_bonus, target_ac, disadvantage);
     let damage = if attack.hit {
         let rolls = roll_dice(rng, 1, 10);
         let base: i32 = rolls.iter().sum();
@@ -1136,16 +1194,20 @@ pub fn resolve_eldritch_blast(
 
 /// Resolve Scorching Ray (level 2). Three ranged spell attacks; each hit
 /// deals 2d6 fire damage. All rays target the same creature (NPC AI).
+///
+/// `disadvantage` should be `true` when a hostile creature is within 5 ft
+/// (SRD 2024 "Ranged Attacks in Close Combat").
 pub fn resolve_scorching_ray(
     rng: &mut impl Rng,
     caster_ability_score: i32,
     caster_proficiency_bonus: i32,
     target_ac: i32,
+    disadvantage: bool,
 ) -> CastOutcome {
     let mut rays = Vec::new();
     let mut total_damage = 0;
     for _ in 0..3 {
-        let attack = roll_spell_attack(rng, caster_ability_score, caster_proficiency_bonus, target_ac);
+        let attack = roll_spell_attack(rng, caster_ability_score, caster_proficiency_bonus, target_ac, disadvantage);
         let damage = if attack.hit {
             let rolls = roll_dice(rng, 2, 6);
             let base: i32 = rolls.iter().sum();
@@ -1454,7 +1516,7 @@ mod tests {
     #[test]
     fn test_fire_bolt_rolls_attack_and_damage() {
         let mut rng = StdRng::seed_from_u64(42);
-        let result = resolve_fire_bolt(&mut rng, 16, 2, 12);
+        let result = resolve_fire_bolt(&mut rng, 16, 2, 12, false);
         match result {
             CastOutcome::FireBolt { attack, damage } => {
                 assert!(attack.roll >= 1 && attack.roll <= 20);
@@ -2026,7 +2088,7 @@ mod tests {
     #[test]
     fn test_resolve_guiding_bolt_rolls_attack_and_4d6() {
         let mut rng = StdRng::seed_from_u64(42);
-        let outcome = resolve_guiding_bolt(&mut rng, 16, 2, 12);
+        let outcome = resolve_guiding_bolt(&mut rng, 16, 2, 12, false);
         match outcome {
             CastOutcome::GuidingBolt { attack, damage } => {
                 assert_eq!(attack.modifier, 5);
@@ -2091,7 +2153,7 @@ mod tests {
     #[test]
     fn test_resolve_eldritch_blast_rolls_attack_and_1d10() {
         let mut rng = StdRng::seed_from_u64(42);
-        let outcome = resolve_eldritch_blast(&mut rng, 16, 2, 12);
+        let outcome = resolve_eldritch_blast(&mut rng, 16, 2, 12, false);
         match outcome {
             CastOutcome::EldritchBlast { attack, damage } => {
                 assert_eq!(attack.modifier, 5);
@@ -2274,7 +2336,7 @@ mod tests {
     #[test]
     fn test_scorching_ray_produces_three_rays() {
         let mut rng = StdRng::seed_from_u64(42);
-        let outcome = resolve_scorching_ray(&mut rng, 16, 2, 12);
+        let outcome = resolve_scorching_ray(&mut rng, 16, 2, 12, false);
         match outcome {
             CastOutcome::ScorchingRay { rays, total_damage } => {
                 assert_eq!(rays.len(), 3, "Scorching Ray should produce 3 ray results");

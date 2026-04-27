@@ -4141,7 +4141,7 @@ fn resolve_npc_spell(
 
     match spell_name {
         "Fire Bolt" => {
-            let outcome = spells::resolve_fire_bolt(rng, int_score, proficiency_bonus, player_ac);
+            let outcome = spells::resolve_fire_bolt(rng, int_score, proficiency_bonus, player_ac, false);
             if let spells::CastOutcome::FireBolt { attack, damage } = outcome {
                 if attack.hit {
                     let was_dying = state.character.current_hp <= 0;
@@ -4220,7 +4220,7 @@ fn resolve_npc_spell(
             }
         }
         "Scorching Ray" => {
-            let outcome = spells::resolve_scorching_ray(rng, int_score, proficiency_bonus, player_ac);
+            let outcome = spells::resolve_scorching_ray(rng, int_score, proficiency_bonus, player_ac, false);
             if let spells::CastOutcome::ScorchingRay { rays, total_damage } = outcome {
                 lines.push(T::NPC_CAST_SCORCHING_RAY_INTRO.replace("{caster}", &caster_name));
                 // Each ray is a separate attack; per SRD each hitting ray
@@ -6171,13 +6171,18 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                                 .map(|n| n.name.clone())
                                 .unwrap_or_else(|| "the enemy".to_string());
 
+                            // SRD 2024: ranged spell attacks have disadvantage
+                            // when a hostile creature is within 5 ft.
+                            let spell_disadv = combat::has_living_hostile_within(state, &combat, 5);
                             let outcome = spells::resolve_fire_bolt(
                                 &mut rng,
                                 caster_score,
                                 prof_bonus,
                                 target_ac,
+                                spell_disadv,
                             );
                             if let spells::CastOutcome::FireBolt { attack, damage } = outcome {
+                                let roll_details = spells::format_spell_attack_details(&attack);
                                 if attack.hit {
                                     if attack.natural_20 {
                                         lines.push(
@@ -6186,15 +6191,10 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                                                 .replace("{damage}", &damage.to_string()),
                                         );
                                     } else {
-                                        lines.push(
-                                            narration::templates::CAST_FIRE_BOLT_HIT
-                                                .replace("{target}", &npc_name)
-                                                .replace("{roll}", &attack.roll.to_string())
-                                                .replace("{mod}", &attack.modifier.to_string())
-                                                .replace("{total}", &attack.total.to_string())
-                                                .replace("{ac}", &target_ac.to_string())
-                                                .replace("{damage}", &damage.to_string()),
-                                        );
+                                        lines.push(format!(
+                                            "You hurl a bolt of fire at {} ({} vs AC {}) -- hit for {} fire damage!",
+                                            npc_name, roll_details, target_ac, damage,
+                                        ));
                                     }
                                     // Apply damage (honoring stat-block resistances/immunities)
                                     if let Some(npc) = state.world.npcs.get_mut(&npc_id) {
@@ -6216,14 +6216,10 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                                             .replace("{target}", &npc_name),
                                     );
                                 } else {
-                                    lines.push(
-                                        narration::templates::CAST_FIRE_BOLT_MISS
-                                            .replace("{target}", &npc_name)
-                                            .replace("{roll}", &attack.roll.to_string())
-                                            .replace("{mod}", &attack.modifier.to_string())
-                                            .replace("{total}", &attack.total.to_string())
-                                            .replace("{ac}", &target_ac.to_string()),
-                                    );
+                                    lines.push(format!(
+                                        "You hurl a bolt of fire at {} ({} vs AC {}) -- the bolt flies wide.",
+                                        npc_name, roll_details, target_ac,
+                                    ));
                                 }
                             }
                             combat.action_used = true;
@@ -6624,13 +6620,18 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                                 .get(&npc_id)
                                 .map(|n| n.name.clone())
                                 .unwrap_or_else(|| "the enemy".to_string());
+                            // SRD 2024: ranged spell attacks have disadvantage
+                            // when a hostile creature is within 5 ft.
+                            let spell_disadv = combat::has_living_hostile_within(state, &combat, 5);
                             let outcome = spells::resolve_guiding_bolt(
                                 &mut rng,
                                 caster_score,
                                 prof_bonus,
                                 target_ac,
+                                spell_disadv,
                             );
                             if let spells::CastOutcome::GuidingBolt { attack, damage } = outcome {
+                                let roll_details = spells::format_spell_attack_details(&attack);
                                 if attack.hit {
                                     if attack.natural_20 {
                                         lines.push(
@@ -6639,15 +6640,10 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                                                 .replace("{damage}", &damage.to_string()),
                                         );
                                     } else {
-                                        lines.push(
-                                            narration::templates::CAST_GUIDING_BOLT_HIT
-                                                .replace("{target}", &npc_name)
-                                                .replace("{roll}", &attack.roll.to_string())
-                                                .replace("{mod}", &attack.modifier.to_string())
-                                                .replace("{total}", &attack.total.to_string())
-                                                .replace("{ac}", &target_ac.to_string())
-                                                .replace("{damage}", &damage.to_string()),
-                                        );
+                                        lines.push(format!(
+                                            "A flash of radiant light streaks at {} ({} vs AC {}) -- hit for {} radiant damage!",
+                                            npc_name, roll_details, target_ac, damage,
+                                        ));
                                     }
                                     if let Some(npc) = state.world.npcs.get_mut(&npc_id) {
                                         let _dealt = combat::apply_damage_to_npc(
@@ -6668,14 +6664,10 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                                             .replace("{target}", &npc_name),
                                     );
                                 } else {
-                                    lines.push(
-                                        narration::templates::CAST_GUIDING_BOLT_MISS
-                                            .replace("{target}", &npc_name)
-                                            .replace("{roll}", &attack.roll.to_string())
-                                            .replace("{mod}", &attack.modifier.to_string())
-                                            .replace("{total}", &attack.total.to_string())
-                                            .replace("{ac}", &target_ac.to_string()),
-                                    );
+                                    lines.push(format!(
+                                        "A flash of radiant light streaks at {} ({} vs AC {}) -- the light fades before hitting.",
+                                        npc_name, roll_details, target_ac,
+                                    ));
                                 }
                             }
                             let remaining = state.character.spell_slots_remaining[0];
@@ -7041,13 +7033,18 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                                 .get(&npc_id)
                                 .map(|n| n.name.clone())
                                 .unwrap_or_else(|| "the enemy".to_string());
+                            // SRD 2024: ranged spell attacks have disadvantage
+                            // when a hostile creature is within 5 ft.
+                            let spell_disadv = combat::has_living_hostile_within(state, &combat, 5);
                             let outcome = spells::resolve_eldritch_blast(
                                 &mut rng,
                                 caster_score,
                                 prof_bonus,
                                 target_ac,
+                                spell_disadv,
                             );
                             if let spells::CastOutcome::EldritchBlast { attack, damage } = outcome {
+                                let roll_details = spells::format_spell_attack_details(&attack);
                                 if attack.hit {
                                     if attack.natural_20 {
                                         lines.push(
@@ -7056,15 +7053,10 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                                                 .replace("{damage}", &damage.to_string()),
                                         );
                                     } else {
-                                        lines.push(
-                                            narration::templates::CAST_ELDRITCH_BLAST_HIT
-                                                .replace("{target}", &npc_name)
-                                                .replace("{roll}", &attack.roll.to_string())
-                                                .replace("{mod}", &attack.modifier.to_string())
-                                                .replace("{total}", &attack.total.to_string())
-                                                .replace("{ac}", &target_ac.to_string())
-                                                .replace("{damage}", &damage.to_string()),
-                                        );
+                                        lines.push(format!(
+                                            "A crackling beam of eldritch energy lances toward {} ({} vs AC {}) -- hit for {} force damage!",
+                                            npc_name, roll_details, target_ac, damage,
+                                        ));
                                     }
                                     if let Some(npc) = state.world.npcs.get_mut(&npc_id) {
                                         let _dealt = combat::apply_damage_to_npc(
@@ -7085,14 +7077,10 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                                             .replace("{target}", &npc_name),
                                     );
                                 } else {
-                                    lines.push(
-                                        narration::templates::CAST_ELDRITCH_BLAST_MISS
-                                            .replace("{target}", &npc_name)
-                                            .replace("{roll}", &attack.roll.to_string())
-                                            .replace("{mod}", &attack.modifier.to_string())
-                                            .replace("{total}", &attack.total.to_string())
-                                            .replace("{ac}", &target_ac.to_string()),
-                                    );
+                                    lines.push(format!(
+                                        "A crackling beam of eldritch energy lances toward {} ({} vs AC {}) -- the beam goes wide.",
+                                        npc_name, roll_details, target_ac,
+                                    ));
                                 }
                             }
                             combat.action_used = true;
@@ -15550,6 +15538,122 @@ mod tests {
         assert!(
             output.text.iter().any(|t| t.contains(" \u{2192} ") && t.contains("vs AC")),
             "Ranged attack while another hostile is within 5ft should show dual-roll disadvantage text. Got: {:?}",
+            output.text
+        );
+    }
+
+    // ---- Ranged spell attack disadvantage tests (fix/ranged-spell-attack-disadvantage, issue #332) ----
+
+    /// Create a Wizard in active combat (goblin at specified distance) with
+    /// Fire Bolt known, suitable for testing ranged spell attack disadvantage.
+    fn create_wizard_combat_state(goblin_distance: u32) -> GameState {
+        let mut state = create_test_exploration_state();
+        // Change character to Wizard with INT 16
+        state.character.class = character::class::Class::Wizard;
+        state.character.ability_scores.insert(Ability::Intelligence, 16);
+        state.character.known_spells = vec!["Fire Bolt".to_string()];
+
+        let npc_id = 100u32;
+        let loc_id = state.current_location;
+        state.world.npcs.insert(
+            npc_id,
+            state::Npc {
+                id: npc_id,
+                name: "Test Goblin".to_string(),
+                role: state::NpcRole::Guard,
+                disposition: state::Disposition::Hostile,
+                dialogue_tags: vec![],
+                location: loc_id,
+                combat_stats: Some(state::CombatStats {
+                    max_hp: 50,
+                    current_hp: 50,
+                    ac: 15,
+                    speed: 30,
+                    ability_scores: {
+                        let mut m = HashMap::new();
+                        m.insert(Ability::Strength, 8);
+                        m.insert(Ability::Dexterity, 14);
+                        m
+                    },
+                    attacks: vec![state::NpcAttack {
+                        name: "Scimitar".to_string(),
+                        hit_bonus: 4,
+                        damage_dice: 1,
+                        damage_die: 6,
+                        damage_bonus: 2,
+                        damage_type: state::DamageType::Slashing,
+                        reach: 5,
+                        range_normal: 0,
+                        range_long: 0,
+                    }],
+                    proficiency_bonus: 2,
+                    cr: 0.25,
+                    ..Default::default()
+                }),
+                conditions: Vec::new(),
+            },
+        );
+        if let Some(loc) = state.world.locations.get_mut(&loc_id) {
+            loc.npcs.push(npc_id);
+        }
+
+        // Unequip any weapon (Wizard casting spells unarmed)
+        state.character.equipped.main_hand = None;
+
+        // Start combat
+        let mut rng = rand::rngs::StdRng::seed_from_u64(state.rng_seed + state.rng_counter);
+        state.rng_counter += 1;
+        let loc_type = state
+            .world
+            .locations
+            .get(&state.current_location)
+            .map(|l| l.location_type)
+            .unwrap_or(state::LocationType::Room);
+        let mut combat_state =
+            combat::start_combat(&mut rng, &state.character, &[npc_id], &state.world.npcs, loc_type);
+        combat_state.npc_cover.clear();
+        // Set goblin distance
+        combat_state.distances.insert(npc_id, goblin_distance);
+        state.active_combat = Some(combat_state);
+        force_player_turn(&mut state);
+        state
+    }
+
+    #[test]
+    fn test_fire_bolt_with_hostile_within_5ft_applies_disadvantage() {
+        // Hypothesis: Fire Bolt (ranged spell attack) should apply disadvantage
+        // when a hostile creature is within 5 ft, per SRD 2024 "Ranged Attacks
+        // in Close Combat". Prior to this fix, ranged spell attacks ignored the
+        // hostile_within_5ft flag entirely.
+        let state = create_wizard_combat_state(5); // goblin at 5 ft (melee)
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "cast fire bolt at test goblin");
+        let all_text = output.text.join(" ");
+
+        assert!(
+            all_text.contains("disadvantage: hostile within 5 ft"),
+            "Fire Bolt with hostile within 5 ft should show disadvantage label. Got: {:?}",
+            output.text
+        );
+        // The dual-roll arrow should also be present
+        assert!(
+            all_text.contains("\u{2192}"),
+            "Disadvantage should show dual-roll arrow. Got: {:?}",
+            output.text
+        );
+    }
+
+    #[test]
+    fn test_fire_bolt_without_hostile_within_5ft_no_disadvantage() {
+        // Counter-test: at range, no disadvantage should appear.
+        let state = create_wizard_combat_state(30); // goblin at 30 ft
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "cast fire bolt at test goblin");
+        let all_text = output.text.join(" ");
+
+        assert!(
+            !all_text.to_lowercase().contains("disadvantage"),
+            "Fire Bolt at range should NOT show disadvantage. Got: {:?}",
             output.text
         );
     }
