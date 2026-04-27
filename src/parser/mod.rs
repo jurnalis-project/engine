@@ -622,7 +622,7 @@ pub fn parse(input: &str) -> Command {
             }
         }
         // ---- Trade commands ----
-        "browse" | "shop" | "wares" => Command::Browse,
+        "browse" | "shop" | "wares" | "trade" => Command::Browse,
         "buy" | "purchase" => {
             if args.is_empty() {
                 Command::Unknown("Buy what?".to_string())
@@ -1732,9 +1732,15 @@ mod tests {
     }
 
     #[test]
+    fn test_browse_alias_trade() {
+        assert_eq!(parse("trade"), Command::Browse);
+    }
+
+    #[test]
     fn test_browse_case_insensitive() {
         assert_eq!(parse("BROWSE"), Command::Browse);
         assert_eq!(parse("Shop"), Command::Browse);
+        assert_eq!(parse("Trade"), Command::Browse);
         assert_eq!(parse("List Wares"), Command::Browse);
     }
 
