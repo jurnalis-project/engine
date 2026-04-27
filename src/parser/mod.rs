@@ -677,6 +677,49 @@ fn strip_offhand_suffix(args: &str) -> Option<String> {
     None
 }
 
+/// Given the arguments to a `cast` command and a list of known spell names,
+/// find the longest spell name that matches a prefix of `args` (case-
+/// insensitive). If a match is found and there are leftover words after the
+/// spell name, return them as the target.
+///
+/// This enables `cast magic missile Rowan` to resolve correctly: the longest
+/// known prefix is "magic missile" and the leftover "rowan" becomes the
+/// target.
+///
+/// The function does NOT import from the `spells` module -- the caller
+/// (orchestrator) passes in the list of names, preserving module isolation.
+pub fn split_spell_and_target(args: &str, known_names: &[&str]) -> Option<(String, Option<String>)> {
+    let lower = args.to_lowercase();
+    let words: Vec<&str> = lower.split_whitespace().collect();
+    if words.is_empty() {
+        return None;
+    }
+
+    // Try longest prefix first (most words), then shorter.
+    let mut best_match: Option<(usize, &str)> = None; // (word_count, canonical_name)
+    for name in known_names {
+        let name_lower = name.to_lowercase();
+        let name_words: Vec<&str> = name_lower.split_whitespace().collect();
+        let n = name_words.len();
+        if n > words.len() {
+            continue;
+        }
+        if words[..n].join(" ") == name_words.join(" ") {
+            if best_match.map_or(true, |(best_n, _)| n > best_n) {
+                best_match = Some((n, name));
+            }
+        }
+    }
+
+    let (word_count, canonical_name) = best_match?;
+    let target = if word_count < words.len() {
+        Some(words[word_count..].join(" "))
+    } else {
+        None
+    };
+    Some((canonical_name.to_lowercase(), target))
+}
+
 fn parse_direction(s: &str) -> Option<Direction> {
     match s {
         "north" | "n" => Some(Direction::North),

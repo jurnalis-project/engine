@@ -201,6 +201,14 @@ pub struct CombatState {
     /// against the player are made with advantage.
     #[serde(default)]
     pub player_reckless: bool,
+    // ---- Two-step spell targeting (issue #331) ------------------------------
+    /// When the player casts a target-requiring spell without specifying a
+    /// target, the spell name is stored here. The next combat input is
+    /// interpreted as the target name (or "cancel"/"nevermind" to abort).
+    /// Cleared after resolution or cancellation. The action is NOT consumed
+    /// until the spell actually fires; slot refund happens on prompt.
+    #[serde(default)]
+    pub pending_spell: Option<String>,
 }
 
 impl Default for CombatState {
@@ -234,6 +242,7 @@ impl Default for CombatState {
             npc_cover: HashMap::new(),
             npc_reactions_used: std::collections::HashSet::new(),
             player_reckless: false,
+            pending_spell: None,
         }
     }
 }
@@ -737,6 +746,7 @@ pub fn start_combat(
         npc_cover: assign_npc_cover(rng, hostile_npc_ids, location_type),
         npc_reactions_used: std::collections::HashSet::new(),
         player_reckless: false,
+        pending_spell: None,
     }
 }
 

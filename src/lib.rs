@@ -2187,6 +2187,18 @@ fn inventory_item_candidates(state: &GameState) -> Vec<(usize, String)> {
         .collect()
 }
 
+/// Attempt to re-split a failed spell name into (spell, target) using
+/// longest-prefix matching against the SPELLS catalog. Called by the Cast
+/// handler when `find_spell(raw_name)` returns `None` and no target was
+/// parsed -- meaning the player may have omitted "at"/"on".
+///
+/// Returns `Some((spell_name, target))` when a valid spell prefix is found,
+/// `None` otherwise.
+fn try_resplit_spell_name(raw: &str) -> Option<(String, Option<String>)> {
+    let names: Vec<&str> = spells::SPELLS.iter().map(|s| s.name).collect();
+    parser::split_spell_and_target(raw, &names)
+}
+
 fn build_combat_npc_candidates(
     combat: &combat::CombatState,
     state: &GameState,
@@ -2760,8 +2772,8 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
         Command::Equip(target_str) => handle_equip_command(state, &target_str),
         Command::Unequip(target_str) => handle_unequip_command(state, &target_str),
         Command::Cast {
-            spell,
-            target: _,
+            spell: raw_spell,
+            target: raw_target,
             ritual,
         } => {
             // Check if caster
@@ -2776,6 +2788,18 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
                         .to_string(),
                 ];
             }
+            // Issue #330: When "at"/"on" is omitted, the parser treats the
+            // whole tail as the spell name. Try longest-prefix re-split
+            // against the spell catalog before giving up.
+            let (spell, _target) = if spells::find_spell(&raw_spell).is_some() {
+                (raw_spell, raw_target)
+            } else if let Some((resplit_name, resplit_target)) = try_resplit_spell_name(&raw_spell) {
+                // Merge: if the parser already had a target from "at"/"on",
+                // keep it; otherwise use the leftover from re-split.
+                (resplit_name, raw_target.or(resplit_target))
+            } else {
+                (raw_spell, raw_target)
+            };
             // Check if spell is known
             let spell_def = match spells::find_spell(&spell) {
                 Some(def)
@@ -4770,6 +4794,33 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
         }
     }
 
+    // -------- Pending spell target dispatch (issue #331) --------
+    // When a spell was cast without a target on the previous input, the raw
+    // input is treated as the target name. "cancel" / "nevermind" aborts
+    // without consuming the action.
+    let has_pending_spell = state
+        .active_combat
+        .as_ref()
+        .and_then(|c| c.pending_spell.as_ref())
+        .is_some();
+    if has_pending_spell {
+        let trimmed = input.trim().to_lowercase();
+        if trimmed == "cancel" || trimmed == "nevermind" {
+            if let Some(ref mut combat) = state.active_combat {
+                combat.pending_spell = None;
+            }
+            return vec!["Spell cancelled.".to_string()];
+        }
+        // Treat raw input as target. Re-issue as "cast <spell> at <target>".
+        let spell_name = state
+            .active_combat
+            .as_mut()
+            .and_then(|c| c.pending_spell.take())
+            .unwrap();
+        let synthetic = format!("cast {} at {}", spell_name, input.trim());
+        return handle_combat(state, &synthetic);
+    }
+
     // Allow non-combat commands during combat (these don't consume combat state)
     match &command {
         Command::Look(target) => {
@@ -5957,8 +6008,8 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
             return vec!["There is nothing to react to right now.".to_string()];
         }
         Command::Cast {
-            spell,
-            target,
+            spell: raw_spell,
+            target: raw_target,
             ritual,
         } => {
             // Check if caster
@@ -5975,6 +6026,16 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                         .to_string(),
                 ];
             }
+            // Issue #330: When "at"/"on" is omitted, the parser treats the
+            // whole tail as the spell name. Try longest-prefix re-split
+            // against the spell catalog before giving up.
+            let (spell, target) = if spells::find_spell(&raw_spell).is_some() {
+                (raw_spell, raw_target)
+            } else if let Some((resplit_name, resplit_target)) = try_resplit_spell_name(&raw_spell) {
+                (resplit_name, raw_target.or(resplit_target))
+            } else {
+                (raw_spell, raw_target)
+            };
             // Check if spell is known
             let spell_def = match spells::find_spell(&spell) {
                 Some(def)
@@ -6079,6 +6140,8 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                         Some(t) => t,
                         None => {
                             // Undo slot consumption (cantrip so no slot was consumed anyway)
+                            // Issue #331: store pending spell for two-step targeting
+                            combat.pending_spell = Some("Fire Bolt".to_string());
                             state.active_combat = Some(combat);
                             return vec![narration::templates::CAST_NEED_TARGET
                                 .replace("{spell}", "Fire Bolt")];
@@ -6186,6 +6249,8 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                         None => {
                             // Undo slot consumption
                             state.character.spell_slots_remaining[0] += 1;
+                            // Issue #331: store pending spell for two-step targeting
+                            combat.pending_spell = Some("Magic Missile".to_string());
                             state.active_combat = Some(combat);
                             return vec![narration::templates::CAST_NEED_TARGET
                                 .replace("{spell}", "Magic Missile")];
@@ -6403,6 +6468,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                     let target_name = match target {
                         Some(t) => t,
                         None => {
+                            combat.pending_spell = Some("Sacred Flame".to_string());
                             state.active_combat = Some(combat);
                             return vec![narration::templates::CAST_NEED_TARGET
                                 .replace("{spell}", "Sacred Flame")];
@@ -6531,6 +6597,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                         Some(t) => t,
                         None => {
                             state.character.spell_slots_remaining[0] += 1; // refund
+                            combat.pending_spell = Some("Guiding Bolt".to_string());
                             state.active_combat = Some(combat);
                             return vec![narration::templates::CAST_NEED_TARGET
                                 .replace("{spell}", "Guiding Bolt")];
@@ -6694,6 +6761,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                     let target_name = match target {
                         Some(t) => t,
                         None => {
+                            combat.pending_spell = Some("Vicious Mockery".to_string());
                             state.active_combat = Some(combat);
                             return vec![narration::templates::CAST_NEED_TARGET
                                 .replace("{spell}", "Vicious Mockery")];
@@ -6780,6 +6848,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                         Some(t) => t,
                         None => {
                             state.character.spell_slots_remaining[0] += 1; // refund
+                            combat.pending_spell = Some("Charm Person".to_string());
                             state.active_combat = Some(combat);
                             return vec![narration::templates::CAST_NEED_TARGET
                                 .replace("{spell}", "Charm Person")];
@@ -6865,6 +6934,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                         Some(t) => t,
                         None => {
                             state.character.spell_slots_remaining[0] += 1; // refund
+                            combat.pending_spell = Some("Faerie Fire".to_string());
                             state.active_combat = Some(combat);
                             return vec![narration::templates::CAST_NEED_TARGET
                                 .replace("{spell}", "Faerie Fire")];
@@ -6944,6 +7014,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                     let target_name = match target {
                         Some(t) => t,
                         None => {
+                            combat.pending_spell = Some("Eldritch Blast".to_string());
                             state.active_combat = Some(combat);
                             return vec![narration::templates::CAST_NEED_TARGET
                                 .replace("{spell}", "Eldritch Blast")];
