@@ -20095,6 +20095,7 @@ mod tests {
             weapon_name: "+2 Longsword".to_string(),
             disadvantage: false,
             attacker_had_advantage: false,
+            roll_mode_reason: String::new(),
         };
         apply_magic_weapon_bonuses(&mut r, 2, 2);
         assert!(r.hit);
@@ -20119,6 +20120,7 @@ mod tests {
             weapon_name: "+1 Longsword".to_string(),
             disadvantage: false,
             attacker_had_advantage: false,
+            roll_mode_reason: String::new(),
         };
         apply_magic_weapon_bonuses(&mut r, 1, 1);
         assert_eq!(r.damage, 9);
@@ -20142,6 +20144,7 @@ mod tests {
             weapon_name: "+3 Longsword".to_string(),
             disadvantage: false,
             attacker_had_advantage: false,
+            roll_mode_reason: String::new(),
         };
         apply_magic_weapon_bonuses(&mut r, 3, 3);
         // Nat 1 still misses, regardless of bonus.
@@ -20168,6 +20171,7 @@ mod tests {
             weapon_name: "+2 Longsword".to_string(),
             disadvantage: false,
             attacker_had_advantage: false,
+            roll_mode_reason: String::new(),
         };
         apply_magic_weapon_bonuses(&mut r, 2, 2);
         assert!(r.hit);
