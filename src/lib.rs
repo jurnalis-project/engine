@@ -2704,6 +2704,7 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
             lines
         }
         Command::CharacterSheet => render_character_sheet_with_xp(state),
+        Command::Buffs => render_active_effects(state),
         Command::Check(skill_name) => {
             match parser::resolve_skill(&skill_name) {
                 Some(skill) => {
@@ -4250,6 +4251,106 @@ fn check_player_concentration_on_damage(
 }
 
 /// Render `narrate_character_sheet` plus XP/level progression info.
+/// Render all active effects on the player character. Used by the `buffs` /
+/// `conditions` / `effects` command. Collects from:
+/// - SRD conditions (`character.conditions`)
+/// - Concentration spells (`class_features.concentration_spell`)
+/// - Mage Armor (`class_features.mage_armor_until_minutes`)
+/// - Rage (`class_features.rage_active`)
+fn render_active_effects(state: &GameState) -> Vec<String> {
+    let effects = collect_active_effects(state);
+    if effects.is_empty() {
+        return vec!["You have no active effects.".to_string()];
+    }
+    let mut lines = vec!["=== Active Effects ===".to_string()];
+    for (name, duration_text) in &effects {
+        lines.push(format!("  [{}] ({})", name, duration_text));
+    }
+    lines
+}
+
+/// Collect active effects as `(name, duration_text)` pairs. Shared by
+/// `render_active_effects` (verbose) and `format_combat_effects_compact`
+/// (inline tags in the combat status line).
+fn collect_active_effects(state: &GameState) -> Vec<(String, String)> {
+    let mut effects: Vec<(String, String)> = Vec::new();
+
+    // Mage Armor (non-concentration buff with time-based duration)
+    if let Some(until) = state.character.class_features.mage_armor_until_minutes {
+        if until > state.in_world_minutes {
+            let remaining_minutes = until - state.in_world_minutes;
+            let duration_text = if remaining_minutes >= 60 {
+                let hours = remaining_minutes / 60;
+                let mins = remaining_minutes % 60;
+                if mins == 0 {
+                    format!("{}h remaining", hours)
+                } else {
+                    format!("{}h {}m remaining", hours, mins)
+                }
+            } else {
+                format!("{}m remaining", remaining_minutes)
+            };
+            effects.push(("Mage Armor".to_string(), duration_text));
+        }
+    }
+
+    // Concentration spell
+    if let Some(ref spell) = state.character.class_features.concentration_spell {
+        effects.push((spell.clone(), "concentrating".to_string()));
+    }
+
+    // Rage (Barbarian)
+    if state.character.class_features.rage_active {
+        effects.push(("Rage".to_string(), "active".to_string()));
+    }
+
+    // SRD conditions
+    for cond in &state.character.conditions {
+        let name = match cond.condition {
+            conditions::ConditionType::Blinded => "Blinded",
+            conditions::ConditionType::Charmed => "Charmed",
+            conditions::ConditionType::Deafened => "Deafened",
+            conditions::ConditionType::Exhaustion => "Exhaustion",
+            conditions::ConditionType::Frightened => "Frightened",
+            conditions::ConditionType::Grappled => "Grappled",
+            conditions::ConditionType::Incapacitated => "Incapacitated",
+            conditions::ConditionType::Invisible => "Invisible",
+            conditions::ConditionType::Paralyzed => "Paralyzed",
+            conditions::ConditionType::Petrified => "Petrified",
+            conditions::ConditionType::Poisoned => "Poisoned",
+            conditions::ConditionType::Prone => "Prone",
+            conditions::ConditionType::Restrained => "Restrained",
+            conditions::ConditionType::Stunned => "Stunned",
+            conditions::ConditionType::Unconscious => "Unconscious",
+        };
+        let duration_text = match cond.duration {
+            conditions::ConditionDuration::Rounds(n) => {
+                if n == 1 {
+                    "1 round remaining".to_string()
+                } else {
+                    format!("{} rounds remaining", n)
+                }
+            }
+            conditions::ConditionDuration::SaveEnds { .. } => "save ends".to_string(),
+            conditions::ConditionDuration::Permanent => "permanent".to_string(),
+        };
+        effects.push((name.to_string(), duration_text));
+    }
+
+    effects
+}
+
+/// Format a compact inline effects string for the combat status line.
+/// Returns `None` if no effects are active (caller omits the line).
+fn format_combat_effects_compact(state: &GameState) -> Option<String> {
+    let effects = collect_active_effects(state);
+    if effects.is_empty() {
+        return None;
+    }
+    let tags: Vec<String> = effects.iter().map(|(name, _)| format!("[{}]", name)).collect();
+    Some(format!("Effects: {}", tags.join(" ")))
+}
+
 /// Kept in the orchestrator to avoid a `narration -> leveling` dependency.
 fn render_character_sheet_with_xp(state: &GameState) -> Vec<String> {
     let mut lines = narration::narrate_character_sheet(state);
@@ -4719,6 +4820,9 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                 &state.character.spell_slots_remaining,
                 &state.character.spell_slots_max,
             );
+        }
+        Command::Buffs => {
+            return render_active_effects(state);
         }
         // Block exploration commands
         Command::Talk(_) | Command::Take(_) | Command::TakeAll | Command::Drop(_) => {

@@ -148,6 +148,9 @@ pub enum Command {
     /// advantage. Parsed from "reckless attack <target>" / "recklessly
     /// attack <target>".
     RecklessAttack(String),
+    /// Display active buffs, conditions, and effects on the player character.
+    /// Parsed from "buffs", "conditions", "effects", or "active effects".
+    Buffs,
     Unknown(String),
 }
 
@@ -289,6 +292,9 @@ pub fn parse(input: &str) -> Command {
             "spell list" | "known spells" | "my spells" => {
                 return Command::Spells;
             }
+            "active effects" | "active buffs" | "active conditions" => {
+                return Command::Buffs;
+            }
             "new game" => {
                 return Command::NewGame;
             }
@@ -406,6 +412,7 @@ pub fn parse(input: &str) -> Command {
             if args.is_empty() { Command::Unknown("Unequip what?".to_string()) } else { Command::Unequip(args) }
         }
         "spells" => Command::Spells,
+        "buffs" | "conditions" | "effects" => Command::Buffs,
         "cast" => {
             if args.is_empty() {
                 Command::Unknown("Cast what spell?".to_string())
@@ -1788,5 +1795,26 @@ mod tests {
             parse("Recklessly Attack Orc"),
             Command::RecklessAttack("orc".to_string())
         );
+    }
+
+    // ---- Buffs / Conditions / Effects ----
+
+    #[test]
+    fn test_buffs_command_aliases() {
+        assert_eq!(parse("buffs"), Command::Buffs);
+        assert_eq!(parse("conditions"), Command::Buffs);
+        assert_eq!(parse("effects"), Command::Buffs);
+    }
+
+    #[test]
+    fn test_buffs_command_case_insensitive() {
+        assert_eq!(parse("BUFFS"), Command::Buffs);
+        assert_eq!(parse("Conditions"), Command::Buffs);
+        assert_eq!(parse("Effects"), Command::Buffs);
+    }
+
+    #[test]
+    fn test_active_effects_two_word_alias() {
+        assert_eq!(parse("active effects"), Command::Buffs);
     }
 }
