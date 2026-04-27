@@ -32,7 +32,7 @@ impl Npc {
     pub fn inspect(&self) -> Vec<String> {
         let mut lines = Vec::new();
 
-        lines.push(self.name.clone());
+        lines.push(self.display_name());
 
         let role_line = match self.role {
             NpcRole::Merchant => "A wandering merchant.",
@@ -213,10 +213,37 @@ mod tests {
     }
 
     #[test]
+    fn test_inspect_header_includes_disposition_tag() {
+        let hostile = make_npc(NpcRole::Guard, Disposition::Hostile);
+        let lines = hostile.inspect();
+        assert_eq!(
+            lines[0], "Orin the Quiet [hostile]",
+            "Inspect header should include [hostile] tag. Got: {:?}",
+            lines[0]
+        );
+
+        let merchant = make_npc(NpcRole::Merchant, Disposition::Friendly);
+        let lines = merchant.inspect();
+        assert_eq!(
+            lines[0], "Orin the Quiet [merchant]",
+            "Inspect header should include [merchant] tag. Got: {:?}",
+            lines[0]
+        );
+
+        let neutral = make_npc(NpcRole::Hermit, Disposition::Neutral);
+        let lines = neutral.inspect();
+        assert_eq!(
+            lines[0], "Orin the Quiet [neutral]",
+            "Inspect header should include [neutral] tag. Got: {:?}",
+            lines[0]
+        );
+    }
+
+    #[test]
     fn test_inspect_returns_name_as_first_line() {
         let npc = make_npc(NpcRole::Hermit, Disposition::Neutral);
         let lines = npc.inspect();
-        assert_eq!(lines[0], "Orin the Quiet");
+        assert_eq!(lines[0], "Orin the Quiet [neutral]");
     }
 
     #[test]
