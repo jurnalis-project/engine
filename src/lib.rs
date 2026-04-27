@@ -13313,6 +13313,7 @@ mod tests {
                 disposition: state::Disposition::Hostile,
                 dialogue_tags: vec![],
                 location: loc_id,
+                inventory: vec![],
                 combat_stats: None,
                 conditions: vec![],
             },
@@ -13408,6 +13409,7 @@ mod tests {
                 disposition: state::Disposition::Neutral,
                 dialogue_tags: vec![],
                 location: loc_id,
+                inventory: vec![],
                 combat_stats: None,
                 conditions: vec![],
             },
@@ -13451,6 +13453,7 @@ mod tests {
                 disposition: state::Disposition::Neutral,
                 dialogue_tags: vec![],
                 location: loc_id,
+                inventory: vec![],
                 combat_stats: None,
                 conditions: vec![],
             },
@@ -13503,6 +13506,7 @@ mod tests {
                 disposition: state::Disposition::Friendly,
                 dialogue_tags: vec![],
                 location: other_loc_id,
+                inventory: vec![],
                 combat_stats: None,
                 conditions: vec![],
             },
@@ -13533,6 +13537,7 @@ mod tests {
                 disposition: state::Disposition::Friendly,
                 dialogue_tags: vec![],
                 location: loc_id,
+                inventory: vec![],
                 combat_stats: None,
                 conditions: vec![],
             },
@@ -21696,31 +21701,6 @@ mod tests {
         if let Some(npc) = base.world.npcs.get_mut(&100) {
             npc.conditions.clear(); // remove Prone so no advantage
         }
-        // Add a friendly Guard so the ally-adjacency path can trigger (#333).
-        let guard_id: u32 = 301;
-        let loc_id = base.current_location;
-        base.world.npcs.insert(
-            guard_id,
-            state::Npc {
-                id: guard_id,
-                name: "Friendly Guard".to_string(),
-                role: state::NpcRole::Guard,
-                disposition: state::Disposition::Friendly,
-                dialogue_tags: vec![],
-                location: loc_id,
-                combat_stats: Some(state::CombatStats {
-                    max_hp: 20,
-                    current_hp: 20,
-                    ac: 14,
-                    speed: 30,
-                    ..Default::default()
-                }),
-                conditions: vec![],
-            },
-        );
-        if let Some(loc) = base.world.locations.get_mut(&loc_id) {
-            loc.npcs.push(guard_id);
-        }
         for seed in 0..40u64 {
             let mut s = base.clone();
             s.rng_seed = seed;
@@ -21780,6 +21760,9 @@ mod tests {
                 inventory: Vec::new(),
             },
         );
+        if let Some(loc) = base.world.locations.get_mut(&loc_id) {
+            loc.npcs.push(ally_id);
+        }
         for seed in 0..40u64 {
             let mut s = base.clone();
             s.rng_seed = seed;
@@ -21999,6 +21982,7 @@ mod tests {
                 disposition: state::Disposition::Friendly,
                 dialogue_tags: vec![],
                 location: loc_id,
+                inventory: vec![],
                 combat_stats: None,
                 conditions: vec![],
             },
@@ -22044,6 +22028,7 @@ mod tests {
                 disposition: state::Disposition::Friendly,
                 dialogue_tags: vec![],
                 location: loc_id,
+                inventory: vec![],
                 combat_stats: Some(state::CombatStats {
                     max_hp: 20,
                     current_hp: 20,
@@ -25467,6 +25452,7 @@ mod tests {
             disposition: state::Disposition::Hostile,
             dialogue_tags: Vec::new(),
             location: state.current_location,
+            inventory: vec![],
             combat_stats: Some(state::CombatStats {
                 max_hp: 10,
                 current_hp: 10,
