@@ -1,6 +1,6 @@
 // jurnalis-engine/src/character/feat.rs
 //
-// SRD 5.1 feat catalog. Compile-time const table in the same style as
+// SRD 2024 feat catalog. Compile-time const table in the same style as
 // `equipment::SRD_WEAPONS` / `SRD_ARMOR` (see
 // `docs/decisions/srd-const-tables.md`).
 //
@@ -66,7 +66,7 @@ impl FeatDef {
     }
 }
 
-/// SRD 5.1 feat catalog (origin + general + fighting-style).
+/// SRD 2024 feat catalog (origin + general + fighting-style).
 ///
 /// Effects marked `Flavor` are selectable but their mechanical hooks (combat
 /// damage toggles, reaction attacks, concentration advantage, etc.) land in
