@@ -12,17 +12,17 @@ use crate::rules::dice::{roll_d20, roll_dice};
 /// The `classes` field uses lowercase class-name strings (e.g. `"wizard"`,
 /// `"cleric"`) to avoid a cross-module import of the `Class` enum from
 /// `character/`. Membership queries go through [`SpellDef::is_class_spell`].
-/// The `ritual` and `concentration` flags follow the SRD 5.1 tags.
+/// The `ritual` and `concentration` flags follow the SRD 2024 tags.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpellDef {
     pub name: &'static str,
     pub level: u32,          // 0 = cantrip
     pub school: SpellSchool,
     pub casting: CastingMode,
-    /// Requires concentration per SRD 5.1. Casting a new concentration spell
+    /// Requires concentration per SRD 2024. Casting a new concentration spell
     /// drops any previous one.
     pub concentration: bool,
-    /// Has the Ritual tag per SRD 5.1. Can be cast as a ritual (no slot
+    /// Has the Ritual tag per SRD 2024. Can be cast as a ritual (no slot
     /// consumed) using `cast <spell> ritual` / `cast <spell> as ritual`.
     pub ritual: bool,
     /// Lowercase class-name strings (e.g. `"wizard"`). Used for per-class
@@ -92,7 +92,7 @@ const SORCERER: &str = "sorcerer";
 const WARLOCK: &str = "warlock";
 const WIZARD: &str = "wizard";
 
-/// Full spell catalog (cantrip through level 3, SRD 5.1 subset). Each entry
+/// Full spell catalog (cantrip through level 3, SRD 2024 subset). Each entry
 /// carries its SRD tags (ritual, concentration) and class list so the
 /// orchestrator can enforce per-class known-spell populations and the
 /// ritual/concentration flows. Levels 4+ are intentionally out of scope for
@@ -452,7 +452,7 @@ pub fn spells_for_class(class_name: &str) -> Vec<&'static SpellDef> {
     SPELLS.iter().filter(|s| s.is_class_spell(class_name)).collect()
 }
 
-/// Which ability score does this class cast with per SRD 5.1?
+/// Which ability score does this class cast with per SRD 2024?
 ///
 /// - INT: Wizard
 /// - WIS: Cleric, Druid, Ranger
@@ -470,7 +470,7 @@ pub fn spellcasting_ability(class_name: &str) -> Ability {
     }
 }
 
-/// Full-caster spell-slot progression per SRD 5.1. Index is `class_level - 1`;
+/// Full-caster spell-slot progression per SRD 2024. Index is `class_level - 1`;
 /// each row lists the number of slots per spell level (indices 0..=8 = 1st..9th).
 /// Shared by Bard, Cleric, Druid, Sorcerer, and Wizard.
 pub const FULL_CASTER_SLOT_TABLE: [[u32; 9]; 20] = [
@@ -516,7 +516,7 @@ pub const FULL_CASTER_SLOT_TABLE: [[u32; 9]; 20] = [
     [4, 3, 3, 3, 3, 2, 2, 1, 1],
 ];
 
-/// Half-caster spell-slot progression per SRD 5.1 (2014-style).
+/// Half-caster spell-slot progression per SRD 2024 (2014-style).
 /// Retained for Ranger, which still unlocks spellcasting at class level 2
 /// in this engine (Ranger 2024-SRD alignment is tracked separately and out
 /// of scope for issue #86). Index is `class_level - 1`.
@@ -609,7 +609,7 @@ pub const PALADIN_SLOT_TABLE: [[u32; 9]; 20] = [
     [4, 3, 3, 3, 2, 0, 0, 0, 0],
 ];
 
-/// Warlock Pact Magic slots per SRD 5.1. Warlocks have a small number of
+/// Warlock Pact Magic slots per SRD 2024. Warlocks have a small number of
 /// high-level slots that refresh on a short rest. Index `class_level - 1`.
 /// Slot level equals the highest entry index in each row.
 pub const WARLOCK_SLOT_TABLE: [[u32; 9]; 20] = [
@@ -1264,7 +1264,7 @@ pub fn resolve_mass_healing_word(rng: &mut impl Rng, caster_ability_score: i32) 
 /// Returns lines suitable for the `spells` command output.
 ///
 /// The `class_name` parameter controls slot labeling: Warlocks use "Pact
-/// Slot(s)" instead of the generic "Level N" labels, matching SRD 5.1 Pact
+/// Slot(s)" instead of the generic "Level N" labels, matching SRD 2024 Pact
 /// Magic terminology.
 pub fn format_known_spells(
     class_name: &str,
@@ -1318,7 +1318,7 @@ pub fn format_known_spells(
         lines.push(String::new());
         if is_warlock {
             // Warlock Pact Magic: all slots are the same level, label them
-            // as "Pact Slot(s)" per SRD 5.1.
+            // as "Pact Slot(s)" per SRD 2024.
             let total_slots: i32 = spell_slots_max.iter().sum();
             let total_remaining: i32 = spell_slots_remaining.iter().sum();
             if total_slots > 0 {
@@ -1357,7 +1357,7 @@ pub fn consume_spell_slot(
 
 /// Compute the concentration-save DC on taking damage while concentrating.
 ///
-/// Per SRD 5.1: DC = max(10, damage_taken / 2). The caster makes a
+/// Per SRD 2024: DC = max(10, damage_taken / 2). The caster makes a
 /// Constitution save against this DC; failure drops the concentration.
 pub fn concentration_save_dc(damage_taken: i32) -> i32 {
     (damage_taken / 2).max(10)

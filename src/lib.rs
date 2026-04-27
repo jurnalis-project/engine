@@ -2790,7 +2790,7 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
             };
             // Ritual cast path: the player asked to cast as a ritual, which
             // bypasses slot consumption but only works for spells with the
-            // Ritual tag. Per SRD 5.1 rituals take 10 minutes longer; since
+            // Ritual tag. Per SRD 2024 rituals take 10 minutes longer; since
             // we don't have a time system, we narrate flavor only.
             if ritual {
                 if !spell_def.ritual {
@@ -4030,6 +4030,7 @@ fn resolve_single_npc_attack(
         "fires"
     };
     if result.hit {
+        let was_dying = state.character.current_hp <= 0;
         state.character.current_hp -= result.damage;
         if result.natural_20 {
             lines.push(format!(
@@ -4047,6 +4048,16 @@ fn resolve_single_npc_attack(
                 result.damage,
                 result.damage_type
             ));
+        }
+        // Damage-while-dying: if the player was already at 0 HP when
+        // this hit landed, add a death save failure (two on a crit).
+        if was_dying {
+            let ds_outcome = combat.apply_damage_while_dying(
+                &mut state.character,
+                result.damage,
+                result.natural_20,
+            );
+            lines.extend(combat::narrate_damage_while_dying_outcome(ds_outcome));
         }
         // Concentration check: if the player is concentrating on a spell,
         // they must make a CON save (DC = max(10, damage/2)) to maintain it.
@@ -4078,7 +4089,7 @@ fn resolve_single_npc_attack(
 fn resolve_npc_spell(
     rng: &mut StdRng,
     state: &mut GameState,
-    _combat: &mut combat::CombatState,
+    combat: &mut combat::CombatState,
     npc_id: types::NpcId,
     spell_name: &str,
     _spell_level: u32,
@@ -4108,6 +4119,7 @@ fn resolve_npc_spell(
             let outcome = spells::resolve_fire_bolt(rng, int_score, proficiency_bonus, player_ac);
             if let spells::CastOutcome::FireBolt { attack, damage } = outcome {
                 if attack.hit {
+                    let was_dying = state.character.current_hp <= 0;
                     if attack.natural_20 {
                         lines.push(
                             T::NPC_CAST_FIRE_BOLT_CRIT
@@ -4126,6 +4138,14 @@ fn resolve_npc_spell(
                         );
                     }
                     state.character.current_hp -= damage;
+                    if was_dying {
+                        let ds_outcome = combat.apply_damage_while_dying(
+                            &mut state.character,
+                            damage,
+                            attack.natural_20,
+                        );
+                        lines.extend(combat::narrate_damage_while_dying_outcome(ds_outcome));
+                    }
                     check_player_concentration_on_damage(rng, state, damage, &mut lines);
                 } else if attack.natural_1 {
                     lines.push(
@@ -4147,6 +4167,7 @@ fn resolve_npc_spell(
         "Magic Missile" => {
             let outcome = spells::resolve_magic_missile(rng);
             if let spells::CastOutcome::MagicMissile { darts, total_damage } = outcome {
+                let was_dying = state.character.current_hp <= 0;
                 let d1 = darts.first().copied().unwrap_or(0);
                 let d2 = darts.get(1).copied().unwrap_or(0);
                 let d3 = darts.get(2).copied().unwrap_or(0);
@@ -4159,6 +4180,17 @@ fn resolve_npc_spell(
                         .replace("{total}", &total_damage.to_string()),
                 );
                 state.character.current_hp -= total_damage;
+                // Magic Missile auto-hits (no attack roll, never crits).
+                // SRD: all three darts strike simultaneously — one damage
+                // event, one death save failure.
+                if was_dying {
+                    let ds_outcome = combat.apply_damage_while_dying(
+                        &mut state.character,
+                        total_damage,
+                        false,
+                    );
+                    lines.extend(combat::narrate_damage_while_dying_outcome(ds_outcome));
+                }
                 check_player_concentration_on_damage(rng, state, total_damage, &mut lines);
             }
         }
@@ -4166,9 +4198,13 @@ fn resolve_npc_spell(
             let outcome = spells::resolve_scorching_ray(rng, int_score, proficiency_bonus, player_ac);
             if let spells::CastOutcome::ScorchingRay { rays, total_damage } = outcome {
                 lines.push(T::NPC_CAST_SCORCHING_RAY_INTRO.replace("{caster}", &caster_name));
+                // Each ray is a separate attack; per SRD each hitting ray
+                // adds a death save failure independently when the player
+                // is at 0 HP.
                 for (i, ray) in rays.iter().enumerate() {
                     let n = i + 1;
                     if ray.attack.hit {
+                        let was_dying = state.character.current_hp <= 0;
                         if ray.attack.natural_20 {
                             lines.push(
                                 T::NPC_CAST_SCORCHING_RAY_CRIT
@@ -4186,6 +4222,15 @@ fn resolve_npc_spell(
                                     .replace("{damage}", &ray.damage.to_string()),
                             );
                         }
+                        state.character.current_hp -= ray.damage;
+                        if was_dying {
+                            let ds_outcome = combat.apply_damage_while_dying(
+                                &mut state.character,
+                                ray.damage,
+                                ray.attack.natural_20,
+                            );
+                            lines.extend(combat::narrate_damage_while_dying_outcome(ds_outcome));
+                        }
                     } else {
                         lines.push(
                             T::NPC_CAST_SCORCHING_RAY_MISS
@@ -4196,10 +4241,13 @@ fn resolve_npc_spell(
                                 .replace("{ac}", &player_ac.to_string()),
                         );
                     }
+                    // Stop if the player is dead (three failures).
+                    if combat.death_save_failures >= 3 {
+                        break;
+                    }
                 }
                 if total_damage > 0 {
                     lines.push(T::NPC_CAST_SCORCHING_RAY_TOTAL.replace("{total}", &total_damage.to_string()));
-                    state.character.current_hp -= total_damage;
                     check_player_concentration_on_damage(rng, state, total_damage, &mut lines);
                 }
             }
@@ -4217,7 +4265,7 @@ fn resolve_npc_spell(
 ///
 /// If the player is currently concentrating on a spell and takes damage,
 /// they make a Constitution saving throw against DC max(10, damage / 2)
-/// per SRD 5.1. On failure the concentration spell drops; on success it
+/// per SRD 2024. On failure the concentration spell drops; on success it
 /// holds. No-op if the player isn't concentrating or `damage_taken <= 0`.
 fn check_player_concentration_on_damage(
     rng: &mut StdRng,
@@ -5301,7 +5349,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
             lines.push("You leave your cover, exposing yourself to attacks.".to_string());
         }
         Command::BonusDash => {
-            // SRD 5.1: bonus-action Dash is Rogue Cunning Action only.
+            // SRD 2024: bonus-action Dash is Rogue Cunning Action only.
             // Other classes do not have this ability.
             if state.character.class != character::class::Class::Rogue {
                 state.active_combat = Some(combat);
@@ -5323,7 +5371,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
             ));
         }
         Command::BonusDisengage => {
-            // SRD 5.1: bonus-action Disengage is Rogue Cunning Action only.
+            // SRD 2024: bonus-action Disengage is Rogue Cunning Action only.
             if state.character.class != character::class::Class::Rogue {
                 state.active_combat = Some(combat);
                 return vec![
@@ -8646,7 +8694,7 @@ fn resolve_use_item(
                 Some(state::ItemType::Consumable { ref effect }) => {
                     let result = match effect.as_str() {
                         "heal_srd_potion" => {
-                            // SRD 5.1 Potion of Healing: 2d4 + 2 HP.
+                            // SRD 2024 Potion of Healing: 2d4 + 2 HP.
                             let rolls = rules::dice::roll_dice(rng, 2, 4);
                             let roll_total: i32 = rolls.iter().sum::<i32>() + 2;
                             let old_hp = state.character.current_hp;
@@ -8852,7 +8900,7 @@ fn use_magic_wand(
 /// Spellcaster classes (Bard/Cleric/Druid/Paladin/Ranger/Sorcerer/Warlock/
 /// Wizard) read the scroll normally and consume it on any attempt. Non-casters
 /// must pass a DC 10 Arcana check to cast successfully; on a failure the
-/// scroll is still consumed (SRD 5.1 spell scroll rules).
+/// scroll is still consumed (SRD 2024 spell scroll rules).
 ///
 /// Full spell resolution is deferred — MVP narrates the invocation only.
 fn use_magic_scroll(
@@ -8908,7 +8956,7 @@ fn use_magic_scroll(
     (lines, true)
 }
 
-/// Return true if the character has spellcasting at class level 1+ (SRD 5.1
+/// Return true if the character has spellcasting at class level 1+ (SRD 2024
 /// full and half-casters are listed; Fighter/Rogue/Monk/Barbarian are not).
 /// Multi-class and subclass-granted casting are out of scope for this MVP.
 fn character_is_spellcaster(c: &character::Character) -> bool {
@@ -9735,7 +9783,7 @@ fn magic_weapon_bonuses(state: &GameState, weapon_id: Option<crate::types::ItemI
 /// Apply a magic weapon's attack/damage bonuses to an AttackResult in place.
 /// Re-evaluates `hit` and `total_attack` with the attack bonus, and adds
 /// `damage_bonus` to damage on hit (crits already double dice; the flat
-/// bonus is NOT doubled, per SRD 5.1).
+/// bonus is NOT doubled, per SRD 2024).
 fn apply_magic_weapon_bonuses(
     result: &mut combat::AttackResult,
     attack_bonus: i32,
@@ -9889,22 +9937,35 @@ fn sneak_attack_weapon_eligible(
     combat::sneak_attack_weapon_qualifies(properties, is_ranged_attack)
 }
 
+/// Returns true when a non-incapacitated Friendly NPC exists in the
+/// player's current location — the SRD "ally within 5 feet" proxy for
+/// the 1D combat model. Only Friendly disposition counts; Neutral and
+/// Hostile NPCs are not allies of the player.
+fn has_adjacent_ally(state: &GameState) -> bool {
+    let loc = state.current_location;
+    state.world.npcs.values().any(|npc| {
+        npc.location == loc
+            && npc.disposition == state::Disposition::Friendly
+            && !conditions::is_incapacitated(&npc.conditions)
+    })
+}
+
 /// Apply a Rogue's Sneak Attack bonus damage if the player is a Rogue,
 /// the attack hit, the weapon qualifies (Finesse or ranged), and at least
-/// one of the two SRD trigger conditions is satisfied:
+/// one of the two SRD 5.2.1 trigger conditions is satisfied:
 ///
 ///   1. The attacker had Advantage on the attack roll.
-///   2. An ally is within 5 feet of the target AND the attacker does NOT
-///      have Disadvantage. The 1D combat engine has no ally-adjacency
-///      concept, so condition 2 is approximated as: no Disadvantage on
-///      the roll (allies can be assumed potentially adjacent in melee).
+///   2. A non-incapacitated ally is within 5 feet of the target AND the
+///      attacker does NOT have Disadvantage. The 1D combat engine proxies
+///      this as: a Friendly NPC exists in the player's current location
+///      and the attacker has no Disadvantage.
 ///
-/// Sneak Attack is BLOCKED when the attacker had Disadvantage regardless
-/// of the trigger path — that is the SRD rule.
+/// If neither condition is met the attack resolves normally with no bonus
+/// damage.
 ///
 /// Mutates `result.damage` in place so downstream damage application uses
 /// the boosted total. Appends a narration line like
-/// `Sneak Attack: +5 damage (1d6 -> 5).`
+/// `Sneak Attack (advantage): +5 damage (1d6).`
 fn apply_sneak_attack(
     rng: &mut StdRng,
     state: &mut GameState,
@@ -9922,12 +9983,16 @@ fn apply_sneak_attack(
     if state.character.class_features.sneak_attack_used_this_turn {
         return;
     }
-    // SRD trigger: advantage path OR no-disadvantage path (ally-adjacency
-    // approximation). Disadvantage always blocks Sneak Attack.
-    if !result.attacker_had_advantage && result.disadvantage {
+    if !sneak_attack_weapon_eligible(state, weapon_id, distance) {
         return;
     }
-    if !sneak_attack_weapon_eligible(state, weapon_id, distance) {
+    // SRD 5.2.1 trigger conditions:
+    //   Path 1: attacker had Advantage on the attack roll.
+    //   Path 2: a non-incapacitated ally is within 5 ft of the target
+    //           AND the attacker does NOT have Disadvantage.
+    let advantage_path = result.attacker_had_advantage;
+    let ally_path = !result.disadvantage && has_adjacent_ally(state);
+    if !advantage_path && !ally_path {
         return;
     }
     let level = state.character.level;
@@ -9936,9 +10001,10 @@ fn apply_sneak_attack(
     result.damage += bonus;
     state.character.class_features.sneak_attack_used_this_turn = true;
     let dice_label = if result.natural_20 { dice * 2 } else { dice };
+    let trigger = if advantage_path { "advantage" } else { "adjacent ally" };
     lines.push(format!(
-        "Sneak Attack: +{} damage ({}d6).",
-        bonus, dice_label,
+        "Sneak Attack ({}): +{} damage ({}d6).",
+        trigger, bonus, dice_label,
     ));
 }
 
@@ -14849,7 +14915,7 @@ mod tests {
     fn test_attack_then_bonus_dash_allowed_on_same_turn() {
         // Attack consumes action; movement goes to zero; player can still
         // spend a bonus action (e.g. bonus dash) before ending the turn.
-        // Rogue is used because bonus-action Dash requires Cunning Action (SRD 5.1).
+        // Rogue is used because bonus-action Dash requires Cunning Action (SRD 2024).
         let mut state = create_test_rogue_combat_state();
         // Ensure goblin survives the attack so combat persists through bonus action.
         if let Some(npc) = state.world.npcs.get_mut(&100) {
@@ -15006,7 +15072,7 @@ mod tests {
     fn test_ranged_attack_at_distance_5_with_other_hostile_in_melee_has_disadvantage() {
         // Integration: verify hostile_within_5ft wiring at every relevant call site
         // by firing at a target at exactly 5 ft (the documented trigger boundary).
-        // SRD 5.1: ranged attacks within 5 ft of ANY living hostile have disadvantage.
+        // SRD 2024: ranged attacks within 5 ft of ANY living hostile have disadvantage.
         let mut state = create_test_combat_state();
         force_player_turn(&mut state);
 
@@ -16231,7 +16297,7 @@ mod tests {
         );
     }
 
-    /// Hypothesis: Shield is reaction-only per SRD 5.1. Typing `cast shield`
+    /// Hypothesis: Shield is reaction-only per SRD 2024. Typing `cast shield`
     /// on the player's turn should be rejected, not consume an action or slot.
     #[test]
     fn test_cast_shield_on_player_turn_is_rejected_as_reaction_only() {
@@ -17368,7 +17434,7 @@ mod tests {
 
     #[test]
     fn test_bonus_dash_rejected_for_non_rogue() {
-        // SRD 5.1: bonus-action Dash is only available to Rogues via Cunning Action.
+        // SRD 2024: bonus-action Dash is only available to Rogues via Cunning Action.
         // A Fighter should not be able to use it.
         let mut state = create_test_combat_state();
         force_player_turn(&mut state);
@@ -17664,7 +17730,7 @@ mod tests {
 
     #[test]
     fn test_srd_potion_of_healing_heals_2d4_plus_2() {
-        // SRD 5.1 Potion of Healing: 2d4 + 2 HP healing.
+        // SRD 2024 Potion of Healing: 2d4 + 2 HP healing.
         // Test across multiple seeds to verify the range (min 4, max 10).
         let mut min_heal = i32::MAX;
         let mut max_heal = i32::MIN;
@@ -20226,6 +20292,7 @@ mod tests {
             weapon_name: "+2 Longsword".to_string(),
             disadvantage: false,
             attacker_had_advantage: false,
+            roll_mode_reason: String::new(),
         };
         apply_magic_weapon_bonuses(&mut r, 2, 2);
         assert!(r.hit);
@@ -20250,6 +20317,7 @@ mod tests {
             weapon_name: "+1 Longsword".to_string(),
             disadvantage: false,
             attacker_had_advantage: false,
+            roll_mode_reason: String::new(),
         };
         apply_magic_weapon_bonuses(&mut r, 1, 1);
         assert_eq!(r.damage, 9);
@@ -20273,6 +20341,7 @@ mod tests {
             weapon_name: "+3 Longsword".to_string(),
             disadvantage: false,
             attacker_had_advantage: false,
+            roll_mode_reason: String::new(),
         };
         apply_magic_weapon_bonuses(&mut r, 3, 3);
         // Nat 1 still misses, regardless of bonus.
@@ -20299,6 +20368,7 @@ mod tests {
             weapon_name: "+2 Longsword".to_string(),
             disadvantage: false,
             attacker_had_advantage: false,
+            roll_mode_reason: String::new(),
         };
         apply_magic_weapon_bonuses(&mut r, 2, 2);
         assert!(r.hit);
@@ -21200,6 +21270,12 @@ mod tests {
                 "Expected Sneak Attack narration on a Rogue Finesse hit with advantage, got: {:?}",
                 output.text
             );
+            // Narration should indicate the advantage trigger.
+            assert!(
+                output.text.iter().any(|t| t.contains("Sneak Attack (advantage)")),
+                "SA narration should indicate 'advantage' trigger, got: {:?}",
+                output.text
+            );
             let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
             assert!(
                 new_state
@@ -21214,10 +21290,10 @@ mod tests {
     }
 
     #[test]
-    fn test_rogue_sneak_attack_fires_on_finesse_hit_no_advantage_no_disadvantage() {
+    fn test_rogue_sneak_attack_does_not_fire_without_advantage_or_ally() {
         // Rogue with Shortsword (Finesse), no advantage source (remove Prone),
-        // and no disadvantage source. Per SRD two-path rule (issue #226) the
-        // ally-adjacency path fires: no disadvantage means SA applies.
+        // no disadvantage source, and NO friendly ally in the room. Per
+        // SRD 5.2.1 neither trigger condition is met so SA must NOT fire.
         let mut base = rogue_sneak_attack_setup();
         if let Some(npc) = base.world.npcs.get_mut(&100) {
             npc.conditions.clear(); // remove Prone so no advantage
@@ -21228,14 +21304,79 @@ mod tests {
             s.rng_counter = 0;
             let state_json = serde_json::to_string(&s).unwrap();
             let output = process_input(&state_json, "attack test goblin");
+            // Whether the attack hits or misses, SA must not fire without a
+            // trigger condition.
+            assert!(
+                !output.text.iter().any(|t| t.contains("Sneak Attack")),
+                "SA should NOT fire without advantage or an adjacent ally \
+                 (seed {}). Got: {:?}",
+                seed,
+                output.text
+            );
+            let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+            assert!(
+                !new_state
+                    .character
+                    .class_features
+                    .sneak_attack_used_this_turn,
+                "sneak_attack_used_this_turn should remain unset without trigger"
+            );
+        }
+    }
+
+    #[test]
+    fn test_rogue_sneak_attack_fires_via_ally_path_with_friendly_npc() {
+        // Rogue with Shortsword (Finesse), no advantage (remove Prone), no
+        // disadvantage, but a Friendly NPC in the same location. The ally-
+        // adjacency trigger path (SRD 5.2.1 path 2) should fire SA.
+        let mut base = rogue_sneak_attack_setup();
+        if let Some(npc) = base.world.npcs.get_mut(&100) {
+            npc.conditions.clear(); // remove Prone so no advantage
+        }
+        // Boost goblin HP so SA doesn't end combat.
+        if let Some(npc) = base.world.npcs.get_mut(&100) {
+            if let Some(ref mut stats) = npc.combat_stats {
+                stats.max_hp = 200;
+                stats.current_hp = 200;
+            }
+        }
+        // Place a Friendly NPC in the same room as the player.
+        let ally_id = 999;
+        let loc_id = base.current_location;
+        base.world.npcs.insert(
+            ally_id,
+            state::Npc {
+                id: ally_id,
+                name: "Friendly Guard".to_string(),
+                role: state::NpcRole::Guard,
+                disposition: state::Disposition::Friendly,
+                dialogue_tags: vec![],
+                location: loc_id,
+                combat_stats: None,
+                conditions: Vec::new(),
+            },
+        );
+        for seed in 0..40u64 {
+            let mut s = base.clone();
+            s.rng_seed = seed;
+            s.rng_counter = 0;
+            let state_json = serde_json::to_string(&s).unwrap();
+            let output = process_input(&state_json, "attack test goblin");
             if !output.text.iter().any(|t| t.contains("hit for")) {
                 continue;
             }
-            // Hit landed with no advantage and no disadvantage -- SA must fire.
+            // Hit with a Friendly ally present and no disadvantage -- SA fires.
             assert!(
                 output.text.iter().any(|t| t.contains("Sneak Attack")),
-                "SA should fire on a Finesse hit with no advantage and no disadvantage \
-                 (seed {}). Got: {:?}",
+                "SA should fire via ally-adjacency path when a Friendly NPC is \
+                 present (seed {}). Got: {:?}",
+                seed,
+                output.text
+            );
+            // Narration should mention "adjacent ally" trigger.
+            assert!(
+                output.text.iter().any(|t| t.contains("adjacent ally")),
+                "SA narration should indicate 'adjacent ally' trigger (seed {}). Got: {:?}",
                 seed,
                 output.text
             );
@@ -21245,11 +21386,53 @@ mod tests {
                     .character
                     .class_features
                     .sneak_attack_used_this_turn,
-                "sneak_attack_used_this_turn should be set after SA fires (no-adv path)"
+                "sneak_attack_used_this_turn should be set after SA fires (ally path)"
             );
             return;
         }
         panic!("Did not land a Rogue hit in 40 seeds; fixture may need adjustment.");
+    }
+
+    #[test]
+    fn test_rogue_sneak_attack_ally_path_blocked_when_ally_incapacitated() {
+        // Friendly NPC exists but is Incapacitated — ally-adjacency path
+        // must NOT fire. Without advantage the attack has no SA trigger.
+        let mut base = rogue_sneak_attack_setup();
+        if let Some(npc) = base.world.npcs.get_mut(&100) {
+            npc.conditions.clear(); // remove Prone
+        }
+        let ally_id = 999;
+        let loc_id = base.current_location;
+        base.world.npcs.insert(
+            ally_id,
+            state::Npc {
+                id: ally_id,
+                name: "Stunned Guard".to_string(),
+                role: state::NpcRole::Guard,
+                disposition: state::Disposition::Friendly,
+                dialogue_tags: vec![],
+                location: loc_id,
+                combat_stats: None,
+                conditions: vec![crate::conditions::ActiveCondition::new(
+                    crate::conditions::ConditionType::Incapacitated,
+                    crate::conditions::ConditionDuration::Permanent,
+                )],
+            },
+        );
+        for seed in 0..40u64 {
+            let mut s = base.clone();
+            s.rng_seed = seed;
+            s.rng_counter = 0;
+            let state_json = serde_json::to_string(&s).unwrap();
+            let output = process_input(&state_json, "attack test goblin");
+            assert!(
+                !output.text.iter().any(|t| t.contains("Sneak Attack")),
+                "SA should NOT fire when the only ally is Incapacitated \
+                 (seed {}). Got: {:?}",
+                seed,
+                output.text
+            );
+        }
     }
 
     #[test]
@@ -24605,6 +24788,253 @@ mod tests {
             !text.contains("Counterspell"),
             "Should not offer Counterspell at 0 HP. Got: {}",
             text
+        );
+    }
+
+    // Hypothesis: When an NPC spell (e.g. Magic Missile) hits a player already
+    // at 0 HP, `resolve_npc_spell` subtracts HP but never calls
+    // `CombatState::apply_damage_while_dying`, so no death save failure is
+    // recorded. The fix: capture `was_dying` before damage, then call
+    // `apply_damage_while_dying` and narrate the outcome when `was_dying` is
+    // true.
+    #[test]
+    fn test_npc_spell_damage_at_0_hp_adds_death_save_failure() {
+        // Build a Fighter (no Counterspell) at 0 HP in combat against an NPC
+        // mage that knows Magic Missile (auto-hit, guaranteed damage).
+        let mut state = create_test_exploration_state();
+        state.character.current_hp = 0;
+        state.character.max_hp = 30;
+
+        let npc_id: types::NpcId = 100;
+        let loc_id = state.current_location;
+        state.world.npcs.insert(
+            npc_id,
+            state::Npc {
+                id: npc_id,
+                name: "Evil Mage".to_string(),
+                role: state::NpcRole::Guard,
+                disposition: state::Disposition::Hostile,
+                dialogue_tags: vec![],
+                location: loc_id,
+                combat_stats: Some(state::CombatStats {
+                    max_hp: 40,
+                    current_hp: 40,
+                    ac: 12,
+                    speed: 30,
+                    ability_scores: {
+                        let mut m = HashMap::new();
+                        m.insert(Ability::Intelligence, 16);
+                        m
+                    },
+                    attacks: vec![state::NpcAttack {
+                        name: "Staff".to_string(),
+                        hit_bonus: 2,
+                        damage_dice: 1,
+                        damage_die: 6,
+                        damage_bonus: 0,
+                        damage_type: state::DamageType::Bludgeoning,
+                        reach: 5,
+                        range_normal: 0,
+                        range_long: 0,
+                    }],
+                    proficiency_bonus: 2,
+                    cr: 1.0,
+                    spells: vec![
+                        state::NpcSpell { name: "Magic Missile".to_string(), level: 1 },
+                    ],
+                    spell_slots: {
+                        let mut m = HashMap::new();
+                        m.insert(1, 4);
+                        m
+                    },
+                    ..Default::default()
+                }),
+                conditions: Vec::new(),
+            },
+        );
+        if let Some(loc) = state.world.locations.get_mut(&loc_id) {
+            loc.npcs.push(npc_id);
+        }
+
+        // Give player a weapon
+        let weapon_id = 200;
+        state.world.items.insert(
+            weapon_id,
+            state::Item {
+                id: weapon_id,
+                name: "Longsword".to_string(),
+                description: "A sturdy blade.".to_string(),
+                item_type: state::ItemType::Weapon {
+                    damage_dice: 1, damage_die: 8,
+                    damage_type: state::DamageType::Slashing,
+                    properties: crate::equipment::VERSATILE,
+                    category: state::WeaponCategory::Martial,
+                    versatile_die: 10, range_normal: 0, range_long: 0,
+                },
+                location: None,
+                carried_by_player: true,
+                charges_remaining: None,
+            },
+        );
+        state.character.inventory.push(weapon_id);
+        state.character.equipped.main_hand = Some(weapon_id);
+
+        // Build combat: player first in initiative, NPC at distance 30
+        // (outside melee, so NPC will cast a spell instead of melee attack).
+        state.active_combat = Some(combat::CombatState {
+            initiative_order: vec![
+                (combat::Combatant::Player, 20),
+                (combat::Combatant::Npc(npc_id), 10),
+            ],
+            round: 1,
+            distances: {
+                let mut d = HashMap::new();
+                d.insert(npc_id, 30);
+                d
+            },
+            player_movement_remaining: 30,
+            ..Default::default()
+        });
+
+        // Player is dying; pass turn with "wait" so the NPC takes its turn
+        // and casts Magic Missile.
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "wait");
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        let text = output.text.join("\n");
+
+        // Magic Missile is auto-hit. The narration template says "conjures
+        // three darts of force" rather than the literal spell name.
+        assert!(
+            text.contains("darts of force") || text.contains("Magic Missile"),
+            "NPC should cast Magic Missile. Got: {}",
+            text,
+        );
+
+        // The player was at 0 HP when the spell hit, so at least one death
+        // save failure must have been recorded.
+        let combat = new_state.active_combat.as_ref()
+            .expect("combat should still be active");
+        assert!(
+            combat.death_save_failures >= 1,
+            "Spell damage at 0 HP should add at least 1 death save failure, got {}. Output: {}",
+            combat.death_save_failures,
+            text,
+        );
+        // Narration should mention the death save failure.
+        assert!(
+            text.to_lowercase().contains("death save failure") || text.to_lowercase().contains("dying target"),
+            "Expected death save failure narration. Got: {}",
+            text,
+        );
+    }
+
+    // Same scenario but with Fire Bolt (attack roll, can crit). We call
+    // resolve_npc_spell directly so the test is seed-independent: using
+    // INT 30 (+10) + PB 6 = +16 to hit guarantees a hit on any roll >= 2
+    // (auto-hit on nat-20, miss only on nat-1).  We iterate a small pool of
+    // seeds until we get a non-nat-1 result, which typically succeeds on the
+    // first or second attempt.
+    #[test]
+    fn test_npc_fire_bolt_at_0_hp_adds_death_save_failure() {
+        let npc_id: types::NpcId = 100;
+
+        // Build a Fighter at 0 HP.
+        let mut state = create_test_exploration_state();
+        state.character.current_hp = 0;
+        state.character.max_hp = 30;
+
+        let loc_id = state.current_location;
+
+        // NPC mage with INT 30 so the spell attack roll hits on any d20 >= 2.
+        // No physical attacks (reach 0) so resolve_npc_spell is the only path.
+        state.world.npcs.insert(
+            npc_id,
+            state::Npc {
+                id: npc_id,
+                name: "Evil Mage".to_string(),
+                role: state::NpcRole::Guard,
+                disposition: state::Disposition::Hostile,
+                dialogue_tags: vec![],
+                location: loc_id,
+                combat_stats: Some(state::CombatStats {
+                    max_hp: 40,
+                    current_hp: 40,
+                    ac: 12,
+                    speed: 30,
+                    ability_scores: {
+                        let mut m = HashMap::new();
+                        m.insert(Ability::Intelligence, 30); // +10 → always hits unless nat-1
+                        m
+                    },
+                    attacks: vec![],
+                    proficiency_bonus: 6,
+                    cr: 1.0,
+                    spells: vec![
+                        state::NpcSpell { name: "Fire Bolt".to_string(), level: 0 },
+                    ],
+                    spell_slots: HashMap::new(), // cantrip, no slots needed
+                    ..Default::default()
+                }),
+                conditions: Vec::new(),
+            },
+        );
+        if let Some(loc) = state.world.locations.get_mut(&loc_id) {
+            loc.npcs.push(npc_id);
+        }
+
+        // Build a minimal CombatState (current_turn not used here).
+        let mut combat = combat::CombatState {
+            initiative_order: vec![
+                (combat::Combatant::Player, 20),
+                (combat::Combatant::Npc(npc_id), 10),
+            ],
+            round: 1,
+            distances: {
+                let mut d = HashMap::new();
+                d.insert(npc_id, 30);
+                d
+            },
+            player_movement_remaining: 30,
+            ..Default::default()
+        };
+
+        // Try seeds 0..20; with INT 30 a hit occurs on any d20 != 1 (95%).
+        // We expect success within the first few attempts.
+        let mut hit_found = false;
+        for seed in 0u64..20 {
+            let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+            let mut test_state = state.clone();
+            let mut test_combat = combat.clone();
+
+            let lines = resolve_npc_spell(
+                &mut rng,
+                &mut test_state,
+                &mut test_combat,
+                npc_id,
+                "Fire Bolt",
+                0,
+            );
+            let text = lines.join("\n");
+
+            // A hit produces "fire damage" narration; a nat-1 or miss does not.
+            // The template is "hurls a bolt of fire … {damage} fire damage!"
+            if text.contains("fire damage") || text.contains("CRITICAL HIT") {
+                assert!(
+                    test_combat.death_save_failures >= 1,
+                    "Fire Bolt hit at 0 HP must add a death save failure \
+                     (got {}). seed={}, output: {}",
+                    test_combat.death_save_failures,
+                    seed,
+                    text,
+                );
+                hit_found = true;
+                break;
+            }
+        }
+        assert!(
+            hit_found,
+            "No Fire Bolt hit found in first 20 seeds — check INT/PB values"
         );
     }
 }
