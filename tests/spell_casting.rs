@@ -87,6 +87,7 @@ fn create_wizard_combat_state_json() -> String {
             ..Default::default()
         }),
         conditions: vec![],
+        inventory: vec![],
     };
     state.world.npcs.insert(npc_id, goblin);
 
@@ -136,6 +137,7 @@ fn create_wizard_multi_combat_state_json() -> String {
                 ..Default::default()
             }),
             conditions: vec![],
+            inventory: vec![],
         }
     };
 
@@ -422,6 +424,7 @@ fn attach_goblin_and_start_combat(state_json: &str) -> String {
             ..Default::default()
         }),
         conditions: vec![],
+        inventory: vec![],
     };
     state.world.npcs.insert(npc_id, goblin);
 

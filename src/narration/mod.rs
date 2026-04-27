@@ -522,6 +522,7 @@ mod tests {
                 location: 0,
                 combat_stats: None,
                 conditions: vec![],
+                inventory: vec![],
             },
         );
         npcs.insert(
@@ -535,6 +536,7 @@ mod tests {
                 location: 0,
                 combat_stats: None,
                 conditions: vec![],
+                inventory: vec![],
             },
         );
 

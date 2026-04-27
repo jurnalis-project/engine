@@ -3487,6 +3487,7 @@ mod tests {
                 location: 0,
                 combat_stats: Some(goblin_stats()),
                 conditions: Vec::new(),
+                inventory: Vec::new(),
             },
         );
 
@@ -4464,6 +4465,7 @@ mod tests {
                 location: 0,
                 combat_stats: Some(goblin_stats()),
                 conditions: Vec::new(),
+                inventory: Vec::new(),
             },
         );
         npcs.insert(
@@ -4477,6 +4479,7 @@ mod tests {
                 location: 0,
                 combat_stats: Some(goblin_stats()),
                 conditions: Vec::new(),
+                inventory: Vec::new(),
             },
         );
 
@@ -4638,6 +4641,7 @@ mod tests {
                     ..Default::default()
                 }),
                 conditions: Vec::new(),
+                inventory: Vec::new(),
             },
         );
 
@@ -6083,6 +6087,7 @@ mod tests {
             location: 0,
             combat_stats: Some(stats),
             conditions: Vec::new(),
+            inventory: Vec::new(),
         }
     }
 
@@ -6160,6 +6165,7 @@ mod tests {
             location: 0,
             combat_stats: None,
             conditions: Vec::new(),
+            inventory: Vec::new(),
         };
         let applied = try_apply_condition_to_npc(
             &mut npc,
@@ -6410,6 +6416,7 @@ mod tests {
             location: 0,
             combat_stats: None,
             conditions: Vec::new(),
+            inventory: Vec::new(),
         };
         let mut narr = Vec::new();
         let dealt = apply_damage_to_npc(&mut npc, 50, DamageType::Slashing, &mut narr);
@@ -6446,6 +6453,7 @@ mod tests {
             location: 0,
             combat_stats: Some(goblin_stats()),
             conditions: Vec::new(),
+            inventory: Vec::new(),
         }
     }
 
@@ -7996,6 +8004,7 @@ mod tests {
                 location: 0,
                 combat_stats: Some(goblin_stats()),
                 conditions: Vec::new(),
+                inventory: Vec::new(),
             },
         );
         // Grapple the goblin (NPC 0) by the player.
@@ -8208,6 +8217,7 @@ mod tests {
                     ..Default::default()
                 }),
                 conditions: Vec::new(),
+                inventory: Vec::new(),
             });
 
             GameState {
@@ -8388,6 +8398,7 @@ mod tests {
                     ..Default::default()
                 }),
                 conditions: Vec::new(),
+                inventory: Vec::new(),
             },
         );
 

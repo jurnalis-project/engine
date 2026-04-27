@@ -13296,6 +13296,7 @@ mod tests {
                     ..state::CombatStats::default()
                 }),
                 conditions: vec![],
+                inventory: vec![],
             },
         );
         state
@@ -13711,6 +13712,7 @@ mod tests {
                 location: state.current_location,
                 combat_stats: None,
                 conditions: vec![],
+                inventory: vec![],
             },
         );
         state
@@ -14175,6 +14177,7 @@ mod tests {
                 location: state.current_location,
                 combat_stats: None,
                 conditions: vec![],
+                inventory: vec![],
             },
         );
 
@@ -14198,6 +14201,7 @@ mod tests {
             location: 0,
             combat_stats: None,
             conditions: vec![],
+            inventory: vec![],
         };
         let location = state::Location {
             id: 0,
@@ -14236,6 +14240,7 @@ mod tests {
             location: 0,
             combat_stats: None,
             conditions: vec![],
+            inventory: vec![],
         };
 
         let mut rng = StdRng::seed_from_u64(11);
@@ -14261,6 +14266,7 @@ mod tests {
             location: 0,
             combat_stats: None,
             conditions: vec![],
+            inventory: vec![],
         };
 
         let location = state::Location {
@@ -14309,6 +14315,7 @@ mod tests {
                 location: loc_id,
                 combat_stats: None,
                 conditions: vec![],
+                inventory: vec![],
             },
         );
         state.world.npcs.insert(
@@ -14326,6 +14333,7 @@ mod tests {
                     ..state::CombatStats::default()
                 }),
                 conditions: vec![],
+                inventory: vec![],
             },
         );
 
@@ -14359,6 +14367,7 @@ mod tests {
                 location: loc_id,
                 combat_stats: None,
                 conditions: vec![],
+                inventory: vec![],
             },
         );
 
@@ -14400,6 +14409,7 @@ mod tests {
                     location: loc_id,
                     combat_stats: None,
                     conditions: vec![],
+                    inventory: vec![],
                 },
             );
             if let Some(loc) = state.world.locations.get_mut(&loc_id) {
@@ -14440,6 +14450,7 @@ mod tests {
                 location: loc_id,
                 combat_stats: None,
                 conditions: vec![],
+                inventory: vec![],
             },
         );
         state.world.items.insert(
@@ -14803,6 +14814,7 @@ mod tests {
                     ..Default::default()
                 }),
                 conditions: Vec::new(),
+                inventory: Vec::new(),
             },
         );
         if let Some(loc) = state.world.locations.get_mut(&loc_id) {
@@ -14883,6 +14895,7 @@ mod tests {
                 ..Default::default()
             }),
             conditions: Vec::new(),
+            inventory: Vec::new(),
         });
         if let Some(loc) = state.world.locations.get_mut(&loc_id) {
             loc.npcs.push(npc_id);
@@ -15414,6 +15427,7 @@ mod tests {
                     ..Default::default()
                 }),
                 conditions: Vec::new(),
+                inventory: Vec::new(),
             },
         );
         if let Some(loc) = state.world.locations.get_mut(&loc_id) {
@@ -15821,6 +15835,7 @@ mod tests {
                     ..Default::default()
                 }),
                 conditions: Vec::new(),
+                inventory: Vec::new(),
             },
         );
         if let Some(loc) = state.world.locations.get_mut(&loc_id) {
@@ -15913,6 +15928,7 @@ mod tests {
                     ..Default::default()
                 }),
                 conditions: Vec::new(),
+                inventory: Vec::new(),
             },
         );
         if let Some(loc) = state.world.locations.get_mut(&loc_id) {
@@ -16531,6 +16547,7 @@ mod tests {
                     ..Default::default()
                 }),
                 conditions: Vec::new(),
+                inventory: Vec::new(),
             },
         );
         if let Some(loc) = state.world.locations.get_mut(&loc_id) {
@@ -18257,6 +18274,7 @@ mod tests {
                     ..Default::default()
                 }),
                 conditions: vec![],
+                inventory: vec![],
             },
         );
 
@@ -18509,6 +18527,7 @@ mod tests {
                     ..Default::default()
                 }),
                 conditions: vec![],
+                inventory: vec![],
             },
         );
 
@@ -19066,6 +19085,7 @@ mod tests {
                     ..Default::default()
                 }),
                 conditions: vec![],
+                inventory: vec![],
             },
         );
 
@@ -19082,6 +19102,7 @@ mod tests {
                 location: loc_id,
                 combat_stats: None, // No combat stats (friendly)
                 conditions: vec![],
+                inventory: vec![],
             },
         );
 
@@ -19496,6 +19517,7 @@ mod tests {
                     ..Default::default()
                 }),
                 conditions: vec![],
+                inventory: vec![],
             },
         );
         state.active_combat = Some(CombatState {
@@ -19548,6 +19570,7 @@ mod tests {
                         ..Default::default()
                     }),
                     conditions: vec![],
+                    inventory: vec![],
                 },
             );
         }
@@ -19601,6 +19624,7 @@ mod tests {
                     ..Default::default()
                 }),
                 conditions: vec![],
+                inventory: vec![],
             },
         );
         state.active_combat = Some(CombatState {
@@ -19639,6 +19663,7 @@ mod tests {
                     ..Default::default()
                 }),
                 conditions: vec![],
+                inventory: vec![],
             },
         );
         state.progress.objectives.push(state::Objective {
@@ -21652,6 +21677,7 @@ mod tests {
                 location: loc_id,
                 combat_stats: None,
                 conditions: Vec::new(),
+                inventory: Vec::new(),
             },
         );
         for seed in 0..40u64 {
@@ -21715,6 +21741,7 @@ mod tests {
                     crate::conditions::ConditionType::Incapacitated,
                     crate::conditions::ConditionDuration::Permanent,
                 )],
+                inventory: vec![],
             },
         );
         for seed in 0..40u64 {
@@ -23363,6 +23390,7 @@ mod tests {
             location: room_b_id,
             combat_stats: None,
             conditions: vec![],
+            inventory: vec![],
         });
         state.world.locations.get_mut(&room_b_id).unwrap().npcs.push(merchant_npc_id);
 
@@ -23531,6 +23559,7 @@ mod tests {
                 ..Default::default()
             }),
             conditions: Vec::new(),
+            inventory: Vec::new(),
         });
         if let Some(loc) = state.world.locations.get_mut(&loc_id) {
             loc.npcs.push(npc_id);
@@ -24814,6 +24843,7 @@ mod tests {
                     ..Default::default()
                 }),
                 conditions: Vec::new(),
+                inventory: Vec::new(),
             },
         );
         if let Some(loc) = state.world.locations.get_mut(&loc_id) {
@@ -25323,6 +25353,7 @@ mod tests {
                     ..Default::default()
                 }),
                 conditions: Vec::new(),
+                inventory: Vec::new(),
             },
         );
         if let Some(loc) = state.world.locations.get_mut(&loc_id) {
@@ -25450,6 +25481,7 @@ mod tests {
                     ..Default::default()
                 }),
                 conditions: Vec::new(),
+                inventory: Vec::new(),
             },
         );
         if let Some(loc) = state.world.locations.get_mut(&loc_id) {

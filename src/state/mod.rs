@@ -183,6 +183,12 @@ pub struct Npc {
     pub combat_stats: Option<CombatStats>,
     #[serde(default)]
     pub conditions: Vec<ActiveCondition>,
+    /// Item IDs stocked by this NPC (Merchants only). Populated during
+    /// world generation. Empty for non-Merchant NPCs and for older saves
+    /// that predate merchant inventory. `#[serde(default)]` ensures
+    /// backward-compatible deserialization.
+    #[serde(default)]
+    pub inventory: Vec<ItemId>,
 }
 
 /// A spell known by an NPC combatant. MVP: name + level only; the engine
@@ -1167,5 +1173,40 @@ mod tests {
         assert_eq!(loaded.spell_slots.get(&1).copied(), Some(4));
         assert_eq!(loaded.spell_slots.get(&2).copied(), Some(2));
         assert_eq!(loaded.spell_slots.get(&3), None);
+    }
+
+    #[test]
+    fn test_npc_inventory_defaults_empty_when_missing() {
+        // Older saves without the `inventory` field should deserialize to empty Vec.
+        let json = r#"{
+            "id": 0,
+            "name": "Marcus",
+            "role": "Merchant",
+            "disposition": "Friendly",
+            "dialogue_tags": [],
+            "location": 0,
+            "combat_stats": null
+        }"#;
+        let npc: Npc = serde_json::from_str(json).unwrap();
+        assert!(npc.inventory.is_empty(),
+            "Missing inventory field should default to empty Vec");
+    }
+
+    #[test]
+    fn test_npc_inventory_roundtrips() {
+        let npc = Npc {
+            id: 0,
+            name: "Marcus".to_string(),
+            role: NpcRole::Merchant,
+            disposition: Disposition::Friendly,
+            dialogue_tags: vec![],
+            location: 0,
+            combat_stats: None,
+            conditions: vec![],
+            inventory: vec![10, 11, 12],
+        };
+        let json = serde_json::to_string(&npc).unwrap();
+        let loaded: Npc = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded.inventory, vec![10, 11, 12]);
     }
 }

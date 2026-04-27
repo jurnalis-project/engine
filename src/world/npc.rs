@@ -140,6 +140,7 @@ pub fn generate_npcs(
                 location,
                 combat_stats: None,
                 conditions: Vec::new(),
+                inventory: Vec::new(),
             },
         );
     }
@@ -179,6 +180,7 @@ mod tests {
             location: 0,
             combat_stats: None,
             conditions: vec![],
+            inventory: vec![],
         }
     }
 

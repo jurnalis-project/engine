@@ -131,6 +131,7 @@ fn make_downed_combat_state() -> GameState {
                 ..Default::default()
             }),
             conditions: vec![],
+            inventory: vec![],
         },
     );
 
@@ -185,6 +186,7 @@ fn make_downed_wizard_combat_state() -> GameState {
                 ..Default::default()
             }),
             conditions: vec![],
+            inventory: vec![],
         },
     );
 
