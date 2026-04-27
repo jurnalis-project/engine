@@ -2587,7 +2587,7 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
             }
 
             let mut lines = vec![format!(
-                "You pick up everything: {}.",
+                "You pick up: {}.",
                 item_names.join(", ")
             )];
 
@@ -13555,7 +13555,7 @@ mod tests {
             output
                 .text
                 .iter()
-                .any(|line| line.contains("pick up everything")),
+                .any(|line| line.starts_with("You pick up:")),
             "Expected bulk pickup narration. Got: {:?}",
             output.text
         );
@@ -13608,6 +13608,137 @@ mod tests {
                 .any(|line| line.contains("nothing here to take")),
             "Expected empty-room message. Got: {:?}",
             output.text
+        );
+    }
+
+    #[test]
+    fn test_take_all_output_lists_each_item_name() {
+        let mut state = create_test_exploration_state();
+        // Clear existing room items to have a clean slate
+        let current_location = state.current_location;
+        state
+            .world
+            .locations
+            .get_mut(&current_location)
+            .unwrap()
+            .items
+            .clear();
+
+        // Place three known items in the room
+        for (item_id, item_name) in [
+            (980_u32, "Torch"),
+            (981_u32, "Rope"),
+            (982_u32, "Healing Potion"),
+        ] {
+            state.world.items.insert(
+                item_id,
+                state::Item {
+                    id: item_id,
+                    name: item_name.to_string(),
+                    description: format!("A {}.", item_name.to_lowercase()),
+                    item_type: state::ItemType::Misc,
+                    location: Some(current_location),
+                    carried_by_player: false,
+                    charges_remaining: None,
+                },
+            );
+            state
+                .world
+                .locations
+                .get_mut(&current_location)
+                .unwrap()
+                .items
+                .push(item_id);
+        }
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "take all");
+
+        let pickup_line = output
+            .text
+            .iter()
+            .find(|line| line.starts_with("You pick up:"))
+            .expect("Expected 'You pick up:' line in output");
+
+        // Each item name should appear in the output
+        assert!(
+            pickup_line.contains("Torch"),
+            "Output should list Torch. Got: {}",
+            pickup_line
+        );
+        assert!(
+            pickup_line.contains("Rope"),
+            "Output should list Rope. Got: {}",
+            pickup_line
+        );
+        assert!(
+            pickup_line.contains("Healing Potion"),
+            "Output should list Healing Potion. Got: {}",
+            pickup_line
+        );
+    }
+
+    #[test]
+    fn test_take_single_item_still_works_alongside_take_all() {
+        let mut state = create_test_exploration_state();
+        let current_location = state.current_location;
+        state
+            .world
+            .locations
+            .get_mut(&current_location)
+            .unwrap()
+            .items
+            .clear();
+
+        // Place two items in the room
+        for (item_id, item_name) in [(985_u32, "Silver Ring"), (986_u32, "Old Key")] {
+            state.world.items.insert(
+                item_id,
+                state::Item {
+                    id: item_id,
+                    name: item_name.to_string(),
+                    description: format!("A {}.", item_name.to_lowercase()),
+                    item_type: state::ItemType::Misc,
+                    location: Some(current_location),
+                    carried_by_player: false,
+                    charges_remaining: None,
+                },
+            );
+            state
+                .world
+                .locations
+                .get_mut(&current_location)
+                .unwrap()
+                .items
+                .push(item_id);
+        }
+
+        // Take a single item first
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "take silver ring");
+        let all_text = output.text.join(" ");
+        assert!(
+            all_text.contains("Silver Ring"),
+            "Single take should mention item name. Got: {}",
+            all_text
+        );
+
+        // Now take all remaining
+        let output2 = process_input(&output.state_json, "take all");
+        let pickup_line = output2
+            .text
+            .iter()
+            .find(|line| line.starts_with("You pick up:"))
+            .expect("Expected 'You pick up:' line after take all");
+        assert!(
+            pickup_line.contains("Old Key"),
+            "Take all should pick up remaining item. Got: {}",
+            pickup_line
+        );
+        assert!(
+            !pickup_line.contains("Silver Ring"),
+            "Take all should NOT include already-taken item. Got: {}",
+            pickup_line
         );
     }
 
