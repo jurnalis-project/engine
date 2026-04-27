@@ -10125,16 +10125,18 @@ fn sneak_attack_weapon_eligible(
     combat::sneak_attack_weapon_qualifies(properties, is_ranged_attack)
 }
 
-/// Returns true when a non-incapacitated Friendly NPC exists in the
-/// player's current location — the SRD "ally within 5 feet" proxy for
-/// the 1D combat model. Only Friendly disposition counts; Neutral and
-/// Hostile NPCs are not allies of the player.
-fn has_adjacent_ally(state: &GameState) -> bool {
-    let loc = state.current_location;
-    state.world.npcs.values().any(|npc| {
-        npc.location == loc
-            && npc.disposition == state::Disposition::Friendly
-            && !conditions::is_incapacitated(&npc.conditions)
+/// Returns true when there is at least one friendly, combatant-capable NPC
+/// in the player's current room. Non-combatant roles (Merchant, Hermit)
+/// are excluded — they are civilian bystanders, not combat allies.
+fn has_friendly_combatant_ally(state: &GameState) -> bool {
+    let loc = match state.world.locations.get(&state.current_location) {
+        Some(l) => l,
+        None => return false,
+    };
+    loc.npcs.iter().any(|&npc_id| {
+        state.world.npcs.get(&npc_id).map_or(false, |npc| {
+            npc.disposition == state::Disposition::Friendly && npc.role.is_combatant()
+        })
     })
 }
 
@@ -10143,10 +10145,10 @@ fn has_adjacent_ally(state: &GameState) -> bool {
 /// one of the two SRD 5.2.1 trigger conditions is satisfied:
 ///
 ///   1. The attacker had Advantage on the attack roll.
-///   2. A non-incapacitated ally is within 5 feet of the target AND the
-///      attacker does NOT have Disadvantage. The 1D combat engine proxies
-///      this as: a Friendly NPC exists in the player's current location
-///      and the attacker has no Disadvantage.
+///   2. An ally is within 5 feet of the target AND the attacker does NOT
+///      have Disadvantage. The ally must be a combatant-capable NPC
+///      (Guards, Adventurers) — not a civilian bystander (Merchants,
+///      Hermits).
 ///
 /// If neither condition is met the attack resolves normally with no bonus
 /// damage.
@@ -10175,11 +10177,13 @@ fn apply_sneak_attack(
         return;
     }
     // SRD 5.2.1 trigger conditions:
-    //   Path 1: attacker had Advantage on the attack roll.
-    //   Path 2: a non-incapacitated ally is within 5 ft of the target
+    //   Path 1: attacker had Advantage on the attack roll (cancels if also
+    //           at Disadvantage, yielding a straight roll).
+    //   Path 2: a combatant-capable friendly ally is within 5 ft of the target
     //           AND the attacker does NOT have Disadvantage.
-    let advantage_path = result.attacker_had_advantage;
-    let ally_path = !result.disadvantage && has_adjacent_ally(state);
+    //           Non-combatant roles (Merchant, Hermit) are excluded.
+    let advantage_path = result.attacker_had_advantage && !result.disadvantage;
+    let ally_path = !result.disadvantage && has_friendly_combatant_ally(state);
     if !advantage_path && !ally_path {
         return;
     }
@@ -21692,6 +21696,31 @@ mod tests {
         if let Some(npc) = base.world.npcs.get_mut(&100) {
             npc.conditions.clear(); // remove Prone so no advantage
         }
+        // Add a friendly Guard so the ally-adjacency path can trigger (#333).
+        let guard_id: u32 = 301;
+        let loc_id = base.current_location;
+        base.world.npcs.insert(
+            guard_id,
+            state::Npc {
+                id: guard_id,
+                name: "Friendly Guard".to_string(),
+                role: state::NpcRole::Guard,
+                disposition: state::Disposition::Friendly,
+                dialogue_tags: vec![],
+                location: loc_id,
+                combat_stats: Some(state::CombatStats {
+                    max_hp: 20,
+                    current_hp: 20,
+                    ac: 14,
+                    speed: 30,
+                    ..Default::default()
+                }),
+                conditions: vec![],
+            },
+        );
+        if let Some(loc) = base.world.locations.get_mut(&loc_id) {
+            loc.npcs.push(guard_id);
+        }
         for seed in 0..40u64 {
             let mut s = base.clone();
             s.rng_seed = seed;
@@ -21940,6 +21969,114 @@ mod tests {
                 "Non-Rogue should leave the SA flag unset"
             );
         }
+    }
+
+    #[test]
+    fn test_rogue_sneak_attack_no_ally_path_when_only_merchant_present() {
+        // Regression test for #333: has_friendly_combatant_ally must exclude
+        // non-combatant NPC roles (Merchant, Hermit) so that Sneak Attack's
+        // ally-adjacency path does NOT fire when only a merchant bystander is
+        // in the room alongside the hostile target.
+        //
+        // Hypothesis: The bug occurs because the ally-adjacency approximation
+        // in apply_sneak_attack treats every friendly NPC as a combat ally,
+        // including Merchants who are explicitly non-combatant.
+        let mut base = rogue_sneak_attack_setup();
+        // Remove Prone so the Advantage path is disabled — only the
+        // ally-adjacency path can trigger Sneak Attack.
+        if let Some(npc) = base.world.npcs.get_mut(&100) {
+            npc.conditions.clear();
+        }
+        // Add a friendly Merchant to the same room (non-combatant bystander).
+        let merchant_id: u32 = 300;
+        let loc_id = base.current_location;
+        base.world.npcs.insert(
+            merchant_id,
+            state::Npc {
+                id: merchant_id,
+                name: "Wandering Merchant".to_string(),
+                role: state::NpcRole::Merchant,
+                disposition: state::Disposition::Friendly,
+                dialogue_tags: vec![],
+                location: loc_id,
+                combat_stats: None,
+                conditions: vec![],
+            },
+        );
+        if let Some(loc) = base.world.locations.get_mut(&loc_id) {
+            loc.npcs.push(merchant_id);
+        }
+        // With no advantage and only a Merchant as "ally", SA must NOT fire.
+        for seed in 0..40u64 {
+            let mut s = base.clone();
+            s.rng_seed = seed;
+            s.rng_counter = 0;
+            let state_json = serde_json::to_string(&s).unwrap();
+            let output = process_input(&state_json, "attack test goblin");
+            assert!(
+                !output.text.iter().any(|t| t.contains("Sneak Attack")),
+                "SA should NOT fire when the only friendly NPC is a Merchant \
+                 (seed {}). Got: {:?}",
+                seed,
+                output.text
+            );
+        }
+    }
+
+    #[test]
+    fn test_rogue_sneak_attack_ally_path_fires_with_friendly_guard() {
+        // Positive counterpart to #333: when a *combatant* friendly NPC
+        // (Guard) is in the room, the ally-adjacency path should still fire.
+        let mut base = rogue_sneak_attack_setup();
+        // Remove Prone so advantage path is disabled.
+        if let Some(npc) = base.world.npcs.get_mut(&100) {
+            npc.conditions.clear();
+        }
+        // Add a friendly Guard (combatant ally).
+        let guard_id: u32 = 301;
+        let loc_id = base.current_location;
+        base.world.npcs.insert(
+            guard_id,
+            state::Npc {
+                id: guard_id,
+                name: "Friendly Guard".to_string(),
+                role: state::NpcRole::Guard,
+                disposition: state::Disposition::Friendly,
+                dialogue_tags: vec![],
+                location: loc_id,
+                combat_stats: Some(state::CombatStats {
+                    max_hp: 20,
+                    current_hp: 20,
+                    ac: 14,
+                    speed: 30,
+                    ..Default::default()
+                }),
+                conditions: vec![],
+            },
+        );
+        if let Some(loc) = base.world.locations.get_mut(&loc_id) {
+            loc.npcs.push(guard_id);
+        }
+        for seed in 0..40u64 {
+            let mut s = base.clone();
+            s.rng_seed = seed;
+            s.rng_counter = 0;
+            let state_json = serde_json::to_string(&s).unwrap();
+            let output = process_input(&state_json, "attack test goblin");
+            if !output.text.iter().any(|t| t.contains("hit for")) {
+                continue;
+            }
+            // Hit landed with a friendly Guard present — SA must fire via ally path.
+            assert!(
+                output.text.iter().any(|t| t.contains("Sneak Attack")),
+                "SA should fire when a friendly Guard is in the room \
+                 (seed {}). Got: {:?}",
+                seed,
+                output.text
+            );
+            return;
+        }
+        panic!("Did not land a Rogue hit in 40 seeds; fixture may need adjustment.");
     }
 
     #[test]
