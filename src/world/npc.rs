@@ -5,9 +5,27 @@ use rand::Rng;
 use std::collections::HashMap;
 
 impl Npc {
+    /// Return the NPC name with a disposition/role tag appended.
+    ///
+    /// Tag derivation:
+    /// - `NpcRole::Merchant` -> `[merchant]` (regardless of disposition)
+    /// - `Disposition::Hostile` -> `[hostile]`
+    /// - `Disposition::Neutral` or `Disposition::Friendly` -> `[neutral]`
+    pub fn display_name(&self) -> String {
+        let tag = if self.role == NpcRole::Merchant {
+            "merchant"
+        } else {
+            match self.disposition {
+                Disposition::Hostile => "hostile",
+                Disposition::Neutral | Disposition::Friendly => "neutral",
+            }
+        };
+        format!("{} [{}]", self.name, tag)
+    }
+
     /// Return a multi-line inspection description for the NPC.
     /// Lines:
-    ///   1. NPC full name
+    ///   1. NPC full name with disposition tag (e.g. "Orin the Quiet [hostile]")
     ///   2. Role description (e.g. "A wandering merchant.")
     ///   3. Disposition sentence (e.g. "They seem friendly.")
     ///   4+ (optional) Visible special traits, one per line, indented with two spaces.
@@ -162,6 +180,36 @@ mod tests {
             combat_stats: None,
             conditions: vec![],
         }
+    }
+
+    #[test]
+    fn test_display_name_hostile_npc_shows_hostile_tag() {
+        let npc = make_npc(NpcRole::Guard, Disposition::Hostile);
+        assert_eq!(npc.display_name(), "Orin the Quiet [hostile]");
+    }
+
+    #[test]
+    fn test_display_name_neutral_npc_shows_neutral_tag() {
+        let npc = make_npc(NpcRole::Guard, Disposition::Neutral);
+        assert_eq!(npc.display_name(), "Orin the Quiet [neutral]");
+    }
+
+    #[test]
+    fn test_display_name_friendly_npc_shows_neutral_tag() {
+        let npc = make_npc(NpcRole::Hermit, Disposition::Friendly);
+        assert_eq!(npc.display_name(), "Orin the Quiet [neutral]");
+    }
+
+    #[test]
+    fn test_display_name_merchant_shows_merchant_tag() {
+        let npc = make_npc(NpcRole::Merchant, Disposition::Friendly);
+        assert_eq!(npc.display_name(), "Orin the Quiet [merchant]");
+    }
+
+    #[test]
+    fn test_display_name_merchant_neutral_shows_merchant_tag() {
+        let npc = make_npc(NpcRole::Merchant, Disposition::Neutral);
+        assert_eq!(npc.display_name(), "Orin the Quiet [merchant]");
     }
 
     #[test]
