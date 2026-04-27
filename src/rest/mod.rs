@@ -1,5 +1,5 @@
 // jurnalis-engine/src/rest/mod.rs
-// Rest mechanics: short rest and long rest per SRD 5.1.
+// Rest mechanics: short rest and long rest per SRD 2024.
 // Dependencies: types.rs, state/, character/ (types shared via state), rules/dice.
 // Does NOT depend on combat/, narration/, parser/ — orchestration in lib.rs.
 
@@ -13,7 +13,7 @@ use crate::rules::dice::roll_dice;
 pub const SHORT_REST_MINUTES: u64 = 60;
 /// 8 in-world hours for a long rest.
 pub const LONG_REST_MINUTES: u64 = 60 * 8;
-/// SRD 5.1 rule: no benefit from more than one long rest per 24 in-world hours.
+/// SRD 2024 rule: no benefit from more than one long rest per 24 in-world hours.
 pub const LONG_REST_COOLDOWN_MINUTES: u64 = 60 * 24;
 
 /// Reason a rest was denied. The orchestrator renders these to text.

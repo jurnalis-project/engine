@@ -293,7 +293,7 @@ fn wizard_cast_shield_in_combat_rejected_as_reaction_only() {
     let output = process_input(&state_json, "cast shield");
 
     let text = output.text.join(" ");
-    // Shield is reaction-only per SRD 5.1 -- cannot be cast as an action.
+    // Shield is reaction-only per SRD 2024 -- cannot be cast as an action.
     assert!(
         text.contains("reaction"),
         "Expected reaction-only rejection. Got: {:?}",

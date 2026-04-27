@@ -46,7 +46,7 @@ pub struct Character {
     /// Per-class feature flags tracking short-rest / long-rest resources.
     #[serde(default)]
     pub class_features: ClassFeatureState,
-    /// Exhaustion level (0..=6 per SRD 5.1). Long rest reduces by 1.
+    /// Exhaustion level (0..=6 per SRD 2024). Long rest reduces by 1.
     #[serde(default)]
     pub exhaustion: u32,
     /// Total accumulated experience points. Drives level advancement
@@ -71,7 +71,7 @@ pub struct Character {
     #[serde(default)]
     pub languages: Vec<String>,
     /// IDs of magic items the character is currently attuned to. Capped at
-    /// `equipment::magic::MAX_ATTUNED_ITEMS` (3 per SRD 5.1). Items are
+    /// `equipment::magic::MAX_ATTUNED_ITEMS` (3 per SRD 2024). Items are
     /// attuned via the `attune` command and released via `unattune`.
     /// `#[serde(default)]` so older saves without this field deserialize
     /// to an empty vec. Added 2026-04-15 (feat/magic-items).
@@ -189,7 +189,7 @@ pub fn create_character(
     for (ability, bonus) in race.ability_bonuses() {
         *final_scores.entry(ability).or_insert(10) += bonus;
     }
-    // SRD 5.1: "None of these increases can raise a score above 20."
+    // SRD 2024: "None of these increases can raise a score above 20."
     for score in final_scores.values_mut() {
         *score = (*score).min(20);
     }
@@ -969,7 +969,7 @@ mod tests {
         assert!(loaded.weapon_masteries.is_empty());
     }
 
-    // ---- Ability score cap (SRD 5.1: scores cannot exceed 20) ----
+    // ---- Ability score cap (SRD 2024: scores cannot exceed 20) ----
 
     #[test]
     fn test_ability_score_cap_clamps_scores_exceeding_20() {

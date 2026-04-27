@@ -298,10 +298,17 @@ pub fn parse(input: &str) -> Command {
             "new game" => {
                 return Command::NewGame;
             }
-            "short rest" => {
+            "short rest" | "short sleep" | "short nap" | "short camp" => {
                 return Command::ShortRest;
             }
-            "long rest" => {
+            "long rest" | "long sleep" | "long nap" | "long camp" => {
+                return Command::LongRest;
+            }
+            // Reversed order aliases: "sleep short", "camp long", etc.
+            "sleep short" | "camp short" | "nap short" => {
+                return Command::ShortRest;
+            }
+            "sleep long" | "camp long" | "nap long" => {
                 return Command::LongRest;
             }
             // Barbarian: "enter rage"
@@ -505,7 +512,7 @@ pub fn parse(input: &str) -> Command {
         "load" | "restore" => { if args.is_empty() { Command::Load(None) } else { Command::Load(Some(args)) } }
         "help" | "?" | "commands" => { if args.is_empty() { Command::Help(None) } else { Command::Help(Some(args)) } }
         "newgame" | "restart" => Command::NewGame,
-        "rest" => Command::Unknown("Short rest or long rest? Try 'short rest' or 'long rest'.".to_string()),
+        "rest" | "sleep" | "camp" | "nap" => Command::Unknown("Short rest or long rest? Try 'short rest' or 'long rest'.".to_string()),
         "objective" | "goal" | "quest" => Command::Objective,
         "map" => Command::Map,
         // Fighter: "surge" -> Action Surge
@@ -1473,6 +1480,113 @@ mod tests {
             }
             other => panic!("Expected Unknown, got {:?}", other),
         }
+    }
+
+    // ---- Rest alias tests (sleep, camp, nap) ----
+
+    #[test]
+    fn test_sleep_alias_prompts_rest_type() {
+        // Bare "sleep" should behave like bare "rest": ask short vs long.
+        match parse("sleep") {
+            Command::Unknown(s) => {
+                assert!(
+                    s.to_lowercase().contains("short") && s.to_lowercase().contains("long"),
+                    "Bare 'sleep' should ask short vs long. Got: {}",
+                    s,
+                );
+            }
+            other => panic!("Expected Unknown for bare 'sleep', got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_camp_alias_prompts_rest_type() {
+        match parse("camp") {
+            Command::Unknown(s) => {
+                assert!(
+                    s.to_lowercase().contains("short") && s.to_lowercase().contains("long"),
+                    "Bare 'camp' should ask short vs long. Got: {}",
+                    s,
+                );
+            }
+            other => panic!("Expected Unknown for bare 'camp', got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_nap_alias_prompts_rest_type() {
+        match parse("nap") {
+            Command::Unknown(s) => {
+                assert!(
+                    s.to_lowercase().contains("short") && s.to_lowercase().contains("long"),
+                    "Bare 'nap' should ask short vs long. Got: {}",
+                    s,
+                );
+            }
+            other => panic!("Expected Unknown for bare 'nap', got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_short_sleep_maps_to_short_rest() {
+        assert_eq!(parse("short sleep"), Command::ShortRest);
+        assert_eq!(parse("Short Sleep"), Command::ShortRest);
+    }
+
+    #[test]
+    fn test_long_sleep_maps_to_long_rest() {
+        assert_eq!(parse("long sleep"), Command::LongRest);
+        assert_eq!(parse("Long Sleep"), Command::LongRest);
+    }
+
+    #[test]
+    fn test_short_nap_maps_to_short_rest() {
+        assert_eq!(parse("short nap"), Command::ShortRest);
+    }
+
+    #[test]
+    fn test_long_nap_maps_to_long_rest() {
+        assert_eq!(parse("long nap"), Command::LongRest);
+    }
+
+    #[test]
+    fn test_short_camp_maps_to_short_rest() {
+        assert_eq!(parse("short camp"), Command::ShortRest);
+    }
+
+    #[test]
+    fn test_long_camp_maps_to_long_rest() {
+        assert_eq!(parse("long camp"), Command::LongRest);
+    }
+
+    #[test]
+    fn test_camp_short_maps_to_short_rest() {
+        assert_eq!(parse("camp short"), Command::ShortRest);
+    }
+
+    #[test]
+    fn test_camp_long_maps_to_long_rest() {
+        assert_eq!(parse("camp long"), Command::LongRest);
+    }
+
+    #[test]
+    fn test_sleep_short_maps_to_short_rest() {
+        assert_eq!(parse("sleep short"), Command::ShortRest);
+    }
+
+    #[test]
+    fn test_sleep_long_maps_to_long_rest() {
+        assert_eq!(parse("sleep long"), Command::LongRest);
+    }
+
+    #[test]
+    fn test_nap_short_maps_to_short_rest() {
+        assert_eq!(parse("nap short"), Command::ShortRest);
+    }
+
+    #[test]
+    fn test_nap_long_maps_to_long_rest() {
+        assert_eq!(parse("nap long"), Command::LongRest);
     }
 
     // ---- Scenery interaction verbs ----

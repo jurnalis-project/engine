@@ -37,7 +37,7 @@ pub fn narrate_enter_location(
                 Some(stats) => stats.current_hp > 0,
                 None => true, // Friendly/neutral NPCs without combat_stats are always shown
             })
-            .map(|npc| npc.name.clone())
+            .map(|npc| npc.display_name())
             .collect();
         if !npc_names.is_empty() {
             lines.push(templates::NPCS_PRESENT.replace("{npcs}", &npc_names.join(", ")));
@@ -105,7 +105,7 @@ pub fn narrate_look(
                 Some(stats) => stats.current_hp > 0,
                 None => true, // Friendly/neutral NPCs without combat_stats are always shown
             })
-            .map(|npc| npc.name.clone())
+            .map(|npc| npc.display_name())
             .collect();
         if !npc_names.is_empty() {
             lines.push(templates::NPCS_PRESENT.replace("{npcs}", &npc_names.join(", ")));
@@ -581,6 +581,50 @@ mod tests {
             pending_disambiguation: None,
             pending_new_game_confirm: false,
         }
+    }
+
+    #[test]
+    fn test_narrate_enter_location_shows_disposition_tags() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let state = make_test_state_with_npcs();
+        let loc = state.world.locations.get(&0).unwrap();
+        let barks: Vec<(String, String)> = vec![];
+        let lines = narrate_enter_location(&mut rng, loc, &state, &barks);
+        let joined = lines.join("\n");
+
+        // Aldric the Bold is a Guard with Neutral disposition -> [neutral]
+        assert!(
+            joined.contains("Aldric the Bold [neutral]"),
+            "Expected 'Aldric the Bold [neutral]' in room entry. Got:\n{}",
+            joined
+        );
+        // Brenna the Wise is a Merchant -> [merchant]
+        assert!(
+            joined.contains("Brenna the Wise [merchant]"),
+            "Expected 'Brenna the Wise [merchant]' in room entry. Got:\n{}",
+            joined
+        );
+    }
+
+    #[test]
+    fn test_narrate_look_shows_disposition_tags() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let state = make_test_state_with_npcs();
+        let loc = state.world.locations.get(&0).unwrap();
+        let barks: Vec<(String, String)> = vec![];
+        let lines = narrate_look(&mut rng, loc, &state, &barks);
+        let joined = lines.join("\n");
+
+        assert!(
+            joined.contains("Aldric the Bold [neutral]"),
+            "Expected 'Aldric the Bold [neutral]' in look. Got:\n{}",
+            joined
+        );
+        assert!(
+            joined.contains("Brenna the Wise [merchant]"),
+            "Expected 'Brenna the Wise [merchant]' in look. Got:\n{}",
+            joined
+        );
     }
 
     #[test]

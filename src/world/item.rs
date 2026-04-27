@@ -152,7 +152,7 @@ fn materialize_magic_item(
 }
 
 const CONSUMABLES: &[(&str, &str, &str)] = &[
-    // Note: "Healing Potion" here matches SRD 5.1 Potion of Healing (2d4 + 2).
+    // Note: "Healing Potion" here matches SRD 2024 Potion of Healing (2d4 + 2).
     // The effect code "heal_srd_potion" is handled in lib.rs::resolve_use_item.
     ("Healing Potion", "A small vial of red liquid that restores vitality.", "heal_srd_potion"),
     ("Torch", "A wooden torch soaked in pitch. Provides light.", "light"),
