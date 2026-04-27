@@ -4726,8 +4726,16 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                 return handle_look_target(state, t);
             }
             let combat = state.active_combat.take().unwrap();
-            let result = combat::format_combat_status(state, &combat);
+            let mut result = combat::format_combat_status(state, &combat);
             state.active_combat = Some(combat);
+            // Append compact active-effects line after AC
+            if let Some(effects_line) = format_combat_effects_compact(state) {
+                // Insert after the AC line (index 2) if possible, else append
+                let insert_pos = result.iter().position(|l| l.starts_with("AC:"))
+                    .map(|i| i + 1)
+                    .unwrap_or(result.len());
+                result.insert(insert_pos, effects_line);
+            }
             return result;
         }
         Command::Search(_) => {
@@ -24577,6 +24585,181 @@ mod tests {
         assert!(
             !text.contains("Counterspell"),
             "Should not offer Counterspell at 0 HP. Got: {}",
+            text
+        );
+    }
+
+    // ---- Active Effects Display Tests ----
+
+    #[test]
+    fn test_buffs_command_no_effects_shows_empty_message() {
+        let state = create_test_exploration_state();
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "buffs");
+        let text = output.text.join("\n");
+        assert!(
+            text.contains("no active effects"),
+            "Expected 'no active effects' message. Got: {}",
+            text
+        );
+    }
+
+    #[test]
+    fn test_buffs_command_shows_mage_armor() {
+        let mut state = create_test_wizard_state();
+        state.character.class_features.mage_armor_until_minutes = Some(480); // 8 hours
+        state.in_world_minutes = 0;
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "buffs");
+        let text = output.text.join("\n");
+        assert!(
+            text.contains("Active Effects"),
+            "Expected header. Got: {}",
+            text
+        );
+        assert!(
+            text.contains("Mage Armor"),
+            "Expected Mage Armor in effects. Got: {}",
+            text
+        );
+        assert!(
+            text.contains("8h remaining"),
+            "Expected duration. Got: {}",
+            text
+        );
+    }
+
+    #[test]
+    fn test_buffs_command_shows_conditions() {
+        let mut state = create_test_exploration_state();
+        state.character.conditions.push(
+            conditions::ActiveCondition::new(
+                conditions::ConditionType::Poisoned,
+                conditions::ConditionDuration::Rounds(3),
+            )
+        );
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "conditions");
+        let text = output.text.join("\n");
+        assert!(
+            text.contains("Poisoned"),
+            "Expected Poisoned condition. Got: {}",
+            text
+        );
+        assert!(
+            text.contains("3 rounds remaining"),
+            "Expected duration. Got: {}",
+            text
+        );
+    }
+
+    #[test]
+    fn test_buffs_command_shows_concentration_spell() {
+        let mut state = create_test_wizard_state();
+        state.character.class_features.concentration_spell = Some("Bless".to_string());
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "effects");
+        let text = output.text.join("\n");
+        assert!(
+            text.contains("Bless"),
+            "Expected Bless. Got: {}",
+            text
+        );
+        assert!(
+            text.contains("concentrating"),
+            "Expected 'concentrating'. Got: {}",
+            text
+        );
+    }
+
+    #[test]
+    fn test_buffs_command_shows_rage() {
+        let mut state = create_test_exploration_state();
+        state.character.class = character::class::Class::Barbarian;
+        state.character.class_features.rage_active = true;
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "buffs");
+        let text = output.text.join("\n");
+        assert!(
+            text.contains("Rage"),
+            "Expected Rage. Got: {}",
+            text
+        );
+        assert!(
+            text.contains("active"),
+            "Expected 'active'. Got: {}",
+            text
+        );
+    }
+
+    #[test]
+    fn test_buffs_expired_mage_armor_not_shown() {
+        let mut state = create_test_wizard_state();
+        // Mage Armor expired (until_minutes is in the past)
+        state.character.class_features.mage_armor_until_minutes = Some(100);
+        state.in_world_minutes = 200;
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "buffs");
+        let text = output.text.join("\n");
+        assert!(
+            !text.contains("Mage Armor"),
+            "Expired Mage Armor should not appear. Got: {}",
+            text
+        );
+    }
+
+    #[test]
+    fn test_combat_status_includes_effects_line() {
+        use crate::combat::{CombatState, Combatant};
+        let mut state = create_test_wizard_state();
+        state.character.class_features.mage_armor_until_minutes = Some(480);
+        state.in_world_minutes = 0;
+        state.character.conditions.push(
+            conditions::ActiveCondition::new(
+                conditions::ConditionType::Poisoned,
+                conditions::ConditionDuration::Rounds(2),
+            )
+        );
+        // Set up a minimal combat so `look` shows combat status
+        let hostile_npc_id = 99;
+        state.world.npcs.insert(hostile_npc_id, state::Npc {
+            id: hostile_npc_id,
+            name: "Goblin".to_string(),
+            role: state::NpcRole::Guard,
+            disposition: state::Disposition::Hostile,
+            dialogue_tags: Vec::new(),
+            location: state.current_location,
+            combat_stats: Some(state::CombatStats {
+                max_hp: 10,
+                current_hp: 10,
+                ac: 12,
+                speed: 30,
+                attacks: vec![],
+                proficiency_bonus: 2,
+                ..Default::default()
+            }),
+            conditions: Vec::new(),
+        });
+        state.active_combat = Some(CombatState {
+            initiative_order: vec![
+                (Combatant::Player, 15),
+                (Combatant::Npc(hostile_npc_id), 10),
+            ],
+            round: 1,
+            player_movement_remaining: 30,
+            distances: {
+                let mut d = HashMap::new();
+                d.insert(hostile_npc_id, 30);
+                d
+            },
+            ..Default::default()
+        });
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "look");
+        let text = output.text.join("\n");
+        assert!(
+            text.contains("Effects:") && text.contains("[Mage Armor]") && text.contains("[Poisoned]"),
+            "Combat status should show effects line. Got: {}",
             text
         );
     }
