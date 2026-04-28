@@ -1608,6 +1608,25 @@ fn resolve_npc_attack_action(
             } else {
                 result.damage
             };
+            // Barbarian Rage resistance: halve bludgeoning, piercing, and
+            // slashing damage while raging (SRD 5.2.1 Rage feature).
+            // Stacks independently with Uncanny Dodge — both halve if both
+            // conditions are met.
+            let actual_damage = if state.character.class_features.rage_active
+                && matches!(
+                    result.damage_type,
+                    DamageType::Bludgeoning | DamageType::Piercing | DamageType::Slashing
+                )
+            {
+                let halved = actual_damage / 2;
+                lines.push(format!(
+                    "Rage resistance! You halve the {} damage from {} to {}.",
+                    result.damage_type, actual_damage, halved
+                ));
+                halved
+            } else {
+                actual_damage
+            };
             state.character.current_hp -= actual_damage;
             if result.natural_20 {
                 lines.push(format!(
@@ -2161,15 +2180,27 @@ pub fn fire_opportunity_attacks(
         {
             if result.hit {
                 let was_dying = state.character.current_hp <= 0;
-                state.character.current_hp -= result.damage;
+                // Barbarian Rage resistance: halve bludgeoning, piercing, and
+                // slashing damage while raging (SRD 5.2.1 Rage feature).
+                let opp_damage = if state.character.class_features.rage_active
+                    && matches!(
+                        result.damage_type,
+                        DamageType::Bludgeoning | DamageType::Piercing | DamageType::Slashing
+                    )
+                {
+                    result.damage / 2
+                } else {
+                    result.damage
+                };
+                state.character.current_hp -= opp_damage;
                 lines.push(format!(
                     "{} makes an opportunity attack with {} -- hit for {} {} damage!",
-                    npc_name, result.weapon_name, result.damage, result.damage_type
+                    npc_name, result.weapon_name, opp_damage, result.damage_type
                 ));
                 if was_dying {
                     let outcome = combat.apply_damage_while_dying(
                         &mut state.character,
-                        result.damage,
+                        opp_damage,
                         result.natural_20,
                     );
                     lines.extend(narrate_damage_while_dying_outcome(outcome));
@@ -8648,5 +8679,219 @@ mod tests {
             }
             other => panic!("Expected UncannyDodge, got {:?}", other),
         }
+    }
+
+    // ---- Rage damage resistance tests ----
+
+    fn make_barbarian_state(level: u32, rage_active: bool) -> GameState {
+        let mut scores = HashMap::new();
+        scores.insert(Ability::Strength, 16);
+        scores.insert(Ability::Dexterity, 12);
+        scores.insert(Ability::Constitution, 16);
+        scores.insert(Ability::Intelligence, 8);
+        scores.insert(Ability::Wisdom, 10);
+        scores.insert(Ability::Charisma, 8);
+        let mut character = create_character(
+            "Barb".to_string(),
+            Race::Human,
+            Class::Barbarian,
+            scores,
+            vec![],
+        );
+        character.level = level;
+        character.class_features.rage_active = rage_active;
+
+        let mut npcs = HashMap::new();
+        npcs.insert(
+            0,
+            Npc {
+                id: 0,
+                name: "Bandit".to_string(),
+                role: NpcRole::Guard,
+                disposition: Disposition::Hostile,
+                dialogue_tags: vec![],
+                location: 0,
+                combat_stats: Some(CombatStats {
+                    max_hp: 20,
+                    current_hp: 20,
+                    ac: 10,
+                    speed: 30,
+                    attacks: vec![NpcAttack {
+                        name: "Greataxe".to_string(),
+                        hit_bonus: 20, // guaranteed hit (except nat-1)
+                        damage_dice: 1,
+                        damage_die: 12,
+                        damage_bonus: 3,
+                        damage_type: DamageType::Slashing,
+                        reach: 5,
+                        range_normal: 0,
+                        range_long: 0,
+                    }],
+                    proficiency_bonus: 2,
+                    cr: 0.125,
+                    ..Default::default()
+                }),
+                conditions: Vec::new(),
+                inventory: Vec::new(),
+            },
+        );
+
+        GameState {
+            version: crate::state::SAVE_VERSION.to_string(),
+            character,
+            current_location: 0,
+            discovered_locations: HashSet::new(),
+            world: WorldState {
+                locations: HashMap::new(),
+                npcs,
+                items: HashMap::new(),
+                triggers: HashMap::new(),
+                triggered: HashSet::new(),
+            },
+            log: Vec::new(),
+            rng_seed: 42,
+            rng_counter: 0,
+            game_phase: GamePhase::Exploration,
+            active_combat: None,
+            ironman_mode: false,
+            progress: crate::state::ProgressState::default(),
+            in_world_minutes: 0,
+            last_long_rest_minutes: None,
+            pending_background_pattern: None,
+            pending_subrace: None,
+            pending_disambiguation: None,
+            pending_new_game_confirm: false,
+        }
+    }
+
+    #[test]
+    fn test_rage_resistance_halves_slashing_damage_while_raging() {
+        // When rage_active=true the Barbarian should take only floor(damage/2)
+        // from bludgeoning/piercing/slashing attacks.
+        let mut triggered = false;
+        for seed in 0..200u64 {
+            let mut state = make_barbarian_state(1, true);
+            let mut rng = StdRng::seed_from_u64(seed);
+            let mut combat = start_combat(
+                &mut rng,
+                &state.character,
+                &[0],
+                &state.world.npcs,
+                crate::state::LocationType::Room,
+            );
+            combat.distances.insert(0, 5);
+
+            let hp_before = state.character.current_hp;
+            let mut rng2 = StdRng::seed_from_u64(seed);
+            let lines = resolve_npc_turn(&mut rng2, 0, &mut state, &mut combat);
+            let all = lines.join("\n");
+
+            if all.contains("natural 1") || (!all.contains("hit for") && !all.contains("CRITICAL")) {
+                continue; // miss — try next seed
+            }
+
+            assert!(
+                all.contains("Rage resistance!"),
+                "Expected rage resistance narration. Got: {:?}",
+                lines
+            );
+            let damage_taken = hp_before - state.character.current_hp;
+            // Greataxe deals 1d12+3 (min 4, max 15); halved max is 7.
+            assert!(
+                damage_taken <= 7,
+                "Rage should halve damage (max halved is 7, taken={})",
+                damage_taken
+            );
+            triggered = true;
+            break;
+        }
+        assert!(triggered, "Could not find a hit in 200 seeds — test setup may be wrong");
+    }
+
+    #[test]
+    fn test_rage_resistance_does_not_apply_when_not_raging() {
+        // Without rage, full damage is taken.
+        let mut found_hit = false;
+        for seed in 0..200u64 {
+            let mut state = make_barbarian_state(1, false);
+            let mut rng = StdRng::seed_from_u64(seed);
+            let mut combat = start_combat(
+                &mut rng,
+                &state.character,
+                &[0],
+                &state.world.npcs,
+                crate::state::LocationType::Room,
+            );
+            combat.distances.insert(0, 5);
+
+            let hp_before = state.character.current_hp;
+            let mut rng2 = StdRng::seed_from_u64(seed);
+            let lines = resolve_npc_turn(&mut rng2, 0, &mut state, &mut combat);
+            let all = lines.join("\n");
+
+            if all.contains("natural 1") || (!all.contains("hit for") && !all.contains("CRITICAL")) {
+                continue; // miss — try next seed
+            }
+
+            assert!(
+                !all.contains("Rage resistance!"),
+                "Rage resistance should NOT trigger when not raging. Got: {:?}",
+                lines
+            );
+            let damage_taken = hp_before - state.character.current_hp;
+            // Damage should be full (min 4 from 1d12+3), i.e. at least 4.
+            assert!(
+                damage_taken >= 4,
+                "Full damage should be taken when not raging (taken={})",
+                damage_taken
+            );
+            found_hit = true;
+            break;
+        }
+        assert!(found_hit, "Could not find a hit in 200 seeds — test setup may be wrong");
+    }
+
+    #[test]
+    fn test_rage_resistance_halves_floor_division() {
+        // Verify floor(damage/2) by parsing narration and comparing HP.
+        let mut checked = false;
+        for seed in 0..500u64 {
+            let mut state = make_barbarian_state(1, true);
+            let mut rng = StdRng::seed_from_u64(seed);
+            let mut combat = start_combat(
+                &mut rng,
+                &state.character,
+                &[0],
+                &state.world.npcs,
+                crate::state::LocationType::Room,
+            );
+            combat.distances.insert(0, 5);
+
+            let hp_before = state.character.current_hp;
+            let mut rng2 = StdRng::seed_from_u64(seed);
+            let lines = resolve_npc_turn(&mut rng2, 0, &mut state, &mut combat);
+
+            for line in &lines {
+                // "Rage resistance! You halve the slashing damage from X to Y."
+                if let Some(rest) = line.strip_prefix("Rage resistance! You halve the ") {
+                    // skip past the damage type word and " damage from "
+                    if let Some(from_idx) = rest.find(" damage from ") {
+                        let after_from = &rest[from_idx + " damage from ".len()..];
+                        let trimmed = after_from.trim_end_matches('.');
+                        if let Some((x_str, y_str)) = trimmed.split_once(" to ") {
+                            let x: i32 = x_str.trim().parse().unwrap_or(-1);
+                            let y: i32 = y_str.trim().parse().unwrap_or(-1);
+                            let damage_taken = hp_before - state.character.current_hp;
+                            assert_eq!(y, x / 2, "Halved damage should be floor(x/2)");
+                            assert_eq!(damage_taken, y, "HP loss must equal halved damage");
+                            checked = true;
+                        }
+                    }
+                    break;
+                }
+            }
+            if checked { break; }
+        }
+        assert!(checked, "Could not find a raging hit in 500 seeds");
     }
 }
