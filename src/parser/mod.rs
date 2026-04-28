@@ -12,6 +12,7 @@ pub enum Command {
     Take(String),
     TakeAll,
     Drop(String),
+    DropAll,
     Use(String),
     Equip(String),
     Unequip(String),
@@ -407,7 +408,13 @@ pub fn parse(input: &str) -> Command {
             }
         }
         "drop" | "discard" => {
-            if args.is_empty() { Command::Unknown("Drop what?".to_string()) } else { Command::Drop(args) }
+            if args.is_empty() {
+                Command::Unknown("Drop what?".to_string())
+            } else if args == "all" || args == "everything" {
+                Command::DropAll
+            } else {
+                Command::Drop(args)
+            }
         }
         "use" | "activate" | "apply" => {
             if args.is_empty() {
@@ -1358,6 +1365,28 @@ mod tests {
     fn test_take_specific_item_still_works() {
         // Ensure "take" with a non-"all" argument still routes to Take
         assert_eq!(parse("take torch"), Command::Take("torch".to_string()));
+    }
+
+    // ---- Bulk drop ----
+    #[test]
+    fn test_drop_all_routes_to_bulk_drop() {
+        assert_eq!(parse("drop all"), Command::DropAll);
+    }
+
+    #[test]
+    fn test_drop_everything_routes_to_bulk_drop() {
+        assert_eq!(parse("drop everything"), Command::DropAll);
+    }
+
+    #[test]
+    fn test_discard_all_routes_to_bulk_drop() {
+        assert_eq!(parse("discard all"), Command::DropAll);
+    }
+
+    #[test]
+    fn test_drop_specific_item_still_works() {
+        // Ensure "drop" with a non-"all" argument still routes to Drop
+        assert_eq!(parse("drop torch"), Command::Drop("torch".to_string()));
     }
 
     #[test]
