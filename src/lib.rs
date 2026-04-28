@@ -6297,7 +6297,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
             }
         }
         Command::EndTurn => {
-            if !combat.action_used && !combat.bonus_action_used {
+            if !combat.action_used {
                 lines.push(narration::templates::END_TURN_WAIT.to_string());
             } else {
                 lines.push(narration::templates::END_TURN.to_string());
@@ -25497,6 +25497,32 @@ mod tests {
         let output = process_input(&state_json, "end turn");
         let text = output.text.join("\n");
         assert!(text.contains("You end your turn."), "Expected generic end-turn text after action was used, got: {}", text);
+    }
+
+    #[test]
+    fn test_end_turn_bonus_action_used_main_action_unused_produces_wait_narration() {
+        // Bug #361: When the player uses only their bonus action (e.g. Rage)
+        // and then ends their turn, the wait-flavored narration should fire
+        // because the main action was unused — bonus action state is irrelevant.
+        let mut state = create_test_combat_state();
+        force_player_turn(&mut state);
+        if let Some(ref mut combat) = state.active_combat {
+            combat.bonus_action_used = true;
+            combat.action_used = false;
+        }
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "end turn");
+        let text = output.text.join("\n");
+        assert!(
+            text.contains("wait"),
+            "Expected wait-flavored narration when only bonus action was used (main action unused), got: {}",
+            text
+        );
+        assert!(
+            !text.contains("You end your turn."),
+            "Should NOT produce generic end-turn text when main action was unused, got: {}",
+            text
+        );
     }
 
     // ---- Danger Sense (Barbarian level 2) ----
