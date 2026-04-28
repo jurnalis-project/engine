@@ -516,7 +516,7 @@ pub fn parse(input: &str) -> Command {
         "dash" | "run" | "sprint" => Command::Dash,
         "yes" | "y" => Command::ReactionYes,
         "no" => Command::ReactionNo,
-        "end" | "pass" | "wait" => Command::EndTurn,
+        "end" | "pass" | "wait" | "skip" => Command::EndTurn,
         "inventory" | "i" | "inv" | "items" | "bag" => Command::Inventory,
         "character" | "char" | "sheet" | "stats" | "status" => Command::CharacterSheet,
         "check" | "roll" | "try" => {
@@ -1203,6 +1203,7 @@ mod tests {
         assert_eq!(parse("end"), Command::EndTurn);
         assert_eq!(parse("pass"), Command::EndTurn);
         assert_eq!(parse("wait"), Command::EndTurn);
+        assert_eq!(parse("skip"), Command::EndTurn);
     }
 
     #[test]
