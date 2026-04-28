@@ -2740,6 +2740,43 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
                 ResolveResult::NotFound => vec![format!("You don't have any \"{}\".", item_name)],
             }
         }
+        Command::DropAll => {
+            let inventory = state.character.inventory.clone();
+
+            if inventory.is_empty() {
+                return vec!["You are not carrying anything to drop.".to_string()];
+            }
+
+            let item_names: Vec<String> = inventory
+                .iter()
+                .filter_map(|id| state.world.items.get(id).map(|item| item.name.clone()))
+                .collect();
+
+            let current_location = state.current_location;
+            for item_id in &inventory {
+                // Clear any equipment slots that hold this item
+                if state.character.equipped.main_hand == Some(*item_id) {
+                    state.character.equipped.main_hand = None;
+                }
+                if state.character.equipped.off_hand == Some(*item_id) {
+                    state.character.equipped.off_hand = None;
+                }
+                if state.character.equipped.body == Some(*item_id) {
+                    state.character.equipped.body = None;
+                }
+                if let Some(item) = state.world.items.get_mut(item_id) {
+                    item.carried_by_player = false;
+                    item.location = Some(current_location);
+                }
+                if let Some(loc) = state.world.locations.get_mut(&current_location) {
+                    loc.items.push(*item_id);
+                }
+            }
+
+            state.character.inventory.clear();
+
+            vec![format!("You drop: {}.", item_names.join(", "))]
+        }
         Command::Use(item_name) => {
             let (lines, _consumed) = resolve_use_item(state, &mut rng, &item_name);
             lines
@@ -5069,7 +5106,7 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
             return vec![format!("HP: {}/{}", state.character.current_hp, state.character.max_hp)];
         }
         // Block exploration commands
-        Command::Talk(_) | Command::Take(_) | Command::TakeAll | Command::Drop(_) => {
+        Command::Talk(_) | Command::Take(_) | Command::TakeAll | Command::Drop(_) | Command::DropAll => {
             return vec!["You can't do that during combat!".to_string()];
         }
         Command::Save(_) | Command::Load(_) | Command::Check(_) => {
@@ -14616,6 +14653,182 @@ mod tests {
             !pickup_line.contains("Silver Ring"),
             "Take all should NOT include already-taken item. Got: {}",
             pickup_line
+        );
+    }
+
+    // ---- Bulk drop (drop all / drop everything) ----
+
+    #[test]
+    fn test_drop_all_empty_inventory_reports_nothing_to_drop() {
+        let mut state = create_test_exploration_state();
+        // Ensure inventory is empty
+        state.character.inventory.clear();
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "drop all");
+        assert!(
+            output
+                .text
+                .iter()
+                .any(|line| line.contains("not carrying anything")),
+            "Expected empty-inventory message. Got: {:?}",
+            output.text
+        );
+    }
+
+    #[test]
+    fn test_drop_all_single_item_lands_on_floor() {
+        let mut state = create_test_exploration_state();
+        let current_location = state.current_location;
+        let item_id = 980_u32;
+        state.world.items.insert(
+            item_id,
+            state::Item {
+                id: item_id,
+                name: "Candle".to_string(),
+                description: "A wax candle.".to_string(),
+                item_type: state::ItemType::Misc,
+                location: None,
+                carried_by_player: true,
+                charges_remaining: None,
+            },
+        );
+        state.character.inventory = vec![item_id];
+        // Clear floor items so we can assert cleanly
+        state
+            .world
+            .locations
+            .get_mut(&current_location)
+            .unwrap()
+            .items
+            .clear();
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "drop all");
+        assert!(
+            output
+                .text
+                .iter()
+                .any(|line| line.starts_with("You drop:")),
+            "Expected bulk drop narration. Got: {:?}",
+            output.text
+        );
+
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert!(
+            new_state.character.inventory.is_empty(),
+            "Inventory should be empty after drop all"
+        );
+        assert!(
+            new_state.world.locations[&current_location]
+                .items
+                .contains(&item_id),
+            "Dropped item should appear on floor"
+        );
+        assert!(
+            !new_state.world.items[&item_id].carried_by_player,
+            "Item should not be marked as carried after drop all"
+        );
+        assert_eq!(
+            new_state.world.items[&item_id].location,
+            Some(current_location),
+            "Item location should be set to current room"
+        );
+    }
+
+    #[test]
+    fn test_drop_all_multiple_items_clears_inventory() {
+        let mut state = create_test_exploration_state();
+        let current_location = state.current_location;
+        state
+            .world
+            .locations
+            .get_mut(&current_location)
+            .unwrap()
+            .items
+            .clear();
+        state.character.inventory.clear();
+
+        for (item_id, item_name) in [(981_u32, "Torch"), (982_u32, "Rope"), (983_u32, "Ration")] {
+            state.world.items.insert(
+                item_id,
+                state::Item {
+                    id: item_id,
+                    name: item_name.to_string(),
+                    description: format!("A {}.", item_name.to_lowercase()),
+                    item_type: state::ItemType::Misc,
+                    location: None,
+                    carried_by_player: true,
+                    charges_remaining: None,
+                },
+            );
+            state.character.inventory.push(item_id);
+        }
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "drop everything");
+
+        let drop_line = output
+            .text
+            .iter()
+            .find(|line| line.starts_with("You drop:"))
+            .expect("Expected 'You drop:' line");
+        assert!(drop_line.contains("Torch"), "Should mention Torch. Got: {}", drop_line);
+        assert!(drop_line.contains("Rope"), "Should mention Rope. Got: {}", drop_line);
+        assert!(drop_line.contains("Ration"), "Should mention Ration. Got: {}", drop_line);
+
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert!(new_state.character.inventory.is_empty(), "Inventory should be empty after drop all");
+        for item_id in [981_u32, 982_u32, 983_u32] {
+            assert!(
+                new_state.world.locations[&current_location].items.contains(&item_id),
+                "Item {} should be on floor",
+                item_id
+            );
+        }
+    }
+
+    #[test]
+    fn test_drop_all_clears_equipment_slots() {
+        let mut state = create_test_exploration_state();
+        let current_location = state.current_location;
+        state
+            .world
+            .locations
+            .get_mut(&current_location)
+            .unwrap()
+            .items
+            .clear();
+        state.character.inventory.clear();
+
+        let weapon_id = 984_u32;
+        state.world.items.insert(
+            weapon_id,
+            state::Item {
+                id: weapon_id,
+                name: "Short Sword".to_string(),
+                description: "A short sword.".to_string(),
+                item_type: state::ItemType::Misc,
+                location: None,
+                carried_by_player: true,
+                charges_remaining: None,
+            },
+        );
+        state.character.inventory.push(weapon_id);
+        state.character.equipped.main_hand = Some(weapon_id);
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let output = process_input(&state_json, "drop all");
+
+        let new_state: GameState = serde_json::from_str(&output.state_json).unwrap();
+        assert!(new_state.character.inventory.is_empty(), "Inventory should be empty");
+        assert_eq!(
+            new_state.character.equipped.main_hand, None,
+            "main_hand slot should be cleared after drop all"
+        );
+        assert!(
+            new_state.world.locations[&current_location].items.contains(&weapon_id),
+            "Weapon should be on floor"
         );
     }
 
