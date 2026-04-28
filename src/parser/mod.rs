@@ -160,6 +160,9 @@ pub enum Command {
     /// Display active buffs, conditions, and effects on the player character.
     /// Parsed from "buffs", "conditions", "effects", or "active effects".
     Buffs,
+    /// Display a compact single-line health summary: "HP: current/max".
+    /// Parsed from "hp" or "health".
+    HP,
     Unknown(String),
 }
 
@@ -519,6 +522,7 @@ pub fn parse(input: &str) -> Command {
         "end" | "pass" | "wait" | "skip" => Command::EndTurn,
         "inventory" | "i" | "inv" | "items" | "bag" => Command::Inventory,
         "character" | "char" | "sheet" | "stats" | "status" => Command::CharacterSheet,
+        "hp" | "health" => Command::HP,
         "check" | "roll" | "try" => {
             if args.is_empty() { Command::Unknown("Check which skill?".to_string()) } else { Command::Check(args) }
         }
@@ -976,6 +980,12 @@ mod tests {
     fn test_character_aliases() {
         assert_eq!(parse("stats"), Command::CharacterSheet);
         assert_eq!(parse("status"), Command::CharacterSheet);
+    }
+
+    #[test]
+    fn test_hp_aliases() {
+        assert_eq!(parse("hp"), Command::HP);
+        assert_eq!(parse("health"), Command::HP);
     }
 
     #[test]

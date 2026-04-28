@@ -2798,6 +2798,7 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
             lines
         }
         Command::CharacterSheet => render_character_sheet_with_xp(state),
+        Command::HP => vec![format!("HP: {}/{}", state.character.current_hp, state.character.max_hp)],
         Command::Buffs => render_active_effects(state),
         Command::Check(skill_name) => {
             match parser::resolve_skill(&skill_name) {
@@ -5063,6 +5064,9 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
         }
         Command::Buffs => {
             return render_active_effects(state);
+        }
+        Command::HP => {
+            return vec![format!("HP: {}/{}", state.character.current_hp, state.character.max_hp)];
         }
         // Block exploration commands
         Command::Talk(_) | Command::Take(_) | Command::TakeAll | Command::Drop(_) => {
