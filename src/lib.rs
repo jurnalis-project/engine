@@ -15600,6 +15600,7 @@ mod tests {
                     ..Default::default()
                 }),
                 conditions: Vec::new(),
+                inventory: vec![],
             },
         );
         if let Some(loc) = state.world.locations.get_mut(&loc_id) {
