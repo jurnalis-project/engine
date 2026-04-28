@@ -1669,6 +1669,11 @@ fn resolve_npc_attack_action(
                     result.damage_type
                 ));
             }
+            // Fresh drop to 0 HP: narrate the unconsciousness transition
+            // immediately in the same output batch as the killing blow.
+            if !was_dying && state.character.current_hp <= 0 {
+                lines.push("You fall unconscious!".to_string());
+            }
             // Damage-while-dying: if the player was already at 0 HP when
             // this hit landed, add a death save failure (two on a crit).
             if was_dying {
@@ -2221,6 +2226,11 @@ pub fn fire_opportunity_attacks(
                     "{} makes an opportunity attack with {} -- hit for {} {} damage!",
                     npc_name, result.weapon_name, opp_damage, result.damage_type
                 ));
+                // Fresh drop to 0 HP: narrate the unconsciousness transition
+                // immediately in the same output batch as the killing blow.
+                if !was_dying && state.character.current_hp <= 0 {
+                    lines.push("You fall unconscious!".to_string());
+                }
                 if was_dying {
                     let outcome = combat.apply_damage_while_dying(
                         &mut state.character,
@@ -8917,5 +8927,138 @@ mod tests {
             if checked { break; }
         }
         assert!(checked, "Could not find a raging hit in 500 seeds");
+    }
+
+    // Hypothesis: combat/mod.rs never emits "You fall unconscious!" when HP
+    // first drops to 0. The `was_dying` branch only handles damage-while-
+    // already-dying, so the fresh-drop-to-0 transition is silently skipped.
+    #[test]
+    fn test_fall_unconscious_narration_on_killing_blow() {
+        // When an NPC attack drops the player from positive HP to 0,
+        // the output must contain "You fall unconscious!" in the same batch.
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut state = test_state_with_goblin();
+        let stats = state
+            .world
+            .npcs
+            .get_mut(&0)
+            .unwrap()
+            .combat_stats
+            .as_mut()
+            .unwrap();
+        // Guarantee a hit with minimal damage.
+        stats.attacks.retain(|a| a.name == "Scimitar");
+        stats.attacks[0].hit_bonus = 50;
+        stats.attacks[0].damage_bonus = 0;
+        stats.multiattack = 1;
+        // Set player HP so any Scimitar hit (1d6 base, at least 1) kills.
+        state.character.current_hp = 1;
+        state.character.max_hp = 100;
+
+        let mut combat = start_combat(
+            &mut rng,
+            &state.character,
+            &[0],
+            &state.world.npcs,
+            crate::state::LocationType::Room,
+        );
+        combat.distances.insert(0, 5);
+
+        let lines = resolve_npc_turn(&mut rng, 0, &mut state, &mut combat);
+        let joined = lines.join("\n");
+
+        assert!(
+            joined.contains("You fall unconscious!"),
+            "expected 'You fall unconscious!' in NPC attack output, got:\n{}",
+            joined
+        );
+    }
+
+    #[test]
+    fn test_no_fall_unconscious_when_already_dying() {
+        // When the player is *already* at 0 HP (was_dying == true),
+        // the "You fall unconscious!" message must NOT appear.
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut state = test_state_with_goblin();
+        let stats = state
+            .world
+            .npcs
+            .get_mut(&0)
+            .unwrap()
+            .combat_stats
+            .as_mut()
+            .unwrap();
+        stats.attacks.retain(|a| a.name == "Scimitar");
+        stats.attacks[0].hit_bonus = 50;
+        stats.attacks[0].damage_bonus = 0;
+        stats.multiattack = 1;
+        // Player is already dying (HP == 0).
+        state.character.current_hp = 0;
+        state.character.max_hp = 100;
+
+        let mut combat = start_combat(
+            &mut rng,
+            &state.character,
+            &[0],
+            &state.world.npcs,
+            crate::state::LocationType::Room,
+        );
+        combat.distances.insert(0, 5);
+
+        let lines = resolve_npc_turn(&mut rng, 0, &mut state, &mut combat);
+        let joined = lines.join("\n");
+
+        assert!(
+            !joined.contains("You fall unconscious!"),
+            "should NOT get 'You fall unconscious!' when player was already dying, got:\n{}",
+            joined
+        );
+    }
+
+    #[test]
+    fn test_fall_unconscious_narration_on_opportunity_attack() {
+        // When an opportunity attack drops the player to 0 HP,
+        // the output must contain "You fall unconscious!".
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut state = test_state_with_goblin();
+        let stats = state
+            .world
+            .npcs
+            .get_mut(&0)
+            .unwrap()
+            .combat_stats
+            .as_mut()
+            .unwrap();
+        stats.attacks.retain(|a| a.name == "Scimitar");
+        stats.attacks[0].hit_bonus = 50;
+        stats.attacks[0].damage_bonus = 0;
+        // Set player HP so any Scimitar hit kills.
+        state.character.current_hp = 1;
+        state.character.max_hp = 100;
+
+        let mut combat = start_combat(
+            &mut rng,
+            &state.character,
+            &[0],
+            &state.world.npcs,
+            crate::state::LocationType::Room,
+        );
+        combat.distances.insert(0, 5);
+        // Simulate player moving out of NPC's reach (old=5, new=10).
+        let distance_changes = vec![(0 as NpcId, 5, 10)];
+
+        let lines = fire_opportunity_attacks(&mut rng, &mut state, &mut combat, &distance_changes);
+        let joined = lines.join("\n");
+
+        // The OA must hit (hit_bonus=50), and since HP was 1 before the hit,
+        // the player drops to 0 and should see the unconscious narration.
+        if joined.contains("hit for") {
+            assert!(
+                joined.contains("You fall unconscious!"),
+                "expected 'You fall unconscious!' in opportunity attack output, got:\n{}",
+                joined
+            );
+        }
+        // If the attack missed (shouldn't with +50, but be defensive), skip assertion.
     }
 }
