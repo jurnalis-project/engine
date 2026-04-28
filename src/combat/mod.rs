@@ -93,6 +93,14 @@ pub struct CombatState {
     pub player_dodging: bool,
     /// Whether the player used Disengage (prevents opportunity attacks).
     pub player_disengaging: bool,
+    /// Whether the player is hidden (Rogue Cunning Action: Bonus Hide, or any
+    /// character in exploration). While true:
+    ///   - The player's next attack roll is made with advantage (then cleared).
+    ///   - NPC attacks against the player have disadvantage.
+    /// Cleared at the start of the player's next turn in `advance_turn`.
+    /// Uses `#[serde(default)]` so existing saves deserialize correctly.
+    #[serde(default)]
+    pub player_hidden: bool,
     /// Whether the player has used their action this turn.
     ///
     /// (Formerly `player_action_used`; renamed for consistency with the full
@@ -221,6 +229,7 @@ impl Default for CombatState {
             player_movement_remaining: 0,
             player_dodging: false,
             player_disengaging: false,
+            player_hidden: false,
             action_used: false,
             bonus_action_used: false,
             action_surge_active: false,
@@ -447,6 +456,7 @@ impl CombatState {
                     self.player_movement_remaining = state.character.speed;
                     self.player_dodging = false;
                     self.player_disengaging = false;
+                    self.player_hidden = false;
                     self.action_used = false;
                     self.bonus_action_used = false;
                     self.action_surge_active = false;
@@ -725,6 +735,7 @@ pub fn start_combat(
         player_movement_remaining: player.speed,
         player_dodging: false,
         player_disengaging: false,
+        player_hidden: false,
         action_used: false,
         bonus_action_used: false,
         action_surge_active: false,
@@ -1573,7 +1584,8 @@ fn resolve_npc_attack_action(
             break;
         }
         // Sap disadvantage applies only to the first attack of the turn.
-        let iter_disadv = grappled || (sapped_first_attack && i == 0);
+        // player_hidden: NPC attacks against a hidden player have disadvantage.
+        let iter_disadv = grappled || (sapped_first_attack && i == 0) || combat.player_hidden;
         let player_ac = crate::equipment::calculate_ac(&state.character, &state.world.items);
         let player_dodging = combat.player_dodging;
         let result = resolve_npc_attack(

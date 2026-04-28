@@ -47,6 +47,15 @@ pub enum Command {
     /// Disengage as a bonus action (Rogue Cunning Action). Consumes the bonus
     /// action, sets `player_disengaging = true`. Non-Rogues are rejected.
     BonusDisengage,
+    /// Hide as a bonus action (Rogue Cunning Action, level 2+). Makes a
+    /// Stealth check (DEX + Stealth vs DC 15). On success: sets
+    /// `player_hidden = true`, granting advantage on the player's next
+    /// attack and disadvantage on NPC attacks targeting the player until
+    /// the start of the player's next turn.
+    BonusHide,
+    /// Hide outside combat (free action for any character). Makes a Stealth
+    /// check and narrates the result. No persistent mechanical state effect.
+    Hide,
     /// Accept a pending reaction prompt. Only meaningful when
     /// `CombatState::pending_reaction` is Some; otherwise the orchestrator
     /// treats it as an unknown verb.
@@ -178,6 +187,7 @@ pub fn parse(input: &str) -> Command {
             }
             "dash as bonus" => return Command::BonusDash,
             "disengage as bonus" => return Command::BonusDisengage,
+            "hide as bonus" => return Command::BonusHide,
             // Fighter: "use second wind"
             "use second wind" => return Command::SecondWind,
             // Paladin: "lay on hands [target]"
@@ -260,6 +270,9 @@ pub fn parse(input: &str) -> Command {
             }
             "bonus disengage" | "disengage bonus" | "cunning disengage" => {
                 return Command::BonusDisengage;
+            }
+            "bonus hide" | "hide bonus" | "cunning hide" => {
+                return Command::BonusHide;
             }
             "move to" | "move toward" => {
                 // Check if it looks like a direction first
@@ -498,6 +511,7 @@ pub fn parse(input: &str) -> Command {
         }
         "retreat" => Command::Retreat,
         "dodge" => Command::Dodge,
+        "hide" | "sneak" | "conceal" => Command::Hide,
         "disengage" | "withdraw" | "flee" => Command::Disengage,
         "dash" | "run" | "sprint" => Command::Dash,
         "yes" | "y" => Command::ReactionYes,
