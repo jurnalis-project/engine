@@ -46,7 +46,7 @@ pub struct Character {
     /// Per-class feature flags tracking short-rest / long-rest resources.
     #[serde(default)]
     pub class_features: ClassFeatureState,
-    /// Exhaustion level (0..=6 per SRD 5.1). Long rest reduces by 1.
+    /// Exhaustion level (0..=6 per SRD 2024). Long rest reduces by 1.
     #[serde(default)]
     pub exhaustion: u32,
     /// Total accumulated experience points. Drives level advancement
@@ -71,7 +71,7 @@ pub struct Character {
     #[serde(default)]
     pub languages: Vec<String>,
     /// IDs of magic items the character is currently attuned to. Capped at
-    /// `equipment::magic::MAX_ATTUNED_ITEMS` (3 per SRD 5.1). Items are
+    /// `equipment::magic::MAX_ATTUNED_ITEMS` (3 per SRD 2024). Items are
     /// attuned via the `attune` command and released via `unattune`.
     /// `#[serde(default)]` so older saves without this field deserialize
     /// to an empty vec. Added 2026-04-15 (feat/magic-items).
@@ -126,6 +126,14 @@ pub struct Character {
     /// to 0.
     #[serde(default)]
     pub gold_cp: u32,
+    /// Skills for which the character has Expertise (doubled proficiency
+    /// bonus). Per SRD 2024: Rogue gains Expertise in two chosen skills at
+    /// level 1 (and two more at level 6); Bard gains Expertise at level 3.
+    /// Expertise requires proficiency — if the skill is not also in
+    /// `skill_proficiencies`, the extra bonus is ignored. `#[serde(default)]`
+    /// so legacy saves deserialize cleanly to an empty vec.
+    #[serde(default)]
+    pub expertise_skills: Vec<Skill>,
 }
 
 impl Character {
@@ -138,7 +146,19 @@ impl Character {
     pub fn is_proficient_in_save(&self, ability: Ability) -> bool { self.save_proficiencies.contains(&ability) }
     pub fn skill_modifier(&self, skill: Skill) -> i32 {
         let base = self.ability_modifier(skill.ability());
-        if self.is_proficient_in_skill(skill) { base + self.proficiency_bonus() } else { base }
+        if self.is_proficient_in_skill(skill) {
+            let pb = self.proficiency_bonus();
+            let effective_pb = if self.expertise_skills.contains(&skill) { pb * 2 } else { pb };
+            base + effective_pb
+        } else {
+            base
+        }
+    }
+
+    /// Returns true when the character has Expertise in the given skill
+    /// (i.e. the skill is in `expertise_skills` AND in `skill_proficiencies`).
+    pub fn has_expertise(&self, skill: Skill) -> bool {
+        self.expertise_skills.contains(&skill) && self.is_proficient_in_skill(skill)
     }
 }
 
@@ -169,7 +189,15 @@ pub fn validate_point_buy(scores: &[i32; 6]) -> Result<(), String> {
             None => return Err(format!("Score {} is out of range (8-15)", score)),
         }
     }
-    if total != 27 { return Err(format!("Total cost is {} (must be 27)", total)); }
+    if total != 27 {
+        let delta = (27 - total).unsigned_abs();
+        let msg = if total < 27 {
+            format!("spent {}/27 points — {} remaining", total, delta)
+        } else {
+            format!("spent {}/27 points — {} over budget", total, delta)
+        };
+        return Err(msg);
+    }
     Ok(())
 }
 
@@ -189,7 +217,7 @@ pub fn create_character(
     for (ability, bonus) in race.ability_bonuses() {
         *final_scores.entry(ability).or_insert(10) += bonus;
     }
-    // SRD 5.1: "None of these increases can raise a score above 20."
+    // SRD 2024: "None of these increases can raise a score above 20."
     for score in final_scores.values_mut() {
         *score = (*score).min(20);
     }
@@ -267,6 +295,7 @@ pub fn create_character(
         subrace: None,
         ammo: HashMap::new(),
         gold_cp: 0,
+        expertise_skills: Vec::new(),
     }
 }
 
@@ -456,6 +485,49 @@ mod tests {
     }
 
     #[test]
+    fn test_skill_modifier_with_expertise_doubles_pb() {
+        // Elf Rogue: DEX starts at 14 → racial +2 → 16 → modifier +3.
+        // Level 1 proficiency bonus = +2. With Expertise on Stealth:
+        // expected modifier = +3 DEX + (2 * 2) doubled PB = +7.
+        let mut c = create_character("Test".to_string(), Race::Elf, Class::Rogue, test_scores(), vec![Skill::Stealth]);
+        c.expertise_skills = vec![Skill::Stealth];
+        assert_eq!(c.skill_modifier(Skill::Stealth), 7, "Expertise should double PB: +3 DEX + +4 PB = +7");
+    }
+
+    #[test]
+    fn test_expertise_without_proficiency_has_no_effect() {
+        // expertise_skills without the skill in skill_proficiencies must not double.
+        let mut c = create_character("Test".to_string(), Race::Elf, Class::Rogue, test_scores(), vec![]);
+        c.expertise_skills = vec![Skill::Stealth];
+        // Not proficient — base DEX only (+3 for Elf Rogue).
+        assert_eq!(c.skill_modifier(Skill::Stealth), 3);
+        assert!(!c.has_expertise(Skill::Stealth));
+    }
+
+    #[test]
+    fn test_has_expertise_true_when_proficient_and_in_expertise_list() {
+        let mut c = create_character("Test".to_string(), Race::Elf, Class::Rogue, test_scores(), vec![Skill::Stealth]);
+        c.expertise_skills = vec![Skill::Stealth];
+        assert!(c.has_expertise(Skill::Stealth));
+    }
+
+    #[test]
+    fn test_rogue_expertise_bug_example_stealth_plus7() {
+        // Regression: Rogue with DEX 16 (+3) and PB 2 with Expertise in Stealth
+        // should show +7, not +5 (the pre-fix bug value).
+        let mut scores = HashMap::new();
+        scores.insert(Ability::Strength, 10);
+        scores.insert(Ability::Dexterity, 16);
+        scores.insert(Ability::Constitution, 10);
+        scores.insert(Ability::Intelligence, 10);
+        scores.insert(Ability::Wisdom, 10);
+        scores.insert(Ability::Charisma, 10);
+        let mut c = create_character("Shadow".to_string(), Race::Human, Class::Rogue, scores, vec![Skill::Stealth]);
+        c.expertise_skills = vec![Skill::Stealth];
+        assert_eq!(c.skill_modifier(Skill::Stealth), 7, "Bug: was +5, should be +7 with Expertise");
+    }
+
+    #[test]
     fn test_random_scores_in_range() {
         use rand::SeedableRng; use rand::rngs::StdRng;
         let mut rng = StdRng::seed_from_u64(42);
@@ -474,6 +546,22 @@ mod tests {
 
     #[test]
     fn test_point_buy_wrong_total() { assert!(validate_point_buy(&[15, 15, 14, 8, 8, 8]).is_err()); }
+
+    #[test]
+    fn test_point_buy_underspend_message() {
+        // [8,8,8,8,8,8] costs 0 points — 27 remaining
+        let err = validate_point_buy(&[8, 8, 8, 8, 8, 8]).unwrap_err();
+        assert!(err.contains("spent 0/27 points"), "unexpected message: {}", err);
+        assert!(err.contains("27 remaining"), "unexpected message: {}", err);
+    }
+
+    #[test]
+    fn test_point_buy_overspend_message() {
+        // [15,15,15,15,15,15] costs 54 points — 27 over budget
+        let err = validate_point_buy(&[15, 15, 15, 15, 15, 15]).unwrap_err();
+        assert!(err.contains("spent 54/27 points"), "unexpected message: {}", err);
+        assert!(err.contains("27 over budget"), "unexpected message: {}", err);
+    }
 
     #[test]
     fn test_point_buy_out_of_range() {
@@ -969,7 +1057,7 @@ mod tests {
         assert!(loaded.weapon_masteries.is_empty());
     }
 
-    // ---- Ability score cap (SRD 5.1: scores cannot exceed 20) ----
+    // ---- Ability score cap (SRD 2024: scores cannot exceed 20) ----
 
     #[test]
     fn test_ability_score_cap_clamps_scores_exceeding_20() {

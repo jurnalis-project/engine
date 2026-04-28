@@ -131,6 +131,7 @@ fn make_downed_combat_state() -> GameState {
                 ..Default::default()
             }),
             conditions: vec![],
+            inventory: vec![],
         },
     );
 
@@ -185,6 +186,7 @@ fn make_downed_wizard_combat_state() -> GameState {
                 ..Default::default()
             }),
             conditions: vec![],
+            inventory: vec![],
         },
     );
 
@@ -212,10 +214,16 @@ fn downed_player_input_advances_only_one_death_save_cycle() {
     let out = process_input(&into_json(&state), "end turn");
     let new_state = from_json(&out.state_json);
     let combat = new_state.active_combat.as_ref().expect("combat should still be active");
+    // Count lines that are actual death save *roll results* (not the
+    // introductory explanation). Roll results match either the old
+    // "Death saving throw: N" format or the new "[Death save: N" format.
     let death_save_lines = out
         .text
         .iter()
-        .filter(|line| line.contains("Death saving throw:"))
+        .filter(|line| {
+            (line.contains("[Death save:") || line.contains("Death saving throw:"))
+                && !line.contains("roll automatically")
+        })
         .count();
 
     assert_eq!(death_save_lines, 1, "single input should roll exactly one death save, got output: {:?}", out.text);

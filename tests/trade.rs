@@ -71,6 +71,7 @@ fn make_trade_state() -> GameState {
         location: 0,
         combat_stats: None,
         conditions: Vec::new(),
+        inventory: Vec::new(),
     });
 
     GameState {

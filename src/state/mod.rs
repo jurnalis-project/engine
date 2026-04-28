@@ -52,7 +52,7 @@ pub struct GameState {
     #[serde(default)]
     pub in_world_minutes: u64,
     /// `in_world_minutes` at the start of the most recent completed long rest,
-    /// used to enforce the SRD 5.1 "one long rest per 24 hours" rule.
+    /// used to enforce the SRD 2024 "one long rest per 24 hours" rule.
     /// `None` if the character has never taken a long rest.
     #[serde(default)]
     pub last_long_rest_minutes: Option<u64>,
@@ -183,6 +183,12 @@ pub struct Npc {
     pub combat_stats: Option<CombatStats>,
     #[serde(default)]
     pub conditions: Vec<ActiveCondition>,
+    /// Item IDs stocked by this NPC (Merchants only). Populated during
+    /// world generation. Empty for non-Merchant NPCs and for older saves
+    /// that predate merchant inventory. `#[serde(default)]` ensures
+    /// backward-compatible deserialization.
+    #[serde(default)]
+    pub inventory: Vec<ItemId>,
 }
 
 /// A spell known by an NPC combatant. MVP: name + level only; the engine
@@ -290,6 +296,16 @@ pub enum NpcRole {
     Guard,
     Hermit,
     Adventurer,
+}
+
+impl NpcRole {
+    /// Returns true for roles that can plausibly act as combat allies
+    /// (Guards, Adventurers). Non-combatant roles (Merchant, Hermit)
+    /// return false and are excluded from ally-adjacency checks such as
+    /// the Rogue's Sneak Attack trigger.
+    pub fn is_combatant(self) -> bool {
+        matches!(self, NpcRole::Guard | NpcRole::Adventurer)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -527,6 +543,12 @@ pub enum CreationStep {
     PointBuy,
     AssignAbilities,
     ChooseSkills,
+    /// Rogue (and eventually Bard) must choose two skill proficiencies to
+    /// gain Expertise (doubled proficiency bonus) at level 1. Inserted
+    /// between ChooseSkills and ChooseAlignment for those classes. Classes
+    /// that do not grant Expertise at level 1 skip this step entirely.
+    /// See `docs/specs/srd-classes.md` and `docs/reference/rogue.md`.
+    ChooseExpertiseSkills,
     /// New (#35): SRD alignment selection. Sits between ChooseSkills and
     /// ChooseName so it mirrors the SRD creation order (background/species/
     /// abilities -> alignment -> details).
@@ -1167,5 +1189,40 @@ mod tests {
         assert_eq!(loaded.spell_slots.get(&1).copied(), Some(4));
         assert_eq!(loaded.spell_slots.get(&2).copied(), Some(2));
         assert_eq!(loaded.spell_slots.get(&3), None);
+    }
+
+    #[test]
+    fn test_npc_inventory_defaults_empty_when_missing() {
+        // Older saves without the `inventory` field should deserialize to empty Vec.
+        let json = r#"{
+            "id": 0,
+            "name": "Marcus",
+            "role": "Merchant",
+            "disposition": "Friendly",
+            "dialogue_tags": [],
+            "location": 0,
+            "combat_stats": null
+        }"#;
+        let npc: Npc = serde_json::from_str(json).unwrap();
+        assert!(npc.inventory.is_empty(),
+            "Missing inventory field should default to empty Vec");
+    }
+
+    #[test]
+    fn test_npc_inventory_roundtrips() {
+        let npc = Npc {
+            id: 0,
+            name: "Marcus".to_string(),
+            role: NpcRole::Merchant,
+            disposition: Disposition::Friendly,
+            dialogue_tags: vec![],
+            location: 0,
+            combat_stats: None,
+            conditions: vec![],
+            inventory: vec![10, 11, 12],
+        };
+        let json = serde_json::to_string(&npc).unwrap();
+        let loaded: Npc = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded.inventory, vec![10, 11, 12]);
     }
 }

@@ -74,7 +74,7 @@ pub struct ClassFeatureState {
     // ---- Concentration (spells) ----
     /// Name of the spell the character is currently concentrating on, or
     /// `None`. Starting a new concentration spell drops the previous one
-    /// (per SRD 5.1: a caster can only concentrate on one spell at a time).
+    /// (per SRD 2024: a caster can only concentrate on one spell at a time).
     /// Also cleared when the caster fails a concentration save or drops
     /// the spell deliberately.
     #[serde(default)]
@@ -410,7 +410,7 @@ impl Class {
 }
 
 impl Class {
-    /// Starting tool proficiencies granted by the class at level 1 per SRD 5.1.
+    /// Starting tool proficiencies granted by the class at level 1 per SRD 2024.
     /// Returns an empty slice for classes with no class-granted tool proficiencies
     /// (background-granted tools are handled separately in `lib.rs`).
     pub fn starting_tool_proficiencies(&self) -> &'static [ToolProficiency] {

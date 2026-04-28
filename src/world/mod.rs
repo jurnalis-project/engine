@@ -70,7 +70,13 @@ pub fn generate_world(rng: &mut impl Rng, location_count: usize) -> WorldState {
     }
 
     let item_count = location_count / 2 + 2;
-    let items = item::generate_items(rng, &location_ids, item_count);
+    let mut items = item::generate_items(rng, &location_ids, item_count);
+
+    // Generate merchant inventory items and merge them into the world item map.
+    // Merchant items have IDs starting at item_count so they don't collide with
+    // world-placed items.
+    let merchant_items = npc::generate_merchant_items(rng, &mut npcs, item_count as u32);
+    items.extend(merchant_items);
 
     let trigger_count = location_count / 3 + 1;
     let triggers = trigger::generate_triggers(rng, &location_ids, trigger_count);
@@ -334,6 +340,81 @@ mod tests {
             assert_eq!(item1.location, item2.location,
                 "Item {} ('{}') placed at different locations: {:?} vs {:?}",
                 id, item1.name, item1.location, item2.location);
+        }
+    }
+
+    #[test]
+    fn test_merchant_npcs_have_inventory() {
+        // Check across many seeds to find merchants
+        let mut found_merchant = false;
+        for seed in 0..100u64 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let world = generate_world(&mut rng, 15);
+            for npc in world.npcs.values() {
+                if npc.role != crate::state::NpcRole::Merchant {
+                    continue;
+                }
+                found_merchant = true;
+                assert!(
+                    !npc.inventory.is_empty(),
+                    "seed {}: Merchant '{}' (id={}) should have inventory items",
+                    seed, npc.name, npc.id
+                );
+                // Each inventory item should exist in world.items
+                for &item_id in &npc.inventory {
+                    assert!(
+                        world.items.contains_key(&item_id),
+                        "seed {}: Merchant '{}' inventory references item {} which doesn't exist",
+                        seed, npc.name, item_id
+                    );
+                }
+            }
+        }
+        assert!(found_merchant, "Expected at least one merchant NPC across 100 seeds");
+    }
+
+    #[test]
+    fn test_merchant_inventory_is_deterministic() {
+        let mut rng1 = StdRng::seed_from_u64(42);
+        let mut rng2 = StdRng::seed_from_u64(42);
+        let w1 = generate_world(&mut rng1, 15);
+        let w2 = generate_world(&mut rng2, 15);
+        for id in w1.npcs.keys() {
+            let npc1 = &w1.npcs[id];
+            let npc2 = &w2.npcs[id];
+            if npc1.role == crate::state::NpcRole::Merchant {
+                assert_eq!(
+                    npc1.inventory.len(), npc2.inventory.len(),
+                    "Merchant '{}' inventory length differs across runs",
+                    npc1.name
+                );
+                // Item names should match in order
+                let names1: Vec<_> = npc1.inventory.iter()
+                    .map(|id| w1.items[id].name.clone()).collect();
+                let names2: Vec<_> = npc2.inventory.iter()
+                    .map(|id| w2.items[id].name.clone()).collect();
+                assert_eq!(names1, names2,
+                    "Merchant '{}' inventory item names differ", npc1.name);
+            }
+        }
+    }
+
+    #[test]
+    fn test_merchant_inventory_size_within_range() {
+        // Each merchant should stock 8-12 items
+        for seed in 0..20u64 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let world = generate_world(&mut rng, 15);
+            for npc in world.npcs.values() {
+                if npc.role == crate::state::NpcRole::Merchant {
+                    let count = npc.inventory.len();
+                    assert!(
+                        (8..=12).contains(&count),
+                        "seed {}: Merchant '{}' has {} items (expected 8-12)",
+                        seed, npc.name, count
+                    );
+                }
+            }
         }
     }
 }

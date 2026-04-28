@@ -54,6 +54,7 @@ pub fn skill_check(
     skill: Skill,
     ability_scores: &std::collections::HashMap<Ability, i32>,
     proficiencies: &[Skill],
+    expertise_skills: &[Skill],
     proficiency_bonus: i32,
     dc: i32,
     advantage: bool,
@@ -62,11 +63,20 @@ pub fn skill_check(
     let ability = skill.ability();
     let ability_score = ability_scores.get(&ability).copied().unwrap_or(10);
     let is_proficient = proficiencies.contains(&skill);
-    ability_check(rng, ability_score, proficiency_bonus, is_proficient, dc, advantage, disadvantage)
+    // Expertise doubles PB, but only when the character is also proficient.
+    let has_expertise = is_proficient && expertise_skills.contains(&skill);
+    let effective_pb = if has_expertise { proficiency_bonus * 2 } else { proficiency_bonus };
+    ability_check(rng, ability_score, effective_pb, is_proficient, dc, advantage, disadvantage)
 }
 
-pub fn passive_check(ability_score: i32, proficiency_bonus: i32, is_proficient: bool) -> i32 {
-    10 + Ability::modifier(ability_score) + if is_proficient { proficiency_bonus } else { 0 }
+pub fn passive_check(
+    ability_score: i32,
+    proficiency_bonus: i32,
+    is_proficient: bool,
+    has_expertise: bool,
+) -> i32 {
+    let effective_pb = if is_proficient && has_expertise { proficiency_bonus * 2 } else { proficiency_bonus };
+    10 + Ability::modifier(ability_score) + if is_proficient { effective_pb } else { 0 }
 }
 
 #[cfg(test)]
@@ -139,14 +149,53 @@ mod tests {
         scores.insert(Ability::Strength, 8);
         let proficiencies = vec![Skill::Stealth];
 
-        let result = skill_check(&mut rng, Skill::Stealth, &scores, &proficiencies, 2, 10, false, false);
+        let result = skill_check(&mut rng, Skill::Stealth, &scores, &proficiencies, &[], 2, 10, false, false);
         assert_eq!(result.modifier, 5); // +3 DEX mod + 2 proficiency
     }
 
     #[test]
+    fn test_skill_check_with_expertise_doubles_pb() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut scores = HashMap::new();
+        scores.insert(Ability::Dexterity, 16); // +3 modifier
+        let proficiencies = vec![Skill::Stealth];
+        let expertise = vec![Skill::Stealth];
+
+        // Without expertise: +3 DEX + 2 PB = +5
+        let without = skill_check(&mut rng, Skill::Stealth, &scores, &proficiencies, &[], 2, 10, false, false);
+        assert_eq!(without.modifier, 5);
+
+        // With expertise: +3 DEX + 4 PB (doubled) = +7
+        let mut rng2 = StdRng::seed_from_u64(42);
+        let with_exp = skill_check(&mut rng2, Skill::Stealth, &scores, &proficiencies, &expertise, 2, 10, false, false);
+        assert_eq!(with_exp.modifier, 7);
+    }
+
+    #[test]
+    fn test_skill_check_expertise_requires_proficiency() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut scores = HashMap::new();
+        scores.insert(Ability::Dexterity, 16); // +3 modifier
+        let proficiencies: Vec<Skill> = vec![];
+        // Expertise listed, but no proficiency — should not double PB.
+        let expertise = vec![Skill::Stealth];
+
+        let result = skill_check(&mut rng, Skill::Stealth, &scores, &proficiencies, &expertise, 2, 10, false, false);
+        assert_eq!(result.modifier, 3); // just +3 DEX, no PB at all
+    }
+
+    #[test]
     fn test_passive_check() {
-        assert_eq!(passive_check(14, 2, true), 14);  // 10 + 2 + 2
-        assert_eq!(passive_check(14, 2, false), 12); // 10 + 2
-        assert_eq!(passive_check(8, 2, true), 11);   // 10 + (-1) + 2
+        assert_eq!(passive_check(14, 2, true, false), 14);  // 10 + 2 + 2
+        assert_eq!(passive_check(14, 2, false, false), 12); // 10 + 2
+        assert_eq!(passive_check(8, 2, true, false), 11);   // 10 + (-1) + 2
+    }
+
+    #[test]
+    fn test_passive_check_with_expertise() {
+        // 10 + 2 (DEX mod) + 4 (doubled PB) = 16
+        assert_eq!(passive_check(14, 2, true, true), 16);
+        // No proficiency => expertise has no effect
+        assert_eq!(passive_check(14, 2, false, true), 12);
     }
 }

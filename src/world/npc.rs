@@ -1,20 +1,39 @@
 // jurnalis-engine/src/world/npc.rs
-use crate::state::{Disposition, Location, Npc, NpcRole};
-use crate::types::{LocationId, NpcId};
+use crate::equipment::{SRD_ARMOR, SRD_WEAPONS};
+use crate::state::{Disposition, Item, ItemType, Location, Npc, NpcRole};
+use crate::types::{ItemId, LocationId, NpcId};
 use rand::Rng;
 use std::collections::HashMap;
 
 impl Npc {
+    /// Return the NPC name with a disposition/role tag appended.
+    ///
+    /// Tag derivation:
+    /// - `NpcRole::Merchant` -> `[merchant]` (regardless of disposition)
+    /// - `Disposition::Hostile` -> `[hostile]`
+    /// - `Disposition::Neutral` or `Disposition::Friendly` -> `[neutral]`
+    pub fn display_name(&self) -> String {
+        let tag = if self.role == NpcRole::Merchant {
+            "merchant"
+        } else {
+            match self.disposition {
+                Disposition::Hostile => "hostile",
+                Disposition::Neutral | Disposition::Friendly => "neutral",
+            }
+        };
+        format!("{} [{}]", self.name, tag)
+    }
+
     /// Return a multi-line inspection description for the NPC.
     /// Lines:
-    ///   1. NPC full name
+    ///   1. NPC full name with disposition tag (e.g. "Orin the Quiet [hostile]")
     ///   2. Role description (e.g. "A wandering merchant.")
     ///   3. Disposition sentence (e.g. "They seem friendly.")
     ///   4+ (optional) Visible special traits, one per line, indented with two spaces.
     pub fn inspect(&self) -> Vec<String> {
         let mut lines = Vec::new();
 
-        lines.push(self.name.clone());
+        lines.push(self.display_name());
 
         let role_line = match self.role {
             NpcRole::Merchant => "A wandering merchant.",
@@ -122,11 +141,149 @@ pub fn generate_npcs(
                 location,
                 combat_stats: None,
                 conditions: Vec::new(),
+                inventory: Vec::new(),
             },
         );
     }
 
     npcs
+}
+
+/// Consumables available in merchant shops. (name, description, effect, cost_cp)
+const MERCHANT_CONSUMABLES: &[(&str, &str, &str, u32)] = &[
+    ("Torch", "A wooden torch soaked in pitch. Provides light.", "light", 1),
+    ("Rations", "A day's worth of dried food.", "nourish", 50),
+    ("Healing Potion", "A small vial of red liquid that restores vitality.", "heal_srd_potion", 5000),
+];
+
+/// Generate inventory items for all Merchant NPCs. Each merchant stocks 8-12
+/// items drawn from SRD weapons, armor, and consumables. The selection is
+/// weighted: simple weapons and light armor are more common.
+///
+/// Returns the created items (keyed by ItemId). The caller must insert them
+/// into `WorldState.items`. Item IDs start at `next_item_id` and are assigned
+/// contiguously.
+///
+/// Side-effect: each Merchant NPC's `inventory` field is populated with the
+/// IDs of the items generated for it.
+pub fn generate_merchant_items(
+    rng: &mut impl Rng,
+    npcs: &mut HashMap<NpcId, Npc>,
+    next_item_id: ItemId,
+) -> HashMap<ItemId, Item> {
+    let mut items = HashMap::new();
+    let mut current_id = next_item_id;
+
+    // Iterate by sorted NPC ID for deterministic generation.
+    let mut npc_ids: Vec<NpcId> = npcs.keys().copied().collect();
+    npc_ids.sort();
+
+    for npc_id in npc_ids {
+        let npc = npcs.get_mut(&npc_id).unwrap();
+        if npc.role != NpcRole::Merchant {
+            continue;
+        }
+
+        let item_count = rng.gen_range(8..=12);
+        let mut inventory = Vec::with_capacity(item_count);
+
+        for _ in 0..item_count {
+            let item = match rng.gen_range(0..3) {
+                0 => {
+                    // Weapon: simple 2x more likely than martial
+                    let simple: Vec<_> = SRD_WEAPONS.iter()
+                        .filter(|w| w.category == crate::state::WeaponCategory::Simple)
+                        .collect();
+                    let martial: Vec<_> = SRD_WEAPONS.iter()
+                        .filter(|w| w.category == crate::state::WeaponCategory::Martial)
+                        .collect();
+                    let w = if rng.gen_bool(0.67) && !simple.is_empty() {
+                        simple[rng.gen_range(0..simple.len())]
+                    } else if !martial.is_empty() {
+                        martial[rng.gen_range(0..martial.len())]
+                    } else {
+                        simple[rng.gen_range(0..simple.len())]
+                    };
+                    Item {
+                        id: current_id,
+                        name: w.name.to_string(),
+                        description: format!("A {}.", w.name.to_lowercase()),
+                        item_type: ItemType::Weapon {
+                            damage_dice: w.damage_dice,
+                            damage_die: w.damage_die,
+                            damage_type: w.damage_type,
+                            properties: w.properties,
+                            category: w.category,
+                            versatile_die: w.versatile_die,
+                            range_normal: w.range_normal,
+                            range_long: w.range_long,
+                        },
+                        location: None,
+                        carried_by_player: false,
+                        charges_remaining: None,
+                    }
+                }
+                1 => {
+                    // Armor: light/shields more likely than heavy
+                    let light: Vec<_> = SRD_ARMOR.iter()
+                        .filter(|a| matches!(
+                            a.category,
+                            crate::state::ArmorCategory::Light | crate::state::ArmorCategory::Shield
+                        ))
+                        .collect();
+                    let heavier: Vec<_> = SRD_ARMOR.iter()
+                        .filter(|a| !matches!(
+                            a.category,
+                            crate::state::ArmorCategory::Light | crate::state::ArmorCategory::Shield
+                        ))
+                        .collect();
+                    let a = if rng.gen_bool(0.6) && !light.is_empty() {
+                        light[rng.gen_range(0..light.len())]
+                    } else if !heavier.is_empty() {
+                        heavier[rng.gen_range(0..heavier.len())]
+                    } else {
+                        light[rng.gen_range(0..light.len())]
+                    };
+                    Item {
+                        id: current_id,
+                        name: a.name.to_string(),
+                        description: format!("A set of {} armor.", a.name.to_lowercase()),
+                        item_type: ItemType::Armor {
+                            category: a.category,
+                            base_ac: a.base_ac,
+                            max_dex_bonus: a.max_dex_bonus,
+                            str_requirement: a.str_requirement,
+                            stealth_disadvantage: a.stealth_disadvantage,
+                        },
+                        location: None,
+                        carried_by_player: false,
+                        charges_remaining: None,
+                    }
+                }
+                _ => {
+                    // Consumable
+                    let c = MERCHANT_CONSUMABLES[rng.gen_range(0..MERCHANT_CONSUMABLES.len())];
+                    Item {
+                        id: current_id,
+                        name: c.0.to_string(),
+                        description: c.1.to_string(),
+                        item_type: ItemType::Consumable { effect: c.2.to_string() },
+                        location: None,
+                        carried_by_player: false,
+                        charges_remaining: None,
+                    }
+                }
+            };
+
+            inventory.push(current_id);
+            items.insert(current_id, item);
+            current_id += 1;
+        }
+
+        npc.inventory = inventory;
+    }
+
+    items
 }
 
 #[cfg(test)]
@@ -161,14 +318,72 @@ mod tests {
             location: 0,
             combat_stats: None,
             conditions: vec![],
+            inventory: vec![],
         }
+    }
+
+    #[test]
+    fn test_display_name_hostile_npc_shows_hostile_tag() {
+        let npc = make_npc(NpcRole::Guard, Disposition::Hostile);
+        assert_eq!(npc.display_name(), "Orin the Quiet [hostile]");
+    }
+
+    #[test]
+    fn test_display_name_neutral_npc_shows_neutral_tag() {
+        let npc = make_npc(NpcRole::Guard, Disposition::Neutral);
+        assert_eq!(npc.display_name(), "Orin the Quiet [neutral]");
+    }
+
+    #[test]
+    fn test_display_name_friendly_npc_shows_neutral_tag() {
+        let npc = make_npc(NpcRole::Hermit, Disposition::Friendly);
+        assert_eq!(npc.display_name(), "Orin the Quiet [neutral]");
+    }
+
+    #[test]
+    fn test_display_name_merchant_shows_merchant_tag() {
+        let npc = make_npc(NpcRole::Merchant, Disposition::Friendly);
+        assert_eq!(npc.display_name(), "Orin the Quiet [merchant]");
+    }
+
+    #[test]
+    fn test_display_name_merchant_neutral_shows_merchant_tag() {
+        let npc = make_npc(NpcRole::Merchant, Disposition::Neutral);
+        assert_eq!(npc.display_name(), "Orin the Quiet [merchant]");
+    }
+
+    #[test]
+    fn test_inspect_header_includes_disposition_tag() {
+        let hostile = make_npc(NpcRole::Guard, Disposition::Hostile);
+        let lines = hostile.inspect();
+        assert_eq!(
+            lines[0], "Orin the Quiet [hostile]",
+            "Inspect header should include [hostile] tag. Got: {:?}",
+            lines[0]
+        );
+
+        let merchant = make_npc(NpcRole::Merchant, Disposition::Friendly);
+        let lines = merchant.inspect();
+        assert_eq!(
+            lines[0], "Orin the Quiet [merchant]",
+            "Inspect header should include [merchant] tag. Got: {:?}",
+            lines[0]
+        );
+
+        let neutral = make_npc(NpcRole::Hermit, Disposition::Neutral);
+        let lines = neutral.inspect();
+        assert_eq!(
+            lines[0], "Orin the Quiet [neutral]",
+            "Inspect header should include [neutral] tag. Got: {:?}",
+            lines[0]
+        );
     }
 
     #[test]
     fn test_inspect_returns_name_as_first_line() {
         let npc = make_npc(NpcRole::Hermit, Disposition::Neutral);
         let lines = npc.inspect();
-        assert_eq!(lines[0], "Orin the Quiet");
+        assert_eq!(lines[0], "Orin the Quiet [neutral]");
     }
 
     #[test]

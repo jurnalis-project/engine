@@ -93,6 +93,14 @@ pub struct CombatState {
     pub player_dodging: bool,
     /// Whether the player used Disengage (prevents opportunity attacks).
     pub player_disengaging: bool,
+    /// Whether the player is hidden (Rogue Cunning Action: Bonus Hide, or any
+    /// character in exploration). While true:
+    ///   - The player's next attack roll is made with advantage (then cleared).
+    ///   - NPC attacks against the player have disadvantage.
+    /// Cleared at the start of the player's next turn in `advance_turn`.
+    /// Uses `#[serde(default)]` so existing saves deserialize correctly.
+    #[serde(default)]
+    pub player_hidden: bool,
     /// Whether the player has used their action this turn.
     ///
     /// (Formerly `player_action_used`; renamed for consistency with the full
@@ -201,6 +209,14 @@ pub struct CombatState {
     /// against the player are made with advantage.
     #[serde(default)]
     pub player_reckless: bool,
+    // ---- Two-step spell targeting (issue #331) ------------------------------
+    /// When the player casts a target-requiring spell without specifying a
+    /// target, the spell name is stored here. The next combat input is
+    /// interpreted as the target name (or "cancel"/"nevermind" to abort).
+    /// Cleared after resolution or cancellation. The action is NOT consumed
+    /// until the spell actually fires; slot refund happens on prompt.
+    #[serde(default)]
+    pub pending_spell: Option<String>,
 }
 
 impl Default for CombatState {
@@ -213,6 +229,7 @@ impl Default for CombatState {
             player_movement_remaining: 0,
             player_dodging: false,
             player_disengaging: false,
+            player_hidden: false,
             action_used: false,
             bonus_action_used: false,
             action_surge_active: false,
@@ -234,6 +251,7 @@ impl Default for CombatState {
             npc_cover: HashMap::new(),
             npc_reactions_used: std::collections::HashSet::new(),
             player_reckless: false,
+            pending_spell: None,
         }
     }
 }
@@ -410,7 +428,7 @@ impl CombatState {
 
     /// Called at the end of the player's turn, before advancing initiative.
     ///
-    /// Per SRD 5.1, the reaction refreshes at the end of the previous turn so
+    /// Per SRD 2024, the reaction refreshes at the end of the previous turn so
     /// that reactions remain available during subsequent NPC turns.
     pub fn end_player_turn(&mut self) {
         self.reaction_used = false;
@@ -438,6 +456,7 @@ impl CombatState {
                     self.player_movement_remaining = state.character.speed;
                     self.player_dodging = false;
                     self.player_disengaging = false;
+                    self.player_hidden = false;
                     self.action_used = false;
                     self.bonus_action_used = false;
                     self.action_surge_active = false;
@@ -519,10 +538,16 @@ impl CombatState {
 ///
 /// Returns human-readable lines describing the roll result and any state
 /// transitions (stabilize, defeat, crit). The caller passes the raw d20
-/// roll value alongside the outcome variant. Kept as a free function so
-/// callers (orchestrator and tests) can format narration deterministically
-/// from a known (roll, outcome) pair.
-pub fn narrate_death_save_outcome(d20: i32, outcome: DeathSaveOutcome) -> Vec<String> {
+/// roll value alongside the outcome variant, plus the **post-roll** tally
+/// of successes and failures (used to append a running count for non-terminal
+/// outcomes). Kept as a free function so callers (orchestrator and tests) can
+/// format narration deterministically from a known (roll, outcome) pair.
+pub fn narrate_death_save_outcome(
+    d20: i32,
+    outcome: DeathSaveOutcome,
+    successes: u8,
+    failures: u8,
+) -> Vec<String> {
     let mut lines = Vec::new();
     match outcome {
         DeathSaveOutcome::CritSuccess => {
@@ -538,15 +563,21 @@ pub fn narrate_death_save_outcome(d20: i32, outcome: DeathSaveOutcome) -> Vec<St
             ));
         }
         DeathSaveOutcome::Success => {
-            lines.push(format!("Death saving throw: {} — success.", d20,));
+            lines.push(format!(
+                "[Death save: {} — Success. {}/3 successes, {}/3 failures.]",
+                d20, successes, failures,
+            ));
         }
         DeathSaveOutcome::Failure => {
-            lines.push(format!("Death saving throw: {} — failure.", d20,));
+            lines.push(format!(
+                "[Death save: {} — Failure. {}/3 successes, {}/3 failures.]",
+                d20, successes, failures,
+            ));
         }
         DeathSaveOutcome::CritFailure => {
             lines.push(format!(
-                "Death saving throw: {} — natural 1! That counts as two failures.",
-                d20,
+                "[Death save: {} — Natural 1! That counts as two failures. {}/3 successes, {}/3 failures.]",
+                d20, successes, failures,
             ));
         }
         DeathSaveOutcome::Dead => {
@@ -716,6 +747,7 @@ pub fn start_combat(
         player_movement_remaining: player.speed,
         player_dodging: false,
         player_disengaging: false,
+        player_hidden: false,
         action_used: false,
         bonus_action_used: false,
         action_surge_active: false,
@@ -737,6 +769,7 @@ pub fn start_combat(
         npc_cover: assign_npc_cover(rng, hostile_npc_ids, location_type),
         npc_reactions_used: std::collections::HashSet::new(),
         player_reckless: false,
+        pending_spell: None,
     }
 }
 
@@ -834,28 +867,101 @@ pub struct AttackResult {
     /// Rogue Sneak Attack trigger path 1 (attacker has Advantage).
     /// See `apply_sneak_attack` in lib.rs for the full two-path logic.
     pub attacker_had_advantage: bool,
+    /// Short reason (<=5 words) explaining why advantage or disadvantage
+    /// applied. Empty when the roll is straight (no advantage/disadvantage).
+    pub roll_mode_reason: String,
 }
 
 pub fn format_attack_roll_details(result: &AttackResult, modifier: i32) -> String {
     match result.attack_roll_second {
-        Some(other_roll) if result.disadvantage => format!(
-            "{} / {} \u{2192} {} ({}) (disadvantage \u{2014} keeping {})",
-            result.attack_roll_first,
-            other_roll,
-            result.attack_roll,
-            format_roll(result.attack_roll, modifier, result.total_attack),
-            result.attack_roll,
-        ),
-        Some(other_roll) if result.attacker_had_advantage => format!(
-            "{} / {} \u{2192} {} ({}) (advantage \u{2014} keeping {})",
-            result.attack_roll_first,
-            other_roll,
-            result.attack_roll,
-            format_roll(result.attack_roll, modifier, result.total_attack),
-            result.attack_roll,
-        ),
+        Some(other_roll) if result.disadvantage => {
+            let reason_part = if result.roll_mode_reason.is_empty() {
+                "disadvantage".to_string()
+            } else {
+                format!("disadvantage: {}", result.roll_mode_reason)
+            };
+            format!(
+                "{} / {} \u{2192} {} ({}) ({} \u{2014} keeping {})",
+                result.attack_roll_first,
+                other_roll,
+                result.attack_roll,
+                format_roll(result.attack_roll, modifier, result.total_attack),
+                reason_part,
+                result.attack_roll,
+            )
+        }
+        Some(other_roll) if result.attacker_had_advantage => {
+            let reason_part = if result.roll_mode_reason.is_empty() {
+                "advantage".to_string()
+            } else {
+                format!("advantage: {}", result.roll_mode_reason)
+            };
+            format!(
+                "{} / {} \u{2192} {} ({}) ({} \u{2014} keeping {})",
+                result.attack_roll_first,
+                other_roll,
+                result.attack_roll,
+                format_roll(result.attack_roll, modifier, result.total_attack),
+                reason_part,
+                result.attack_roll,
+            )
+        }
         _ => format_roll(result.attack_roll, modifier, result.total_attack),
     }
+}
+
+/// Return a short reason string for attacker-side condition advantage (Invisible).
+fn attacker_condition_advantage_reason(conditions: &[ActiveCondition]) -> String {
+    if conditions::has_condition(conditions, ConditionType::Invisible) {
+        return "invisible".to_string();
+    }
+    String::new()
+}
+
+/// Return a short reason string for attacker-side condition disadvantage.
+fn attacker_condition_disadvantage_reason(conditions: &[ActiveCondition]) -> String {
+    if conditions::has_condition(conditions, ConditionType::Poisoned) {
+        return "poisoned".to_string();
+    }
+    if conditions::has_condition(conditions, ConditionType::Blinded) {
+        return "blinded".to_string();
+    }
+    if conditions::has_condition(conditions, ConditionType::Prone) {
+        return "prone".to_string();
+    }
+    if conditions::has_condition(conditions, ConditionType::Frightened) {
+        return "frightened".to_string();
+    }
+    if conditions::has_condition(conditions, ConditionType::Restrained) {
+        return "restrained".to_string();
+    }
+    String::new()
+}
+
+/// Return a short reason string for defender-side condition advantage.
+fn defender_condition_advantage_reason(target_conditions: &[ActiveCondition]) -> String {
+    if conditions::has_condition(target_conditions, ConditionType::Prone) {
+        return "target prone".to_string();
+    }
+    if conditions::has_condition(target_conditions, ConditionType::Stunned) {
+        return "target stunned".to_string();
+    }
+    if conditions::has_condition(target_conditions, ConditionType::Paralyzed) {
+        return "target paralyzed".to_string();
+    }
+    if conditions::has_condition(target_conditions, ConditionType::Petrified) {
+        return "target petrified".to_string();
+    }
+    if conditions::has_condition(target_conditions, ConditionType::Restrained) {
+        return "target restrained".to_string();
+    }
+    if conditions::has_condition(target_conditions, ConditionType::Unconscious) {
+        return "target unconscious".to_string();
+    }
+    if conditions::has_condition(target_conditions, ConditionType::Blinded) {
+        return "target blinded".to_string();
+    }
+    String::new()
 }
 
 /// Determine if the player's weapon attack is ranged based on target distance and weapon.
@@ -989,7 +1095,7 @@ pub fn resolve_player_attack(
     };
 
     // Unarmed strikes (no weapon, damage_dice == 0) flow through the standard
-    // attack-roll pipeline per SRD 5.1 Rules Glossary ("Unarmed Strike"):
+    // attack-roll pipeline per SRD 2024 Rules Glossary ("Unarmed Strike"):
     //   attack roll bonus = STR mod + proficiency bonus
     //   on hit: Bludgeoning damage = 1 + STR mod
     // Advantage/disadvantage from conditions applies automatically on the
@@ -1042,21 +1148,35 @@ pub fn resolve_player_attack(
 
     let prof_bonus = player.proficiency_bonus();
 
-    // Check disadvantage
+    // Check disadvantage (collect first reason for the final roll mode)
     let mut disadvantage = false;
+    let mut disadv_reason = String::new();
+    let mut adv_reason = String::new();
     if target_dodging {
         disadvantage = true;
+        if disadv_reason.is_empty() {
+            disadv_reason = "target dodging".to_string();
+        }
     }
     if extra_disadvantage {
         // Orchestrator-supplied disadvantage (e.g., Grappled vs non-grappler target).
         disadvantage = true;
+        if disadv_reason.is_empty() {
+            disadv_reason = "grappled".to_string();
+        }
     }
     if ranged {
         if hostile_within_5ft {
             disadvantage = true;
+            if disadv_reason.is_empty() {
+                disadv_reason = "hostile within 5 ft".to_string();
+            }
         }
         if distance > range_normal as u32 && distance <= range_long as u32 {
             disadvantage = true; // Long range
+            if disadv_reason.is_empty() {
+                disadv_reason = "beyond normal range".to_string();
+            }
         }
     }
     // SRD 2024 Armor Training: wearing non-proficient armor imposes
@@ -1065,6 +1185,9 @@ pub fn resolve_player_attack(
     // docs/reference/equipment.md and docs/specs/equipment-system.md.
     if player.wearing_nonproficient_armor {
         disadvantage = true;
+        if disadv_reason.is_empty() {
+            disadv_reason = "nonproficient armor".to_string();
+        }
     }
 
     // Attacker-side conditions: Invisible grants advantage; Poisoned/Blinded/Prone/
@@ -1073,10 +1196,23 @@ pub fn resolve_player_attack(
     if extra_advantage {
         // Orchestrator-supplied advantage (e.g., Vex mastery mark on target).
         advantage = true;
+        if adv_reason.is_empty() {
+            adv_reason = "vex mastery".to_string();
+        }
     }
     match conditions::get_attack_advantage(&player.conditions) {
-        Some(true) => advantage = true,
-        Some(false) => disadvantage = true,
+        Some(true) => {
+            advantage = true;
+            if adv_reason.is_empty() {
+                adv_reason = attacker_condition_advantage_reason(&player.conditions);
+            }
+        }
+        Some(false) => {
+            disadvantage = true;
+            if disadv_reason.is_empty() {
+                disadv_reason = attacker_condition_disadvantage_reason(&player.conditions);
+            }
+        }
         None => {}
     }
 
@@ -1087,11 +1223,22 @@ pub fn resolve_player_attack(
             // Prone only grants advantage if within 5 ft; beyond 5 ft it flips to disadvantage.
             if conditions::has_condition(target_conditions, ConditionType::Prone) && distance > 5 {
                 disadvantage = true;
+                if disadv_reason.is_empty() {
+                    disadv_reason = "target prone, far".to_string();
+                }
             } else {
                 advantage = true;
+                if adv_reason.is_empty() {
+                    adv_reason = defender_condition_advantage_reason(target_conditions);
+                }
             }
         }
-        Some(false) => disadvantage = true,
+        Some(false) => {
+            disadvantage = true;
+            if disadv_reason.is_empty() {
+                disadv_reason = "target invisible".to_string();
+            }
+        }
         None => {}
     }
 
@@ -1101,6 +1248,15 @@ pub fn resolve_player_attack(
         false
     } else {
         advantage
+    };
+
+    // Determine the reason for the final roll mode.
+    let roll_mode_reason = if disadvantage {
+        disadv_reason
+    } else if attacker_has_advantage {
+        adv_reason
+    } else {
+        String::new()
     };
 
     // Roll attack with advantage/disadvantage/neutral
@@ -1174,6 +1330,7 @@ pub fn resolve_player_attack(
         weapon_name,
         disadvantage,
         attacker_had_advantage: attacker_has_advantage,
+        roll_mode_reason,
     }
 }
 
@@ -1192,34 +1349,61 @@ pub fn resolve_npc_attack(
 ) -> AttackResult {
     let mut disadvantage = false;
     let mut advantage = false;
+    let mut disadv_reason = String::new();
+    let mut adv_reason = String::new();
 
     // Reckless Attack: NPC attacks against a reckless player have advantage
     // per SRD 2024 Barbarian level 2.
     if player_reckless {
         advantage = true;
+        if adv_reason.is_empty() {
+            adv_reason = "reckless attack".to_string();
+        }
     }
 
     if player_dodging {
         disadvantage = true;
+        if disadv_reason.is_empty() {
+            disadv_reason = "target dodging".to_string();
+        }
     }
     if extra_disadvantage {
         // Orchestrator-supplied disadvantage (e.g., NPC Grappled and attacking a non-grappler).
         disadvantage = true;
+        if disadv_reason.is_empty() {
+            disadv_reason = "grappled".to_string();
+        }
     }
 
     let is_ranged = attack.reach == 0 && attack.range_normal > 0;
     if is_ranged && distance <= 5 {
         disadvantage = true; // Ranged attack in melee
+        if disadv_reason.is_empty() {
+            disadv_reason = "hostile within 5 ft".to_string();
+        }
     }
     if is_ranged && distance > attack.range_normal as u32 {
         disadvantage = true; // Long range
+        if disadv_reason.is_empty() {
+            disadv_reason = "beyond normal range".to_string();
+        }
     }
 
     // Attacker-side conditions on the NPC: Invisible => advantage;
     // Poisoned/Blinded/Prone/Frightened/Restrained => disadvantage.
     match conditions::get_attack_advantage(npc_conditions) {
-        Some(true) => advantage = true,
-        Some(false) => disadvantage = true,
+        Some(true) => {
+            advantage = true;
+            if adv_reason.is_empty() {
+                adv_reason = attacker_condition_advantage_reason(npc_conditions);
+            }
+        }
+        Some(false) => {
+            disadvantage = true;
+            if disadv_reason.is_empty() {
+                disadv_reason = attacker_condition_disadvantage_reason(npc_conditions);
+            }
+        }
         None => {}
     }
 
@@ -1230,17 +1414,37 @@ pub fn resolve_npc_attack(
             // Prone only grants advantage within 5 ft; beyond, it's disadvantage.
             if conditions::has_condition(player_conditions, ConditionType::Prone) && distance > 5 {
                 disadvantage = true;
+                if disadv_reason.is_empty() {
+                    disadv_reason = "target prone, far".to_string();
+                }
             } else {
                 advantage = true;
+                if adv_reason.is_empty() {
+                    adv_reason = defender_condition_advantage_reason(player_conditions);
+                }
             }
         }
-        Some(false) => disadvantage = true,
+        Some(false) => {
+            disadvantage = true;
+            if disadv_reason.is_empty() {
+                disadv_reason = "target invisible".to_string();
+            }
+        }
         None => {}
     }
 
     // Advantage and disadvantage cancel out per SRD.
     let use_disadvantage = disadvantage && !advantage;
     let use_advantage = advantage && !disadvantage;
+
+    // Determine the reason for the final roll mode.
+    let roll_mode_reason = if use_disadvantage {
+        disadv_reason
+    } else if use_advantage {
+        adv_reason
+    } else {
+        String::new()
+    };
 
     let roll1 = roll_d20(rng);
     let roll2 = roll_d20(rng);
@@ -1298,6 +1502,7 @@ pub fn resolve_npc_attack(
         weapon_name: attack.name.clone(),
         disadvantage: use_disadvantage,
         attacker_had_advantage: use_advantage,
+        roll_mode_reason,
     }
 }
 
@@ -1391,7 +1596,8 @@ fn resolve_npc_attack_action(
             break;
         }
         // Sap disadvantage applies only to the first attack of the turn.
-        let iter_disadv = grappled || (sapped_first_attack && i == 0);
+        // player_hidden: NPC attacks against a hidden player have disadvantage.
+        let iter_disadv = grappled || (sapped_first_attack && i == 0) || combat.player_hidden;
         let player_ac = crate::equipment::calculate_ac(&state.character, &state.world.items);
         let player_dodging = combat.player_dodging;
         let result = resolve_npc_attack(
@@ -1426,6 +1632,25 @@ fn resolve_npc_attack_action(
             } else {
                 result.damage
             };
+            // Barbarian Rage resistance: halve bludgeoning, piercing, and
+            // slashing damage while raging (SRD 5.2.1 Rage feature).
+            // Stacks independently with Uncanny Dodge — both halve if both
+            // conditions are met.
+            let actual_damage = if state.character.class_features.rage_active
+                && matches!(
+                    result.damage_type,
+                    DamageType::Bludgeoning | DamageType::Piercing | DamageType::Slashing
+                )
+            {
+                let halved = actual_damage / 2;
+                lines.push(format!(
+                    "Rage resistance! You halve the {} damage from {} to {}.",
+                    result.damage_type, actual_damage, halved
+                ));
+                halved
+            } else {
+                actual_damage
+            };
             state.character.current_hp -= actual_damage;
             if result.natural_20 {
                 lines.push(format!(
@@ -1443,6 +1668,11 @@ fn resolve_npc_attack_action(
                     actual_damage,
                     result.damage_type
                 ));
+            }
+            // Fresh drop to 0 HP: narrate the unconsciousness transition
+            // immediately in the same output batch as the killing blow.
+            if !was_dying && state.character.current_hp <= 0 {
+                lines.push("You fall unconscious!".to_string());
             }
             // Damage-while-dying: if the player was already at 0 HP when
             // this hit landed, add a death save failure (two on a crit).
@@ -1719,7 +1949,7 @@ pub fn resolve_npc_turn(
     // ---- Standard AI: melee if in range -> ranged if in range -> approach ----
 
     // Try to attack at the current distance; if not in range, move then
-    // re-check. This mirrors SRD 5.1: movement and action are independent
+    // re-check. This mirrors SRD 2024: movement and action are independent
     // resources on the same turn.
     let attack_lines = resolve_npc_attack_action(
         rng,
@@ -1979,15 +2209,32 @@ pub fn fire_opportunity_attacks(
         {
             if result.hit {
                 let was_dying = state.character.current_hp <= 0;
-                state.character.current_hp -= result.damage;
+                // Barbarian Rage resistance: halve bludgeoning, piercing, and
+                // slashing damage while raging (SRD 5.2.1 Rage feature).
+                let opp_damage = if state.character.class_features.rage_active
+                    && matches!(
+                        result.damage_type,
+                        DamageType::Bludgeoning | DamageType::Piercing | DamageType::Slashing
+                    )
+                {
+                    result.damage / 2
+                } else {
+                    result.damage
+                };
+                state.character.current_hp -= opp_damage;
                 lines.push(format!(
                     "{} makes an opportunity attack with {} -- hit for {} {} damage!",
-                    npc_name, result.weapon_name, result.damage, result.damage_type
+                    npc_name, result.weapon_name, opp_damage, result.damage_type
                 ));
+                // Fresh drop to 0 HP: narrate the unconsciousness transition
+                // immediately in the same output batch as the killing blow.
+                if !was_dying && state.character.current_hp <= 0 {
+                    lines.push("You fall unconscious!".to_string());
+                }
                 if was_dying {
                     let outcome = combat.apply_damage_while_dying(
                         &mut state.character,
-                        result.damage,
+                        opp_damage,
                         result.natural_20,
                     );
                     lines.extend(narrate_damage_while_dying_outcome(outcome));
@@ -3196,7 +3443,7 @@ pub fn apply_nick_mastery(has_mastery: bool, combat: &mut CombatState) -> bool {
 // ---- Rogue: Sneak Attack --------------------------------------------------
 
 /// Number of Sneak Attack dice (d6) a Rogue rolls at the given character
-/// level per SRD 5.1: `ceil(level / 2)`, equivalent to `floor((level + 1) / 2)`.
+/// level per SRD 2024: `ceil(level / 2)`, equivalent to `floor((level + 1) / 2)`.
 ///
 /// Examples: level 1 -> 1d6, level 2 -> 1d6, level 3 -> 2d6, level 11 -> 6d6,
 /// level 20 -> 10d6.
@@ -3204,7 +3451,7 @@ pub fn sneak_attack_dice_for_level(level: u32) -> u32 {
     (level + 1) / 2
 }
 
-/// True when a weapon's properties qualify for Sneak Attack per SRD 5.1:
+/// True when a weapon's properties qualify for Sneak Attack per SRD 2024:
 /// a Finesse melee weapon OR a ranged weapon. `is_ranged_attack` is the
 /// orchestrator's resolution of whether this specific attack is being used
 /// at range (thrown weapons only qualify when actually thrown from range).
@@ -3315,6 +3562,7 @@ mod tests {
                 location: 0,
                 combat_stats: Some(goblin_stats()),
                 conditions: Vec::new(),
+                inventory: Vec::new(),
             },
         );
 
@@ -4292,6 +4540,7 @@ mod tests {
                 location: 0,
                 combat_stats: Some(goblin_stats()),
                 conditions: Vec::new(),
+                inventory: Vec::new(),
             },
         );
         npcs.insert(
@@ -4305,6 +4554,7 @@ mod tests {
                 location: 0,
                 combat_stats: Some(goblin_stats()),
                 conditions: Vec::new(),
+                inventory: Vec::new(),
             },
         );
 
@@ -4466,6 +4716,7 @@ mod tests {
                     ..Default::default()
                 }),
                 conditions: Vec::new(),
+                inventory: Vec::new(),
             },
         );
 
@@ -4555,7 +4806,7 @@ mod tests {
     }
 
     // Hypothesis: resolve_npc_turn() moves the NPC toward the player but
-    // returns immediately without re-checking for an attack. Per SRD 5.1
+    // returns immediately without re-checking for an attack. Per SRD 2024
     // (line 507), movement and action are independent — a creature may move
     // then act on the same turn. After closing distance, the NPC should
     // attempt a melee (or ranged) attack if now in range.
@@ -5195,7 +5446,7 @@ mod tests {
     }
 
     #[test]
-    fn test_format_attack_roll_details_shows_both_disadvantage_d20s() {
+    fn test_format_attack_roll_details_shows_both_disadvantage_d20s_with_reason() {
         let result = AttackResult {
             hit: false,
             natural_20: false,
@@ -5210,16 +5461,17 @@ mod tests {
             weapon_name: "Longsword".to_string(),
             disadvantage: true,
             attacker_had_advantage: false,
+            roll_mode_reason: "hostile within 5 ft".to_string(),
         };
 
         assert_eq!(
             format_attack_roll_details(&result, 3),
-            "17 / 4 \u{2192} 4 (4+3=7) (disadvantage \u{2014} keeping 4)"
+            "17 / 4 \u{2192} 4 (4+3=7) (disadvantage: hostile within 5 ft \u{2014} keeping 4)"
         );
     }
 
     #[test]
-    fn test_format_attack_roll_details_shows_both_advantage_d20s() {
+    fn test_format_attack_roll_details_shows_both_advantage_d20s_with_reason() {
         let result = AttackResult {
             hit: true,
             natural_20: false,
@@ -5234,12 +5486,442 @@ mod tests {
             weapon_name: "Longsword".to_string(),
             disadvantage: false,
             attacker_had_advantage: true,
+            roll_mode_reason: "target stunned".to_string(),
         };
 
         assert_eq!(
             format_attack_roll_details(&result, 3),
-            "14 / 8 \u{2192} 14 (14+3=17) (advantage \u{2014} keeping 14)"
+            "14 / 8 \u{2192} 14 (14+3=17) (advantage: target stunned \u{2014} keeping 14)"
         );
+    }
+
+    #[test]
+    fn test_format_attack_roll_details_empty_reason_falls_back() {
+        // When roll_mode_reason is empty, the format should use bare
+        // "disadvantage" / "advantage" without a colon (backward compat).
+        let result = AttackResult {
+            hit: false,
+            natural_20: false,
+            natural_1: false,
+            attack_roll_first: 17,
+            attack_roll_second: Some(4),
+            attack_roll: 4,
+            total_attack: 7,
+            target_ac: 15,
+            damage: 0,
+            damage_type: DamageType::Slashing,
+            weapon_name: "Longsword".to_string(),
+            disadvantage: true,
+            attacker_had_advantage: false,
+            roll_mode_reason: String::new(),
+        };
+
+        assert_eq!(
+            format_attack_roll_details(&result, 3),
+            "17 / 4 \u{2192} 4 (4+3=7) (disadvantage \u{2014} keeping 4)"
+        );
+    }
+
+    // ---- Roll mode reason tests ----
+
+    #[test]
+    fn test_player_attack_hostile_within_5ft_reason() {
+        // Ranged attack with a hostile within 5 ft should produce
+        // roll_mode_reason = "hostile within 5 ft".
+        let mut state = test_state_with_goblin();
+        let bow = crate::state::Item {
+            id: 9000,
+            name: "Shortbow".to_string(),
+            description: "A shortbow.".to_string(),
+            item_type: crate::state::ItemType::Weapon {
+                damage_dice: 1,
+                damage_die: 6,
+                damage_type: crate::state::DamageType::Piercing,
+                properties: crate::equipment::AMMUNITION,
+                category: crate::state::WeaponCategory::Simple,
+                versatile_die: 0,
+                range_normal: 80,
+                range_long: 320,
+            },
+            location: None,
+            carried_by_player: true,
+            charges_remaining: None,
+        };
+        state.world.items.insert(9000, bow);
+        state.character.inventory.push(9000);
+        state.character.equipped.main_hand = Some(9000);
+
+        let mut rng = StdRng::seed_from_u64(42);
+        let result = resolve_player_attack(
+            &mut rng,
+            &state.character,
+            15,
+            false,
+            Some(9000),
+            &state.world.items,
+            30, // target at 30 ft
+            true,
+            true, // hostile within 5 ft
+            &[],
+            false,
+            false,
+            &Cover::None,
+        );
+        assert!(result.disadvantage);
+        assert_eq!(result.roll_mode_reason, "hostile within 5 ft");
+    }
+
+    #[test]
+    fn test_player_attack_target_dodging_reason() {
+        let state = test_state_with_goblin();
+        let mut rng = StdRng::seed_from_u64(42);
+        let result = resolve_player_attack(
+            &mut rng,
+            &state.character,
+            15,
+            true, // target dodging
+            None,
+            &state.world.items,
+            5,
+            true,
+            false,
+            &[],
+            false,
+            false,
+            &Cover::None,
+        );
+        assert!(result.disadvantage);
+        assert_eq!(result.roll_mode_reason, "target dodging");
+    }
+
+    #[test]
+    fn test_player_attack_poisoned_reason() {
+        use crate::conditions::{ActiveCondition, ConditionDuration, ConditionType};
+        let mut state = test_state_with_goblin();
+        state.character.conditions.push(ActiveCondition::new(
+            ConditionType::Poisoned,
+            ConditionDuration::Rounds(10),
+        ));
+
+        let mut rng = StdRng::seed_from_u64(42);
+        let result = resolve_player_attack(
+            &mut rng,
+            &state.character,
+            15,
+            false,
+            None,
+            &state.world.items,
+            5,
+            true,
+            false,
+            &[],
+            false,
+            false,
+            &Cover::None,
+        );
+        assert!(result.disadvantage);
+        assert_eq!(result.roll_mode_reason, "poisoned");
+    }
+
+    #[test]
+    fn test_player_attack_invisible_advantage_reason() {
+        use crate::conditions::{ActiveCondition, ConditionDuration, ConditionType};
+        let mut state = test_state_with_goblin();
+        state.character.conditions.push(ActiveCondition::new(
+            ConditionType::Invisible,
+            ConditionDuration::Rounds(10),
+        ));
+
+        let mut rng = StdRng::seed_from_u64(42);
+        let result = resolve_player_attack(
+            &mut rng,
+            &state.character,
+            15,
+            false,
+            None,
+            &state.world.items,
+            5,
+            true,
+            false,
+            &[],
+            false,
+            false,
+            &Cover::None,
+        );
+        assert!(result.attacker_had_advantage);
+        assert_eq!(result.roll_mode_reason, "invisible");
+    }
+
+    #[test]
+    fn test_player_attack_target_stunned_reason() {
+        use crate::conditions::{ActiveCondition, ConditionDuration, ConditionType};
+        let target_conditions = vec![ActiveCondition::new(
+            ConditionType::Stunned,
+            ConditionDuration::Rounds(1),
+        )];
+
+        let state = test_state_with_goblin();
+        let mut rng = StdRng::seed_from_u64(42);
+        let result = resolve_player_attack(
+            &mut rng,
+            &state.character,
+            15,
+            false,
+            None,
+            &state.world.items,
+            5,
+            true,
+            false,
+            &target_conditions,
+            false,
+            false,
+            &Cover::None,
+        );
+        assert!(result.attacker_had_advantage);
+        assert_eq!(result.roll_mode_reason, "target stunned");
+    }
+
+    #[test]
+    fn test_player_attack_vex_mastery_reason() {
+        let state = test_state_with_goblin();
+        let mut rng = StdRng::seed_from_u64(42);
+        let result = resolve_player_attack(
+            &mut rng,
+            &state.character,
+            15,
+            false,
+            None,
+            &state.world.items,
+            5,
+            true,
+            false,
+            &[],
+            false,
+            true, // extra_advantage (vex mastery)
+            &Cover::None,
+        );
+        assert!(result.attacker_had_advantage);
+        assert_eq!(result.roll_mode_reason, "vex mastery");
+    }
+
+    #[test]
+    fn test_player_attack_long_range_reason() {
+        let mut state = test_state_with_goblin();
+        let bow = crate::state::Item {
+            id: 9000,
+            name: "Shortbow".to_string(),
+            description: "A shortbow.".to_string(),
+            item_type: crate::state::ItemType::Weapon {
+                damage_dice: 1,
+                damage_die: 6,
+                damage_type: crate::state::DamageType::Piercing,
+                properties: crate::equipment::AMMUNITION,
+                category: crate::state::WeaponCategory::Simple,
+                versatile_die: 0,
+                range_normal: 80,
+                range_long: 320,
+            },
+            location: None,
+            carried_by_player: true,
+            charges_remaining: None,
+        };
+        state.world.items.insert(9000, bow);
+        state.character.inventory.push(9000);
+        state.character.equipped.main_hand = Some(9000);
+
+        let mut rng = StdRng::seed_from_u64(42);
+        let result = resolve_player_attack(
+            &mut rng,
+            &state.character,
+            15,
+            false,
+            Some(9000),
+            &state.world.items,
+            100, // beyond normal range (80) but within long range (320)
+            true,
+            false,
+            &[],
+            false,
+            false,
+            &Cover::None,
+        );
+        assert!(result.disadvantage);
+        assert_eq!(result.roll_mode_reason, "beyond normal range");
+    }
+
+    #[test]
+    fn test_npc_attack_target_dodging_reason() {
+        let attack = NpcAttack {
+            name: "Scimitar".to_string(),
+            hit_bonus: 4,
+            damage_dice: 1,
+            damage_die: 6,
+            damage_bonus: 2,
+            damage_type: DamageType::Slashing,
+            reach: 5,
+            range_normal: 0,
+            range_long: 0,
+        };
+
+        let mut rng = StdRng::seed_from_u64(42);
+        let result = resolve_npc_attack(
+            &mut rng,
+            &attack,
+            15,
+            true, // player dodging
+            5,
+            &[],
+            &[],
+            false,
+            &Cover::None,
+            false,
+        );
+        assert!(result.disadvantage);
+        assert_eq!(result.roll_mode_reason, "target dodging");
+    }
+
+    #[test]
+    fn test_npc_attack_reckless_attack_reason() {
+        let attack = NpcAttack {
+            name: "Scimitar".to_string(),
+            hit_bonus: 4,
+            damage_dice: 1,
+            damage_die: 6,
+            damage_bonus: 2,
+            damage_type: DamageType::Slashing,
+            reach: 5,
+            range_normal: 0,
+            range_long: 0,
+        };
+
+        let mut rng = StdRng::seed_from_u64(42);
+        let result = resolve_npc_attack(
+            &mut rng,
+            &attack,
+            15,
+            false,
+            5,
+            &[],
+            &[],
+            false,
+            &Cover::None,
+            true, // player reckless
+        );
+        assert!(result.attacker_had_advantage);
+        assert_eq!(result.roll_mode_reason, "reckless attack");
+    }
+
+    #[test]
+    fn test_npc_ranged_attack_in_melee_reason() {
+        let ranged_attack = NpcAttack {
+            name: "Shortbow".to_string(),
+            hit_bonus: 4,
+            damage_dice: 1,
+            damage_die: 6,
+            damage_bonus: 2,
+            damage_type: DamageType::Piercing,
+            reach: 0,
+            range_normal: 80,
+            range_long: 320,
+        };
+
+        let mut rng = StdRng::seed_from_u64(42);
+        let result = resolve_npc_attack(
+            &mut rng,
+            &ranged_attack,
+            15,
+            false,
+            5, // within 5 ft
+            &[],
+            &[],
+            false,
+            &Cover::None,
+            false,
+        );
+        assert!(result.disadvantage);
+        assert_eq!(result.roll_mode_reason, "hostile within 5 ft");
+    }
+
+    #[test]
+    fn test_adv_disadv_cancel_no_reason() {
+        // When advantage and disadvantage cancel, roll_mode_reason should be empty.
+        use crate::conditions::{ActiveCondition, ConditionDuration, ConditionType};
+        let mut state = test_state_with_goblin();
+        // Invisible gives advantage; target dodging gives disadvantage.
+        // They cancel => straight roll.
+        state.character.conditions.push(ActiveCondition::new(
+            ConditionType::Invisible,
+            ConditionDuration::Rounds(10),
+        ));
+
+        let mut rng = StdRng::seed_from_u64(42);
+        let result = resolve_player_attack(
+            &mut rng,
+            &state.character,
+            15,
+            true, // target dodging => disadvantage
+            None,
+            &state.world.items,
+            5,
+            true,
+            false,
+            &[],
+            false,
+            false,
+            &Cover::None,
+        );
+        // They should cancel out
+        assert!(!result.disadvantage);
+        assert!(!result.attacker_had_advantage);
+        assert!(result.roll_mode_reason.is_empty());
+    }
+
+    #[test]
+    fn test_player_attack_nonproficient_armor_reason() {
+        let mut state = test_state_with_goblin();
+        state.character.wearing_nonproficient_armor = true;
+
+        let mut rng = StdRng::seed_from_u64(42);
+        let result = resolve_player_attack(
+            &mut rng,
+            &state.character,
+            15,
+            false,
+            None,
+            &state.world.items,
+            5,
+            true,
+            false,
+            &[],
+            false,
+            false,
+            &Cover::None,
+        );
+        assert!(result.disadvantage);
+        assert_eq!(result.roll_mode_reason, "nonproficient armor");
+    }
+
+    #[test]
+    fn test_player_attack_grappled_reason() {
+        let state = test_state_with_goblin();
+        let mut rng = StdRng::seed_from_u64(42);
+        let result = resolve_player_attack(
+            &mut rng,
+            &state.character,
+            15,
+            false,
+            None,
+            &state.world.items,
+            5,
+            true,
+            false,
+            &[],
+            true, // extra_disadvantage (grappled)
+            false,
+            &Cover::None,
+        );
+        assert!(result.disadvantage);
+        assert_eq!(result.roll_mode_reason, "grappled");
     }
 
     // ---- Action Economy tests ----
@@ -5480,6 +6162,7 @@ mod tests {
             location: 0,
             combat_stats: Some(stats),
             conditions: Vec::new(),
+            inventory: Vec::new(),
         }
     }
 
@@ -5557,6 +6240,7 @@ mod tests {
             location: 0,
             combat_stats: None,
             conditions: Vec::new(),
+            inventory: Vec::new(),
         };
         let applied = try_apply_condition_to_npc(
             &mut npc,
@@ -5807,6 +6491,7 @@ mod tests {
             location: 0,
             combat_stats: None,
             conditions: Vec::new(),
+            inventory: Vec::new(),
         };
         let mut narr = Vec::new();
         let dealt = apply_damage_to_npc(&mut npc, 50, DamageType::Slashing, &mut narr);
@@ -5843,6 +6528,7 @@ mod tests {
             location: 0,
             combat_stats: Some(goblin_stats()),
             conditions: Vec::new(),
+            inventory: Vec::new(),
         }
     }
 
@@ -5861,6 +6547,7 @@ mod tests {
             weapon_name: "Longsword".to_string(),
             disadvantage: false,
             attacker_had_advantage: false,
+            roll_mode_reason: String::new(),
         }
     }
 
@@ -6176,7 +6863,7 @@ mod tests {
 
     #[test]
     fn test_sneak_attack_dice_for_level_matches_srd() {
-        // SRD 5.1: ceil(level / 2) d6 -- floor((level+1)/2) d6.
+        // SRD 2024: ceil(level / 2) d6 -- floor((level+1)/2) d6.
         assert_eq!(sneak_attack_dice_for_level(1), 1);
         assert_eq!(sneak_attack_dice_for_level(2), 1);
         assert_eq!(sneak_attack_dice_for_level(3), 2);
@@ -7392,6 +8079,7 @@ mod tests {
                 location: 0,
                 combat_stats: Some(goblin_stats()),
                 conditions: Vec::new(),
+                inventory: Vec::new(),
             },
         );
         // Grapple the goblin (NPC 0) by the player.
@@ -7604,6 +8292,7 @@ mod tests {
                     ..Default::default()
                 }),
                 conditions: Vec::new(),
+                inventory: Vec::new(),
             });
 
             GameState {
@@ -7784,6 +8473,7 @@ mod tests {
                     ..Default::default()
                 }),
                 conditions: Vec::new(),
+                inventory: Vec::new(),
             },
         );
 
@@ -8023,5 +8713,352 @@ mod tests {
             }
             other => panic!("Expected UncannyDodge, got {:?}", other),
         }
+    }
+
+    // ---- Rage damage resistance tests ----
+
+    fn make_barbarian_state(level: u32, rage_active: bool) -> GameState {
+        let mut scores = HashMap::new();
+        scores.insert(Ability::Strength, 16);
+        scores.insert(Ability::Dexterity, 12);
+        scores.insert(Ability::Constitution, 16);
+        scores.insert(Ability::Intelligence, 8);
+        scores.insert(Ability::Wisdom, 10);
+        scores.insert(Ability::Charisma, 8);
+        let mut character = create_character(
+            "Barb".to_string(),
+            Race::Human,
+            Class::Barbarian,
+            scores,
+            vec![],
+        );
+        character.level = level;
+        character.class_features.rage_active = rage_active;
+
+        let mut npcs = HashMap::new();
+        npcs.insert(
+            0,
+            Npc {
+                id: 0,
+                name: "Bandit".to_string(),
+                role: NpcRole::Guard,
+                disposition: Disposition::Hostile,
+                dialogue_tags: vec![],
+                location: 0,
+                combat_stats: Some(CombatStats {
+                    max_hp: 20,
+                    current_hp: 20,
+                    ac: 10,
+                    speed: 30,
+                    attacks: vec![NpcAttack {
+                        name: "Greataxe".to_string(),
+                        hit_bonus: 20, // guaranteed hit (except nat-1)
+                        damage_dice: 1,
+                        damage_die: 12,
+                        damage_bonus: 3,
+                        damage_type: DamageType::Slashing,
+                        reach: 5,
+                        range_normal: 0,
+                        range_long: 0,
+                    }],
+                    proficiency_bonus: 2,
+                    cr: 0.125,
+                    ..Default::default()
+                }),
+                conditions: Vec::new(),
+                inventory: Vec::new(),
+            },
+        );
+
+        GameState {
+            version: crate::state::SAVE_VERSION.to_string(),
+            character,
+            current_location: 0,
+            discovered_locations: HashSet::new(),
+            world: WorldState {
+                locations: HashMap::new(),
+                npcs,
+                items: HashMap::new(),
+                triggers: HashMap::new(),
+                triggered: HashSet::new(),
+            },
+            log: Vec::new(),
+            rng_seed: 42,
+            rng_counter: 0,
+            game_phase: GamePhase::Exploration,
+            active_combat: None,
+            ironman_mode: false,
+            progress: crate::state::ProgressState::default(),
+            in_world_minutes: 0,
+            last_long_rest_minutes: None,
+            pending_background_pattern: None,
+            pending_subrace: None,
+            pending_disambiguation: None,
+            pending_new_game_confirm: false,
+        }
+    }
+
+    #[test]
+    fn test_rage_resistance_halves_slashing_damage_while_raging() {
+        // When rage_active=true the Barbarian should take only floor(damage/2)
+        // from bludgeoning/piercing/slashing attacks.
+        let mut triggered = false;
+        for seed in 0..200u64 {
+            let mut state = make_barbarian_state(1, true);
+            let mut rng = StdRng::seed_from_u64(seed);
+            let mut combat = start_combat(
+                &mut rng,
+                &state.character,
+                &[0],
+                &state.world.npcs,
+                crate::state::LocationType::Room,
+            );
+            combat.distances.insert(0, 5);
+
+            let hp_before = state.character.current_hp;
+            let mut rng2 = StdRng::seed_from_u64(seed);
+            let lines = resolve_npc_turn(&mut rng2, 0, &mut state, &mut combat);
+            let all = lines.join("\n");
+
+            if all.contains("natural 1") || (!all.contains("hit for") && !all.contains("CRITICAL")) {
+                continue; // miss — try next seed
+            }
+
+            assert!(
+                all.contains("Rage resistance!"),
+                "Expected rage resistance narration. Got: {:?}",
+                lines
+            );
+            let damage_taken = hp_before - state.character.current_hp;
+            // Greataxe deals 1d12+3 (min 4, max 15); halved max is 7.
+            assert!(
+                damage_taken <= 7,
+                "Rage should halve damage (max halved is 7, taken={})",
+                damage_taken
+            );
+            triggered = true;
+            break;
+        }
+        assert!(triggered, "Could not find a hit in 200 seeds — test setup may be wrong");
+    }
+
+    #[test]
+    fn test_rage_resistance_does_not_apply_when_not_raging() {
+        // Without rage, full damage is taken.
+        let mut found_hit = false;
+        for seed in 0..200u64 {
+            let mut state = make_barbarian_state(1, false);
+            let mut rng = StdRng::seed_from_u64(seed);
+            let mut combat = start_combat(
+                &mut rng,
+                &state.character,
+                &[0],
+                &state.world.npcs,
+                crate::state::LocationType::Room,
+            );
+            combat.distances.insert(0, 5);
+
+            let hp_before = state.character.current_hp;
+            let mut rng2 = StdRng::seed_from_u64(seed);
+            let lines = resolve_npc_turn(&mut rng2, 0, &mut state, &mut combat);
+            let all = lines.join("\n");
+
+            if all.contains("natural 1") || (!all.contains("hit for") && !all.contains("CRITICAL")) {
+                continue; // miss — try next seed
+            }
+
+            assert!(
+                !all.contains("Rage resistance!"),
+                "Rage resistance should NOT trigger when not raging. Got: {:?}",
+                lines
+            );
+            let damage_taken = hp_before - state.character.current_hp;
+            // Damage should be full (min 4 from 1d12+3), i.e. at least 4.
+            assert!(
+                damage_taken >= 4,
+                "Full damage should be taken when not raging (taken={})",
+                damage_taken
+            );
+            found_hit = true;
+            break;
+        }
+        assert!(found_hit, "Could not find a hit in 200 seeds — test setup may be wrong");
+    }
+
+    #[test]
+    fn test_rage_resistance_halves_floor_division() {
+        // Verify floor(damage/2) by parsing narration and comparing HP.
+        let mut checked = false;
+        for seed in 0..500u64 {
+            let mut state = make_barbarian_state(1, true);
+            let mut rng = StdRng::seed_from_u64(seed);
+            let mut combat = start_combat(
+                &mut rng,
+                &state.character,
+                &[0],
+                &state.world.npcs,
+                crate::state::LocationType::Room,
+            );
+            combat.distances.insert(0, 5);
+
+            let hp_before = state.character.current_hp;
+            let mut rng2 = StdRng::seed_from_u64(seed);
+            let lines = resolve_npc_turn(&mut rng2, 0, &mut state, &mut combat);
+
+            for line in &lines {
+                // "Rage resistance! You halve the slashing damage from X to Y."
+                if let Some(rest) = line.strip_prefix("Rage resistance! You halve the ") {
+                    // skip past the damage type word and " damage from "
+                    if let Some(from_idx) = rest.find(" damage from ") {
+                        let after_from = &rest[from_idx + " damage from ".len()..];
+                        let trimmed = after_from.trim_end_matches('.');
+                        if let Some((x_str, y_str)) = trimmed.split_once(" to ") {
+                            let x: i32 = x_str.trim().parse().unwrap_or(-1);
+                            let y: i32 = y_str.trim().parse().unwrap_or(-1);
+                            let damage_taken = hp_before - state.character.current_hp;
+                            assert_eq!(y, x / 2, "Halved damage should be floor(x/2)");
+                            assert_eq!(damage_taken, y, "HP loss must equal halved damage");
+                            checked = true;
+                        }
+                    }
+                    break;
+                }
+            }
+            if checked { break; }
+        }
+        assert!(checked, "Could not find a raging hit in 500 seeds");
+    }
+
+    // Hypothesis: combat/mod.rs never emits "You fall unconscious!" when HP
+    // first drops to 0. The `was_dying` branch only handles damage-while-
+    // already-dying, so the fresh-drop-to-0 transition is silently skipped.
+    #[test]
+    fn test_fall_unconscious_narration_on_killing_blow() {
+        // When an NPC attack drops the player from positive HP to 0,
+        // the output must contain "You fall unconscious!" in the same batch.
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut state = test_state_with_goblin();
+        let stats = state
+            .world
+            .npcs
+            .get_mut(&0)
+            .unwrap()
+            .combat_stats
+            .as_mut()
+            .unwrap();
+        // Guarantee a hit with minimal damage.
+        stats.attacks.retain(|a| a.name == "Scimitar");
+        stats.attacks[0].hit_bonus = 50;
+        stats.attacks[0].damage_bonus = 0;
+        stats.multiattack = 1;
+        // Set player HP so any Scimitar hit (1d6 base, at least 1) kills.
+        state.character.current_hp = 1;
+        state.character.max_hp = 100;
+
+        let mut combat = start_combat(
+            &mut rng,
+            &state.character,
+            &[0],
+            &state.world.npcs,
+            crate::state::LocationType::Room,
+        );
+        combat.distances.insert(0, 5);
+
+        let lines = resolve_npc_turn(&mut rng, 0, &mut state, &mut combat);
+        let joined = lines.join("\n");
+
+        assert!(
+            joined.contains("You fall unconscious!"),
+            "expected 'You fall unconscious!' in NPC attack output, got:\n{}",
+            joined
+        );
+    }
+
+    #[test]
+    fn test_no_fall_unconscious_when_already_dying() {
+        // When the player is *already* at 0 HP (was_dying == true),
+        // the "You fall unconscious!" message must NOT appear.
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut state = test_state_with_goblin();
+        let stats = state
+            .world
+            .npcs
+            .get_mut(&0)
+            .unwrap()
+            .combat_stats
+            .as_mut()
+            .unwrap();
+        stats.attacks.retain(|a| a.name == "Scimitar");
+        stats.attacks[0].hit_bonus = 50;
+        stats.attacks[0].damage_bonus = 0;
+        stats.multiattack = 1;
+        // Player is already dying (HP == 0).
+        state.character.current_hp = 0;
+        state.character.max_hp = 100;
+
+        let mut combat = start_combat(
+            &mut rng,
+            &state.character,
+            &[0],
+            &state.world.npcs,
+            crate::state::LocationType::Room,
+        );
+        combat.distances.insert(0, 5);
+
+        let lines = resolve_npc_turn(&mut rng, 0, &mut state, &mut combat);
+        let joined = lines.join("\n");
+
+        assert!(
+            !joined.contains("You fall unconscious!"),
+            "should NOT get 'You fall unconscious!' when player was already dying, got:\n{}",
+            joined
+        );
+    }
+
+    #[test]
+    fn test_fall_unconscious_narration_on_opportunity_attack() {
+        // When an opportunity attack drops the player to 0 HP,
+        // the output must contain "You fall unconscious!".
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut state = test_state_with_goblin();
+        let stats = state
+            .world
+            .npcs
+            .get_mut(&0)
+            .unwrap()
+            .combat_stats
+            .as_mut()
+            .unwrap();
+        stats.attacks.retain(|a| a.name == "Scimitar");
+        stats.attacks[0].hit_bonus = 50;
+        stats.attacks[0].damage_bonus = 0;
+        // Set player HP so any Scimitar hit kills.
+        state.character.current_hp = 1;
+        state.character.max_hp = 100;
+
+        let mut combat = start_combat(
+            &mut rng,
+            &state.character,
+            &[0],
+            &state.world.npcs,
+            crate::state::LocationType::Room,
+        );
+        combat.distances.insert(0, 5);
+        // Simulate player moving out of NPC's reach (old=5, new=10).
+        let distance_changes = vec![(0 as NpcId, 5, 10)];
+
+        let lines = fire_opportunity_attacks(&mut rng, &mut state, &mut combat, &distance_changes);
+        let joined = lines.join("\n");
+
+        // The OA must hit (hit_bonus=50), and since HP was 1 before the hit,
+        // the player drops to 0 and should see the unconscious narration.
+        if joined.contains("hit for") {
+            assert!(
+                joined.contains("You fall unconscious!"),
+                "expected 'You fall unconscious!' in opportunity attack output, got:\n{}",
+                joined
+            );
+        }
+        // If the attack missed (shouldn't with +50, but be defensive), skip assertion.
     }
 }

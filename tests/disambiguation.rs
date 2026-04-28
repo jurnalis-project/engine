@@ -455,6 +455,7 @@ fn make_combat_disambiguation_state() -> GameState {
             ..CombatStats::default()
         }),
         conditions: Vec::new(),
+        inventory: Vec::new(),
     };
 
     let room = Location {

@@ -1,6 +1,6 @@
 [package]
 name = "jurnalis-engine"
-version = "0.45.2"
+version = "0.50.0"
 edition = "2021"
 
 [lib]

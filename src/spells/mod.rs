@@ -12,17 +12,17 @@ use crate::rules::dice::{roll_d20, roll_dice};
 /// The `classes` field uses lowercase class-name strings (e.g. `"wizard"`,
 /// `"cleric"`) to avoid a cross-module import of the `Class` enum from
 /// `character/`. Membership queries go through [`SpellDef::is_class_spell`].
-/// The `ritual` and `concentration` flags follow the SRD 5.1 tags.
+/// The `ritual` and `concentration` flags follow the SRD 2024 tags.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpellDef {
     pub name: &'static str,
     pub level: u32,          // 0 = cantrip
     pub school: SpellSchool,
     pub casting: CastingMode,
-    /// Requires concentration per SRD 5.1. Casting a new concentration spell
+    /// Requires concentration per SRD 2024. Casting a new concentration spell
     /// drops any previous one.
     pub concentration: bool,
-    /// Has the Ritual tag per SRD 5.1. Can be cast as a ritual (no slot
+    /// Has the Ritual tag per SRD 2024. Can be cast as a ritual (no slot
     /// consumed) using `cast <spell> ritual` / `cast <spell> as ritual`.
     pub ritual: bool,
     /// Lowercase class-name strings (e.g. `"wizard"`). Used for per-class
@@ -92,7 +92,7 @@ const SORCERER: &str = "sorcerer";
 const WARLOCK: &str = "warlock";
 const WIZARD: &str = "wizard";
 
-/// Full spell catalog (cantrip through level 3, SRD 5.1 subset). Each entry
+/// Full spell catalog (cantrip through level 3, SRD 2024 subset). Each entry
 /// carries its SRD tags (ritual, concentration) and class list so the
 /// orchestrator can enforce per-class known-spell populations and the
 /// ritual/concentration flows. Levels 4+ are intentionally out of scope for
@@ -452,7 +452,7 @@ pub fn spells_for_class(class_name: &str) -> Vec<&'static SpellDef> {
     SPELLS.iter().filter(|s| s.is_class_spell(class_name)).collect()
 }
 
-/// Which ability score does this class cast with per SRD 5.1?
+/// Which ability score does this class cast with per SRD 2024?
 ///
 /// - INT: Wizard
 /// - WIS: Cleric, Druid, Ranger
@@ -470,7 +470,7 @@ pub fn spellcasting_ability(class_name: &str) -> Ability {
     }
 }
 
-/// Full-caster spell-slot progression per SRD 5.1. Index is `class_level - 1`;
+/// Full-caster spell-slot progression per SRD 2024. Index is `class_level - 1`;
 /// each row lists the number of slots per spell level (indices 0..=8 = 1st..9th).
 /// Shared by Bard, Cleric, Druid, Sorcerer, and Wizard.
 pub const FULL_CASTER_SLOT_TABLE: [[u32; 9]; 20] = [
@@ -516,7 +516,7 @@ pub const FULL_CASTER_SLOT_TABLE: [[u32; 9]; 20] = [
     [4, 3, 3, 3, 3, 2, 2, 1, 1],
 ];
 
-/// Half-caster spell-slot progression per SRD 5.1 (2014-style).
+/// Half-caster spell-slot progression per SRD 2024 (2014-style).
 /// Retained for Ranger, which still unlocks spellcasting at class level 2
 /// in this engine (Ranger 2024-SRD alignment is tracked separately and out
 /// of scope for issue #86). Index is `class_level - 1`.
@@ -609,7 +609,7 @@ pub const PALADIN_SLOT_TABLE: [[u32; 9]; 20] = [
     [4, 3, 3, 3, 2, 0, 0, 0, 0],
 ];
 
-/// Warlock Pact Magic slots per SRD 5.1. Warlocks have a small number of
+/// Warlock Pact Magic slots per SRD 2024. Warlocks have a small number of
 /// high-level slots that refresh on a short rest. Index `class_level - 1`.
 /// Slot level equals the highest entry index in each row.
 pub const WARLOCK_SLOT_TABLE: [[u32; 9]; 20] = [
@@ -696,27 +696,73 @@ pub fn spell_save_dc(ability_score: i32, proficiency_bonus: i32) -> i32 {
 #[derive(Debug, Clone)]
 pub struct SpellAttackResult {
     pub roll: i32,
+    /// Second d20 when advantage or disadvantage applies; `None` for normal rolls.
+    pub roll_second: Option<i32>,
     pub modifier: i32,
     pub total: i32,
     pub hit: bool,
     pub natural_20: bool,
     pub natural_1: bool,
+    /// True when the roll was made with disadvantage (after advantage/disadvantage cancellation).
+    pub disadvantage: bool,
 }
 
 /// Roll a spell attack against a target AC.
+///
+/// When `disadvantage` is true (e.g. hostile creature within 5 ft for ranged
+/// spell attacks per SRD 2024 "Ranged Attacks in Close Combat"), two d20s are
+/// rolled and the lower is kept.
 pub fn roll_spell_attack(
     rng: &mut impl Rng,
     ability_score: i32,
     proficiency_bonus: i32,
     target_ac: i32,
+    disadvantage: bool,
 ) -> SpellAttackResult {
-    let roll = roll_d20(rng);
+    let roll1 = roll_d20(rng);
+    let roll2 = roll_d20(rng);
+    let roll = if disadvantage { roll1.min(roll2) } else { roll1 };
     let modifier = spell_attack_modifier(ability_score, proficiency_bonus);
     let total = roll + modifier;
     let natural_20 = roll == 20;
     let natural_1 = roll == 1;
     let hit = natural_20 || (!natural_1 && total >= target_ac);
-    SpellAttackResult { roll, modifier, total, hit, natural_20, natural_1 }
+    SpellAttackResult {
+        roll,
+        roll_second: if disadvantage { Some(roll2) } else { None },
+        modifier,
+        total,
+        hit,
+        natural_20,
+        natural_1,
+        disadvantage,
+    }
+}
+
+/// Format spell attack roll details, showing dual-roll label when
+/// advantage or disadvantage applies. Mirrors `combat::format_attack_roll_details`.
+pub fn format_spell_attack_details(result: &SpellAttackResult) -> String {
+    let base = format!(
+        "{}{}={}",
+        result.roll,
+        if result.modifier >= 0 {
+            format!("+{}", result.modifier)
+        } else {
+            format!("{}", result.modifier)
+        },
+        result.total,
+    );
+    match result.roll_second {
+        Some(other_roll) if result.disadvantage => format!(
+            "{} / {} \u{2192} {} ({}) (disadvantage: hostile within 5 ft \u{2014} keeping {})",
+            result.roll.max(other_roll),
+            result.roll.min(other_roll),
+            result.roll,
+            base,
+            result.roll,
+        ),
+        _ => base,
+    }
 }
 
 /// Result of a spell save.
@@ -918,13 +964,17 @@ pub struct SpellTarget {
 }
 
 /// Resolve a Fire Bolt cast against a single target.
+///
+/// `disadvantage` should be `true` when a hostile creature is within 5 ft
+/// (SRD 2024 "Ranged Attacks in Close Combat").
 pub fn resolve_fire_bolt(
     rng: &mut impl Rng,
     ability_score: i32,
     proficiency_bonus: i32,
     target_ac: i32,
+    disadvantage: bool,
 ) -> CastOutcome {
-    let attack = roll_spell_attack(rng, ability_score, proficiency_bonus, target_ac);
+    let attack = roll_spell_attack(rng, ability_score, proficiency_bonus, target_ac, disadvantage);
     let damage = if attack.hit {
         let rolls = roll_dice(rng, 1, 10);
         let base: i32 = rolls.iter().sum();
@@ -1050,13 +1100,17 @@ pub fn resolve_healing_word(rng: &mut impl Rng, caster_ability_score: i32) -> Ca
 
 /// Resolve Guiding Bolt (level 1). Ranged spell attack; 4d6 radiant on hit,
 /// doubled on crit.
+///
+/// `disadvantage` should be `true` when a hostile creature is within 5 ft
+/// (SRD 2024 "Ranged Attacks in Close Combat").
 pub fn resolve_guiding_bolt(
     rng: &mut impl Rng,
     caster_ability_score: i32,
     caster_proficiency_bonus: i32,
     target_ac: i32,
+    disadvantage: bool,
 ) -> CastOutcome {
-    let attack = roll_spell_attack(rng, caster_ability_score, caster_proficiency_bonus, target_ac);
+    let attack = roll_spell_attack(rng, caster_ability_score, caster_proficiency_bonus, target_ac, disadvantage);
     let damage = if attack.hit {
         let rolls = roll_dice(rng, 4, 6);
         let base: i32 = rolls.iter().sum();
@@ -1117,13 +1171,17 @@ pub fn resolve_faerie_fire(
 
 /// Resolve Eldritch Blast (cantrip). Ranged spell attack; 1d10 force on hit,
 /// doubled on crit. (SRD adds more beams at higher levels; level 1 = one beam.)
+///
+/// `disadvantage` should be `true` when a hostile creature is within 5 ft
+/// (SRD 2024 "Ranged Attacks in Close Combat").
 pub fn resolve_eldritch_blast(
     rng: &mut impl Rng,
     caster_ability_score: i32,
     caster_proficiency_bonus: i32,
     target_ac: i32,
+    disadvantage: bool,
 ) -> CastOutcome {
-    let attack = roll_spell_attack(rng, caster_ability_score, caster_proficiency_bonus, target_ac);
+    let attack = roll_spell_attack(rng, caster_ability_score, caster_proficiency_bonus, target_ac, disadvantage);
     let damage = if attack.hit {
         let rolls = roll_dice(rng, 1, 10);
         let base: i32 = rolls.iter().sum();
@@ -1136,16 +1194,20 @@ pub fn resolve_eldritch_blast(
 
 /// Resolve Scorching Ray (level 2). Three ranged spell attacks; each hit
 /// deals 2d6 fire damage. All rays target the same creature (NPC AI).
+///
+/// `disadvantage` should be `true` when a hostile creature is within 5 ft
+/// (SRD 2024 "Ranged Attacks in Close Combat").
 pub fn resolve_scorching_ray(
     rng: &mut impl Rng,
     caster_ability_score: i32,
     caster_proficiency_bonus: i32,
     target_ac: i32,
+    disadvantage: bool,
 ) -> CastOutcome {
     let mut rays = Vec::new();
     let mut total_damage = 0;
     for _ in 0..3 {
-        let attack = roll_spell_attack(rng, caster_ability_score, caster_proficiency_bonus, target_ac);
+        let attack = roll_spell_attack(rng, caster_ability_score, caster_proficiency_bonus, target_ac, disadvantage);
         let damage = if attack.hit {
             let rolls = roll_dice(rng, 2, 6);
             let base: i32 = rolls.iter().sum();
@@ -1264,7 +1326,7 @@ pub fn resolve_mass_healing_word(rng: &mut impl Rng, caster_ability_score: i32) 
 /// Returns lines suitable for the `spells` command output.
 ///
 /// The `class_name` parameter controls slot labeling: Warlocks use "Pact
-/// Slot(s)" instead of the generic "Level N" labels, matching SRD 5.1 Pact
+/// Slot(s)" instead of the generic "Level N" labels, matching SRD 2024 Pact
 /// Magic terminology.
 pub fn format_known_spells(
     class_name: &str,
@@ -1318,7 +1380,7 @@ pub fn format_known_spells(
         lines.push(String::new());
         if is_warlock {
             // Warlock Pact Magic: all slots are the same level, label them
-            // as "Pact Slot(s)" per SRD 5.1.
+            // as "Pact Slot(s)" per SRD 2024.
             let total_slots: i32 = spell_slots_max.iter().sum();
             let total_remaining: i32 = spell_slots_remaining.iter().sum();
             if total_slots > 0 {
@@ -1357,7 +1419,7 @@ pub fn consume_spell_slot(
 
 /// Compute the concentration-save DC on taking damage while concentrating.
 ///
-/// Per SRD 5.1: DC = max(10, damage_taken / 2). The caster makes a
+/// Per SRD 2024: DC = max(10, damage_taken / 2). The caster makes a
 /// Constitution save against this DC; failure drops the concentration.
 pub fn concentration_save_dc(damage_taken: i32) -> i32 {
     (damage_taken / 2).max(10)
@@ -1454,7 +1516,7 @@ mod tests {
     #[test]
     fn test_fire_bolt_rolls_attack_and_damage() {
         let mut rng = StdRng::seed_from_u64(42);
-        let result = resolve_fire_bolt(&mut rng, 16, 2, 12);
+        let result = resolve_fire_bolt(&mut rng, 16, 2, 12, false);
         match result {
             CastOutcome::FireBolt { attack, damage } => {
                 assert!(attack.roll >= 1 && attack.roll <= 20);
@@ -2026,7 +2088,7 @@ mod tests {
     #[test]
     fn test_resolve_guiding_bolt_rolls_attack_and_4d6() {
         let mut rng = StdRng::seed_from_u64(42);
-        let outcome = resolve_guiding_bolt(&mut rng, 16, 2, 12);
+        let outcome = resolve_guiding_bolt(&mut rng, 16, 2, 12, false);
         match outcome {
             CastOutcome::GuidingBolt { attack, damage } => {
                 assert_eq!(attack.modifier, 5);
@@ -2091,7 +2153,7 @@ mod tests {
     #[test]
     fn test_resolve_eldritch_blast_rolls_attack_and_1d10() {
         let mut rng = StdRng::seed_from_u64(42);
-        let outcome = resolve_eldritch_blast(&mut rng, 16, 2, 12);
+        let outcome = resolve_eldritch_blast(&mut rng, 16, 2, 12, false);
         match outcome {
             CastOutcome::EldritchBlast { attack, damage } => {
                 assert_eq!(attack.modifier, 5);
@@ -2274,7 +2336,7 @@ mod tests {
     #[test]
     fn test_scorching_ray_produces_three_rays() {
         let mut rng = StdRng::seed_from_u64(42);
-        let outcome = resolve_scorching_ray(&mut rng, 16, 2, 12);
+        let outcome = resolve_scorching_ray(&mut rng, 16, 2, 12, false);
         match outcome {
             CastOutcome::ScorchingRay { rays, total_damage } => {
                 assert_eq!(rays.len(), 3, "Scorching Ray should produce 3 ray results");

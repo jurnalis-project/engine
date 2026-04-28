@@ -12,6 +12,7 @@ pub enum Command {
     Take(String),
     TakeAll,
     Drop(String),
+    DropAll,
     Use(String),
     Equip(String),
     Unequip(String),
@@ -47,6 +48,15 @@ pub enum Command {
     /// Disengage as a bonus action (Rogue Cunning Action). Consumes the bonus
     /// action, sets `player_disengaging = true`. Non-Rogues are rejected.
     BonusDisengage,
+    /// Hide as a bonus action (Rogue Cunning Action, level 2+). Makes a
+    /// Stealth check (DEX + Stealth vs DC 15). On success: sets
+    /// `player_hidden = true`, granting advantage on the player's next
+    /// attack and disadvantage on NPC attacks targeting the player until
+    /// the start of the player's next turn.
+    BonusHide,
+    /// Hide outside combat (free action for any character). Makes a Stealth
+    /// check and narrates the result. No persistent mechanical state effect.
+    Hide,
     /// Accept a pending reaction prompt. Only meaningful when
     /// `CombatState::pending_reaction` is Some; otherwise the orchestrator
     /// treats it as an unknown verb.
@@ -148,6 +158,12 @@ pub enum Command {
     /// advantage. Parsed from "reckless attack <target>" / "recklessly
     /// attack <target>".
     RecklessAttack(String),
+    /// Display active buffs, conditions, and effects on the player character.
+    /// Parsed from "buffs", "conditions", "effects", or "active effects".
+    Buffs,
+    /// Display a compact single-line health summary: "HP: current/max".
+    /// Parsed from "hp" or "health".
+    HP,
     Unknown(String),
 }
 
@@ -175,6 +191,7 @@ pub fn parse(input: &str) -> Command {
             }
             "dash as bonus" => return Command::BonusDash,
             "disengage as bonus" => return Command::BonusDisengage,
+            "hide as bonus" => return Command::BonusHide,
             // Fighter: "use second wind"
             "use second wind" => return Command::SecondWind,
             // Paladin: "lay on hands [target]"
@@ -258,6 +275,9 @@ pub fn parse(input: &str) -> Command {
             "bonus disengage" | "disengage bonus" | "cunning disengage" => {
                 return Command::BonusDisengage;
             }
+            "bonus hide" | "hide bonus" | "cunning hide" => {
+                return Command::BonusHide;
+            }
             "move to" | "move toward" => {
                 // Check if it looks like a direction first
                 if let Some(dir) = parse_direction(&rest) {
@@ -289,13 +309,23 @@ pub fn parse(input: &str) -> Command {
             "spell list" | "known spells" | "my spells" => {
                 return Command::Spells;
             }
+            "active effects" | "active buffs" | "active conditions" => {
+                return Command::Buffs;
+            }
             "new game" => {
                 return Command::NewGame;
             }
-            "short rest" => {
+            "short rest" | "short sleep" | "short nap" | "short camp" => {
                 return Command::ShortRest;
             }
-            "long rest" => {
+            "long rest" | "long sleep" | "long nap" | "long camp" => {
+                return Command::LongRest;
+            }
+            // Reversed order aliases: "sleep short", "camp long", etc.
+            "sleep short" | "camp short" | "nap short" => {
+                return Command::ShortRest;
+            }
+            "sleep long" | "camp long" | "nap long" => {
                 return Command::LongRest;
             }
             // Barbarian: "enter rage"
@@ -381,7 +411,13 @@ pub fn parse(input: &str) -> Command {
             }
         }
         "drop" | "discard" => {
-            if args.is_empty() { Command::Unknown("Drop what?".to_string()) } else { Command::Drop(args) }
+            if args.is_empty() {
+                Command::Unknown("Drop what?".to_string())
+            } else if args == "all" || args == "everything" {
+                Command::DropAll
+            } else {
+                Command::Drop(args)
+            }
         }
         "use" | "activate" | "apply" => {
             if args.is_empty() {
@@ -406,6 +442,7 @@ pub fn parse(input: &str) -> Command {
             if args.is_empty() { Command::Unknown("Unequip what?".to_string()) } else { Command::Unequip(args) }
         }
         "spells" => Command::Spells,
+        "buffs" | "conditions" | "effects" => Command::Buffs,
         "cast" => {
             if args.is_empty() {
                 Command::Unknown("Cast what spell?".to_string())
@@ -484,13 +521,15 @@ pub fn parse(input: &str) -> Command {
         }
         "retreat" => Command::Retreat,
         "dodge" => Command::Dodge,
+        "hide" | "sneak" | "conceal" => Command::Hide,
         "disengage" | "withdraw" | "flee" => Command::Disengage,
         "dash" | "run" | "sprint" => Command::Dash,
         "yes" | "y" => Command::ReactionYes,
         "no" => Command::ReactionNo,
-        "end" | "pass" | "wait" => Command::EndTurn,
+        "end" | "pass" | "wait" | "skip" => Command::EndTurn,
         "inventory" | "i" | "inv" | "items" | "bag" => Command::Inventory,
         "character" | "char" | "sheet" | "stats" | "status" => Command::CharacterSheet,
+        "hp" | "health" => Command::HP,
         "check" | "roll" | "try" => {
             if args.is_empty() { Command::Unknown("Check which skill?".to_string()) } else { Command::Check(args) }
         }
@@ -498,7 +537,7 @@ pub fn parse(input: &str) -> Command {
         "load" | "restore" => { if args.is_empty() { Command::Load(None) } else { Command::Load(Some(args)) } }
         "help" | "?" | "commands" => { if args.is_empty() { Command::Help(None) } else { Command::Help(Some(args)) } }
         "newgame" | "restart" => Command::NewGame,
-        "rest" => Command::Unknown("Short rest or long rest? Try 'short rest' or 'long rest'.".to_string()),
+        "rest" | "sleep" | "camp" | "nap" => Command::Unknown("Short rest or long rest? Try 'short rest' or 'long rest'.".to_string()),
         "objective" | "goal" | "quest" => Command::Objective,
         "map" => Command::Map,
         // Fighter: "surge" -> Action Surge
@@ -608,7 +647,7 @@ pub fn parse(input: &str) -> Command {
             }
         }
         // ---- Trade commands ----
-        "browse" | "shop" | "wares" => Command::Browse,
+        "browse" | "shop" | "wares" | "trade" => Command::Browse,
         "buy" | "purchase" => {
             if args.is_empty() {
                 Command::Unknown("Buy what?".to_string())
@@ -661,6 +700,49 @@ fn strip_offhand_suffix(args: &str) -> Option<String> {
         return Some(String::new());
     }
     None
+}
+
+/// Given the arguments to a `cast` command and a list of known spell names,
+/// find the longest spell name that matches a prefix of `args` (case-
+/// insensitive). If a match is found and there are leftover words after the
+/// spell name, return them as the target.
+///
+/// This enables `cast magic missile Rowan` to resolve correctly: the longest
+/// known prefix is "magic missile" and the leftover "rowan" becomes the
+/// target.
+///
+/// The function does NOT import from the `spells` module -- the caller
+/// (orchestrator) passes in the list of names, preserving module isolation.
+pub fn split_spell_and_target(args: &str, known_names: &[&str]) -> Option<(String, Option<String>)> {
+    let lower = args.to_lowercase();
+    let words: Vec<&str> = lower.split_whitespace().collect();
+    if words.is_empty() {
+        return None;
+    }
+
+    // Try longest prefix first (most words), then shorter.
+    let mut best_match: Option<(usize, &str)> = None; // (word_count, canonical_name)
+    for name in known_names {
+        let name_lower = name.to_lowercase();
+        let name_words: Vec<&str> = name_lower.split_whitespace().collect();
+        let n = name_words.len();
+        if n > words.len() {
+            continue;
+        }
+        if words[..n].join(" ") == name_words.join(" ") {
+            if best_match.map_or(true, |(best_n, _)| n > best_n) {
+                best_match = Some((n, name));
+            }
+        }
+    }
+
+    let (word_count, canonical_name) = best_match?;
+    let target = if word_count < words.len() {
+        Some(words[word_count..].join(" "))
+    } else {
+        None
+    };
+    Some((canonical_name.to_lowercase(), target))
 }
 
 fn parse_direction(s: &str) -> Option<Direction> {
@@ -908,6 +990,12 @@ mod tests {
     }
 
     #[test]
+    fn test_hp_aliases() {
+        assert_eq!(parse("hp"), Command::HP);
+        assert_eq!(parse("health"), Command::HP);
+    }
+
+    #[test]
     fn test_check_aliases() {
         assert_eq!(parse("roll perception"), Command::Check("perception".to_string()));
         assert_eq!(parse("try stealth"), Command::Check("stealth".to_string()));
@@ -1132,6 +1220,7 @@ mod tests {
         assert_eq!(parse("end"), Command::EndTurn);
         assert_eq!(parse("pass"), Command::EndTurn);
         assert_eq!(parse("wait"), Command::EndTurn);
+        assert_eq!(parse("skip"), Command::EndTurn);
     }
 
     #[test]
@@ -1286,6 +1375,28 @@ mod tests {
     fn test_take_specific_item_still_works() {
         // Ensure "take" with a non-"all" argument still routes to Take
         assert_eq!(parse("take torch"), Command::Take("torch".to_string()));
+    }
+
+    // ---- Bulk drop ----
+    #[test]
+    fn test_drop_all_routes_to_bulk_drop() {
+        assert_eq!(parse("drop all"), Command::DropAll);
+    }
+
+    #[test]
+    fn test_drop_everything_routes_to_bulk_drop() {
+        assert_eq!(parse("drop everything"), Command::DropAll);
+    }
+
+    #[test]
+    fn test_discard_all_routes_to_bulk_drop() {
+        assert_eq!(parse("discard all"), Command::DropAll);
+    }
+
+    #[test]
+    fn test_drop_specific_item_still_works() {
+        // Ensure "drop" with a non-"all" argument still routes to Drop
+        assert_eq!(parse("drop torch"), Command::Drop("torch".to_string()));
     }
 
     #[test]
@@ -1468,6 +1579,113 @@ mod tests {
         }
     }
 
+    // ---- Rest alias tests (sleep, camp, nap) ----
+
+    #[test]
+    fn test_sleep_alias_prompts_rest_type() {
+        // Bare "sleep" should behave like bare "rest": ask short vs long.
+        match parse("sleep") {
+            Command::Unknown(s) => {
+                assert!(
+                    s.to_lowercase().contains("short") && s.to_lowercase().contains("long"),
+                    "Bare 'sleep' should ask short vs long. Got: {}",
+                    s,
+                );
+            }
+            other => panic!("Expected Unknown for bare 'sleep', got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_camp_alias_prompts_rest_type() {
+        match parse("camp") {
+            Command::Unknown(s) => {
+                assert!(
+                    s.to_lowercase().contains("short") && s.to_lowercase().contains("long"),
+                    "Bare 'camp' should ask short vs long. Got: {}",
+                    s,
+                );
+            }
+            other => panic!("Expected Unknown for bare 'camp', got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_nap_alias_prompts_rest_type() {
+        match parse("nap") {
+            Command::Unknown(s) => {
+                assert!(
+                    s.to_lowercase().contains("short") && s.to_lowercase().contains("long"),
+                    "Bare 'nap' should ask short vs long. Got: {}",
+                    s,
+                );
+            }
+            other => panic!("Expected Unknown for bare 'nap', got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_short_sleep_maps_to_short_rest() {
+        assert_eq!(parse("short sleep"), Command::ShortRest);
+        assert_eq!(parse("Short Sleep"), Command::ShortRest);
+    }
+
+    #[test]
+    fn test_long_sleep_maps_to_long_rest() {
+        assert_eq!(parse("long sleep"), Command::LongRest);
+        assert_eq!(parse("Long Sleep"), Command::LongRest);
+    }
+
+    #[test]
+    fn test_short_nap_maps_to_short_rest() {
+        assert_eq!(parse("short nap"), Command::ShortRest);
+    }
+
+    #[test]
+    fn test_long_nap_maps_to_long_rest() {
+        assert_eq!(parse("long nap"), Command::LongRest);
+    }
+
+    #[test]
+    fn test_short_camp_maps_to_short_rest() {
+        assert_eq!(parse("short camp"), Command::ShortRest);
+    }
+
+    #[test]
+    fn test_long_camp_maps_to_long_rest() {
+        assert_eq!(parse("long camp"), Command::LongRest);
+    }
+
+    #[test]
+    fn test_camp_short_maps_to_short_rest() {
+        assert_eq!(parse("camp short"), Command::ShortRest);
+    }
+
+    #[test]
+    fn test_camp_long_maps_to_long_rest() {
+        assert_eq!(parse("camp long"), Command::LongRest);
+    }
+
+    #[test]
+    fn test_sleep_short_maps_to_short_rest() {
+        assert_eq!(parse("sleep short"), Command::ShortRest);
+    }
+
+    #[test]
+    fn test_sleep_long_maps_to_long_rest() {
+        assert_eq!(parse("sleep long"), Command::LongRest);
+    }
+
+    #[test]
+    fn test_nap_short_maps_to_short_rest() {
+        assert_eq!(parse("nap short"), Command::ShortRest);
+    }
+
+    #[test]
+    fn test_nap_long_maps_to_long_rest() {
+        assert_eq!(parse("nap long"), Command::LongRest);
+    }
+
     // ---- Scenery interaction verbs ----
 
     #[test]
@@ -1611,9 +1829,15 @@ mod tests {
     }
 
     #[test]
+    fn test_browse_alias_trade() {
+        assert_eq!(parse("trade"), Command::Browse);
+    }
+
+    #[test]
     fn test_browse_case_insensitive() {
         assert_eq!(parse("BROWSE"), Command::Browse);
         assert_eq!(parse("Shop"), Command::Browse);
+        assert_eq!(parse("Trade"), Command::Browse);
         assert_eq!(parse("List Wares"), Command::Browse);
     }
 
@@ -1788,5 +2012,26 @@ mod tests {
             parse("Recklessly Attack Orc"),
             Command::RecklessAttack("orc".to_string())
         );
+    }
+
+    // ---- Buffs / Conditions / Effects ----
+
+    #[test]
+    fn test_buffs_command_aliases() {
+        assert_eq!(parse("buffs"), Command::Buffs);
+        assert_eq!(parse("conditions"), Command::Buffs);
+        assert_eq!(parse("effects"), Command::Buffs);
+    }
+
+    #[test]
+    fn test_buffs_command_case_insensitive() {
+        assert_eq!(parse("BUFFS"), Command::Buffs);
+        assert_eq!(parse("Conditions"), Command::Buffs);
+        assert_eq!(parse("Effects"), Command::Buffs);
+    }
+
+    #[test]
+    fn test_active_effects_two_word_alias() {
+        assert_eq!(parse("active effects"), Command::Buffs);
     }
 }

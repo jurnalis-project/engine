@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use jurnalis_engine::{
     combat::{CombatState, Combatant},
-    new_game, process_input,
+    new_game, parser, process_input,
     state::{GameState, GamePhase, CombatStats, NpcAttack, DamageType, Npc, NpcRole, Disposition},
     types::{Ability, NpcId},
 };
@@ -87,6 +87,7 @@ fn create_wizard_combat_state_json() -> String {
             ..Default::default()
         }),
         conditions: vec![],
+        inventory: vec![],
     };
     state.world.npcs.insert(npc_id, goblin);
 
@@ -136,6 +137,7 @@ fn create_wizard_multi_combat_state_json() -> String {
                 ..Default::default()
             }),
             conditions: vec![],
+            inventory: vec![],
         }
     };
 
@@ -293,7 +295,7 @@ fn wizard_cast_shield_in_combat_rejected_as_reaction_only() {
     let output = process_input(&state_json, "cast shield");
 
     let text = output.text.join(" ");
-    // Shield is reaction-only per SRD 5.1 -- cannot be cast as an action.
+    // Shield is reaction-only per SRD 2024 -- cannot be cast as an action.
     assert!(
         text.contains("reaction"),
         "Expected reaction-only rejection. Got: {:?}",
@@ -422,6 +424,7 @@ fn attach_goblin_and_start_combat(state_json: &str) -> String {
             ..Default::default()
         }),
         conditions: vec![],
+        inventory: vec![],
     };
     state.world.npcs.insert(npc_id, goblin);
 
@@ -732,4 +735,293 @@ fn exploration_leveled_combat_spell_does_not_consume_slot() {
         after.character.spell_slots_remaining, before_slots,
         "Guiding Bolt in exploration must not consume a slot.",
     );
+}
+
+// ---- Issue #330: cast <spell> <target> without "at" ----
+
+/// Unit tests for the parser helper that splits "magic missile goblin" into
+/// ("magic missile", Some("goblin")) using longest-prefix matching.
+#[test]
+fn split_spell_and_target_single_word_spell() {
+    let names = &["Fireball", "Fire Bolt", "Magic Missile"];
+    // "fireball goblin" -> spell="fireball", target=Some("goblin")
+    let result = parser::split_spell_and_target("fireball goblin", names);
+    assert_eq!(
+        result,
+        Some(("fireball".to_string(), Some("goblin".to_string()))),
+    );
+}
+
+#[test]
+fn split_spell_and_target_two_word_spell_preferred_over_one() {
+    // "fire bolt enemy" must match "fire bolt" (2 words) not "fire" (not a real spell here
+    // but we pass a single-word "fire" as a decoy to confirm longest wins).
+    let names = &["Fire", "Fire Bolt", "Magic Missile"];
+    let result = parser::split_spell_and_target("fire bolt enemy", names);
+    assert_eq!(
+        result,
+        Some(("fire bolt".to_string(), Some("enemy".to_string()))),
+    );
+}
+
+#[test]
+fn split_spell_and_target_no_target_returns_none_target() {
+    let names = &["Magic Missile", "Fire Bolt"];
+    let result = parser::split_spell_and_target("magic missile", names);
+    assert_eq!(
+        result,
+        Some(("magic missile".to_string(), None)),
+    );
+}
+
+#[test]
+fn split_spell_and_target_unknown_returns_none() {
+    let names = &["Magic Missile", "Fire Bolt"];
+    let result = parser::split_spell_and_target("fireball goblin", names);
+    assert!(result.is_none(), "Unknown spell prefix should return None");
+}
+
+#[test]
+fn split_spell_and_target_empty_returns_none() {
+    let names = &["Magic Missile"];
+    let result = parser::split_spell_and_target("", names);
+    assert!(result.is_none());
+}
+
+#[test]
+fn split_spell_and_target_case_insensitive() {
+    let names = &["Magic Missile"];
+    let result = parser::split_spell_and_target("MAGIC MISSILE Goblin", names);
+    assert_eq!(
+        result,
+        Some(("magic missile".to_string(), Some("goblin".to_string()))),
+    );
+}
+
+/// Integration: `cast magic missile goblin` (no "at") should fire the spell.
+#[test]
+fn wizard_cast_magic_missile_without_at_fires_spell() {
+    let state_json = create_wizard_combat_state_json();
+    let output = process_input(&state_json, "cast magic missile goblin");
+
+    let text = output.text.join(" ");
+    assert!(
+        text.contains("darts of force") || text.contains("force damage"),
+        "Expected magic missile narration. Got: {:?}",
+        output.text
+    );
+    // Slot should be consumed.
+    let state: GameState = serde_json::from_str(&output.state_json).unwrap();
+    assert_eq!(
+        state.character.spell_slots_remaining, vec![1],
+        "Magic Missile without 'at' should consume a slot",
+    );
+}
+
+/// Integration: `cast fire bolt goblin` (no "at") should fire the cantrip.
+#[test]
+fn wizard_cast_fire_bolt_without_at_fires_cantrip() {
+    let state_json = create_wizard_combat_state_json();
+    let output = process_input(&state_json, "cast fire bolt goblin");
+
+    let text = output.text.join(" ");
+    assert!(
+        text.contains("bolt of fire") || text.contains("fire"),
+        "Expected fire bolt narration. Got: {:?}",
+        output.text
+    );
+    // Cantrip, no slot consumed.
+    let state: GameState = serde_json::from_str(&output.state_json).unwrap();
+    assert_eq!(
+        state.character.spell_slots_remaining, vec![2],
+        "Fire Bolt without 'at' should not consume a slot (cantrip)",
+    );
+}
+
+/// Integration: an unrecognised name after a real spell name is forwarded as
+/// the target, which will fail target resolution with a "no such target" message
+/// rather than an "unknown spell" message.
+#[test]
+fn wizard_cast_magic_missile_unknown_target_not_unknown_spell() {
+    let state_json = create_wizard_combat_state_json();
+    let output = process_input(&state_json, "cast magic missile xyzzy");
+
+    let text_joined = output.text.join(" ").to_lowercase();
+    // Must NOT say "don't know that spell" -- the spell name parsed correctly.
+    assert!(
+        !text_joined.contains("don't know that spell"),
+        "Should not emit 'don't know that spell' for valid spell with bad target. Got: {:?}",
+        output.text
+    );
+}
+
+// ---- Issue #331: two-step spell targeting ----
+
+/// Casting a target-requiring cantrip without a target stores pending_spell.
+#[test]
+fn wizard_pending_spell_stored_after_no_target_cantrip() {
+    let state_json = create_wizard_combat_state_json();
+    let output = process_input(&state_json, "cast fire bolt");
+
+    // Should ask for a target.
+    assert!(
+        output.text.iter().any(|l| l.to_lowercase().contains("at whom") || l.to_lowercase().contains("at what")),
+        "Expected target-needed prompt. Got: {:?}",
+        output.text
+    );
+    // pending_spell must be set.
+    let state: GameState = serde_json::from_str(&output.state_json).unwrap();
+    let pending = state.active_combat.as_ref().and_then(|c| c.pending_spell.as_deref());
+    assert_eq!(
+        pending,
+        Some("Fire Bolt"),
+        "pending_spell should be 'Fire Bolt' after cast without target. Got: {:?}",
+        pending,
+    );
+}
+
+/// Casting a target-requiring leveled spell without a target stores pending_spell.
+#[test]
+fn wizard_pending_spell_stored_after_no_target_leveled_spell() {
+    let state_json = create_wizard_combat_state_json();
+    let output = process_input(&state_json, "cast magic missile");
+
+    assert!(
+        output.text.iter().any(|l| l.to_lowercase().contains("at whom") || l.to_lowercase().contains("at what")),
+        "Expected target-needed prompt. Got: {:?}",
+        output.text
+    );
+    let state: GameState = serde_json::from_str(&output.state_json).unwrap();
+    let pending = state.active_combat.as_ref().and_then(|c| c.pending_spell.as_deref());
+    assert_eq!(pending, Some("Magic Missile"));
+    // Slot should be refunded while waiting for a target.
+    assert_eq!(state.character.spell_slots_remaining, vec![2]);
+}
+
+/// The two-step flow: cast (no target) → reply with target name → spell fires.
+#[test]
+fn wizard_two_step_fire_bolt_resolves() {
+    let state_json = create_wizard_combat_state_json();
+    // Step 1: cast without target.
+    let step1 = process_input(&state_json, "cast fire bolt");
+    assert!(
+        step1.text.iter().any(|l| l.to_lowercase().contains("at whom") || l.to_lowercase().contains("at what")),
+        "Step 1 should ask for target. Got: {:?}", step1.text
+    );
+    // Step 2: supply the target name.
+    let step2 = process_input(&step1.state_json, "goblin");
+    let text = step2.text.join(" ");
+    assert!(
+        text.contains("bolt of fire") || text.contains("fire"),
+        "Step 2 should fire Fire Bolt. Got: {:?}", step2.text
+    );
+    // pending_spell should be cleared.
+    let state: GameState = serde_json::from_str(&step2.state_json).unwrap();
+    let pending = state.active_combat.as_ref().and_then(|c| c.pending_spell.as_deref());
+    assert!(pending.is_none(), "pending_spell should be cleared after resolution. Got: {:?}", pending);
+}
+
+/// The two-step flow for a leveled spell: slot is refunded at prompt, then
+/// re-consumed when the spell fires.
+#[test]
+fn wizard_two_step_magic_missile_resolves_and_consumes_slot() {
+    let state_json = create_wizard_combat_state_json();
+    let step1 = process_input(&state_json, "cast magic missile");
+    // Slot refunded while waiting.
+    let state1: GameState = serde_json::from_str(&step1.state_json).unwrap();
+    assert_eq!(state1.character.spell_slots_remaining, vec![2], "Slot should be refunded at prompt");
+
+    let step2 = process_input(&step1.state_json, "goblin");
+    let text = step2.text.join(" ");
+    assert!(
+        text.contains("darts of force") || text.contains("force damage"),
+        "Step 2 should fire Magic Missile. Got: {:?}", step2.text
+    );
+    let state2: GameState = serde_json::from_str(&step2.state_json).unwrap();
+    assert_eq!(state2.character.spell_slots_remaining, vec![1], "Slot should be consumed on fire");
+    let pending = state2.active_combat.as_ref().and_then(|c| c.pending_spell.as_deref());
+    assert!(pending.is_none(), "pending_spell should be cleared after resolution");
+}
+
+/// Typing "cancel" when asked for a target aborts the spell without consuming action or slot.
+#[test]
+fn wizard_two_step_cancel_aborts_spell() {
+    let state_json = create_wizard_combat_state_json();
+    let step1 = process_input(&state_json, "cast fire bolt");
+    assert!(
+        step1.text.iter().any(|l| l.to_lowercase().contains("at whom") || l.to_lowercase().contains("at what")),
+        "Step 1 should ask for target. Got: {:?}", step1.text
+    );
+
+    let step2 = process_input(&step1.state_json, "cancel");
+    assert!(
+        step2.text.iter().any(|l| l.to_lowercase().contains("cancel")),
+        "Expected cancellation message. Got: {:?}", step2.text
+    );
+    let state2: GameState = serde_json::from_str(&step2.state_json).unwrap();
+    let pending = state2.active_combat.as_ref().and_then(|c| c.pending_spell.as_deref());
+    assert!(pending.is_none(), "pending_spell should be cleared after cancel");
+}
+
+/// "nevermind" also aborts a pending spell.
+#[test]
+fn wizard_two_step_nevermind_aborts_spell() {
+    let state_json = create_wizard_combat_state_json();
+    let step1 = process_input(&state_json, "cast magic missile");
+    let step2 = process_input(&step1.state_json, "nevermind");
+
+    assert!(
+        step2.text.iter().any(|l| l.to_lowercase().contains("cancel")),
+        "Expected cancellation message. Got: {:?}", step2.text
+    );
+    let state2: GameState = serde_json::from_str(&step2.state_json).unwrap();
+    let pending = state2.active_combat.as_ref().and_then(|c| c.pending_spell.as_deref());
+    assert!(pending.is_none(), "pending_spell should be cleared after nevermind");
+    // Slot should still be refunded (was refunded at prompt step and not re-consumed).
+    assert_eq!(state2.character.spell_slots_remaining, vec![2]);
+}
+
+/// Two-step targeting works for Cleric's Sacred Flame cantrip.
+#[test]
+fn cleric_two_step_sacred_flame_resolves() {
+    let explore_json = create_caster_state_json("Cleric");
+    let combat_json = attach_goblin_and_start_combat(&explore_json);
+
+    let step1 = process_input(&combat_json, "cast sacred flame");
+    assert!(
+        step1.text.iter().any(|l| l.to_lowercase().contains("at whom") || l.to_lowercase().contains("at what")),
+        "Step 1 should ask for target. Got: {:?}", step1.text
+    );
+
+    let step2 = process_input(&step1.state_json, "goblin");
+    let text = step2.text.join(" ");
+    assert!(
+        text.contains("radiant") || text.contains("flame"),
+        "Step 2 should fire Sacred Flame. Got: {:?}", step2.text
+    );
+    let state2: GameState = serde_json::from_str(&step2.state_json).unwrap();
+    let pending = state2.active_combat.as_ref().and_then(|c| c.pending_spell.as_deref());
+    assert!(pending.is_none());
+}
+
+/// Two-step targeting works for Cleric's Guiding Bolt (leveled), slot refunded then re-consumed.
+#[test]
+fn cleric_two_step_guiding_bolt_resolves_and_consumes_slot() {
+    let explore_json = create_caster_state_json("Cleric");
+    let combat_json = attach_goblin_and_start_combat(&explore_json);
+
+    let step1 = process_input(&combat_json, "cast guiding bolt");
+    let state1: GameState = serde_json::from_str(&step1.state_json).unwrap();
+    assert_eq!(state1.character.spell_slots_remaining, vec![2], "Slot refunded at prompt");
+
+    let step2 = process_input(&step1.state_json, "goblin");
+    let text = step2.text.join(" ");
+    assert!(
+        text.contains("radiant"),
+        "Step 2 should fire Guiding Bolt. Got: {:?}", step2.text
+    );
+    let state2: GameState = serde_json::from_str(&step2.state_json).unwrap();
+    assert_eq!(state2.character.spell_slots_remaining, vec![1], "Slot consumed on fire");
+    let pending = state2.active_combat.as_ref().and_then(|c| c.pending_spell.as_deref());
+    assert!(pending.is_none());
 }
