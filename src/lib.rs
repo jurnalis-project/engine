@@ -3857,6 +3857,8 @@ fn resolve_reaction_decision(state: &mut GameState, rng: &mut StdRng, accept: bo
                 // Apply magic weapon bonuses (if wielding a MagicWeapon).
                 let (atk_b, dmg_b) = magic_weapon_bonuses(state, weapon_id);
                 apply_magic_weapon_bonuses(&mut result, atk_b, dmg_b);
+                // Barbarian Rage: +2 to STR-based melee damage while raging.
+                apply_rage_damage_bonus(state, &mut result, &mut lines, weapon_id, old_distance);
                 // Rogue Sneak Attack can fire on an opportunity attack
                 // (the SRD "once per turn" cap applies across the round,
                 // not just the player's turn).
@@ -5234,6 +5236,8 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                     // Apply magic weapon bonuses (if wielding a MagicWeapon).
                     let (atk_b, dmg_b) = magic_weapon_bonuses(state, weapon_id);
                     apply_magic_weapon_bonuses(&mut result, atk_b, dmg_b);
+                    // Barbarian Rage: +2 to STR-based melee damage while raging.
+                    apply_rage_damage_bonus(state, &mut result, &mut lines, weapon_id, distance);
 
                     // Rogue Sneak Attack: add bonus dice to a qualifying hit
                     // before damage is applied so narration reflects the
@@ -5750,6 +5754,10 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                     // Apply magic weapon bonuses to the off-hand result too.
                     let (atk_b, dmg_b) = magic_weapon_bonuses(state, Some(off_hand_id));
                     apply_magic_weapon_bonuses(&mut result, atk_b, dmg_b);
+                    // Barbarian Rage: +2 to STR-based melee damage while raging.
+                    // Applied before the ability-mod strip so that the bonus is
+                    // included regardless of the off-hand mod adjustment.
+                    apply_rage_damage_bonus(state, &mut result, &mut lines, Some(off_hand_id), distance);
 
                     // Off-hand damage rule: remove the positive ability modifier from the
                     // damage roll. Negative modifiers still apply (SRD).
@@ -7628,6 +7636,8 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                     );
                     let (atk_b, dmg_b) = magic_weapon_bonuses(state, weapon_id);
                     apply_magic_weapon_bonuses(&mut result, atk_b, dmg_b);
+                    // Barbarian Rage: +2 to STR-based melee damage while raging.
+                    apply_rage_damage_bonus(state, &mut result, &mut lines, weapon_id, distance);
                     apply_sneak_attack(&mut rng, state, &mut result, &mut lines, weapon_id, distance);
                     apply_divine_smite(&mut rng, state, &mut result, &mut lines, npc_id, distance);
 
@@ -8401,6 +8411,9 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                     }
                     let (atk_b, dmg_b) = magic_weapon_bonuses(state, weapon_id);
                     apply_magic_weapon_bonuses(&mut result, atk_b, dmg_b);
+                    // Barbarian Rage: +2 to STR-based melee damage while raging.
+                    // No-op for ranged/AMMUNITION weapons (rage_damage_eligible gates on !ranged).
+                    apply_rage_damage_bonus(state, &mut result, &mut lines, weapon_id, distance);
 
                     apply_sneak_attack(
                         &mut rng,
@@ -8633,6 +8646,10 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                     }
                     let (atk_b, dmg_b) = magic_weapon_bonuses(state, weapon_id);
                     apply_magic_weapon_bonuses(&mut result, atk_b, dmg_b);
+                    // Barbarian Rage: +2 to STR-based melee damage while raging.
+                    // Applies to thrown weapons at melee range (STR-based); no-op
+                    // when thrown at range > 5 ft (treated as ranged by eligibility check).
+                    apply_rage_damage_bonus(state, &mut result, &mut lines, weapon_id, effective_distance_for_ranged);
 
                     apply_sneak_attack(
                         &mut rng,
@@ -9981,6 +9998,100 @@ fn apply_magic_weapon_bonuses(
         // damage stays 0.
         result.damage = 0;
     }
+}
+
+/// Returns `true` when the given attack qualifies for the Barbarian Rage
+/// damage bonus (+2 to damage rolls, levels 1–8 per SRD 2024).
+///
+/// Eligibility requirements:
+///   1. Character is a Barbarian and `rage_active` is true.
+///   2. The attack is melee (not using AMMUNITION, and not a thrown weapon
+///      used at range beyond 5 ft).
+///   3. The attack uses Strength (not Dexterity). For FINESSE weapons the
+///      bonus only applies if STR ≥ DEX (i.e., the player chose STR). If
+///      DEX was the better modifier the attack is treated as DEX-based and
+///      the rage bonus does not apply per SRD.
+///   4. Unarmed strikes always qualify (they are STR-based melee).
+fn rage_damage_eligible(
+    state: &GameState,
+    weapon_id: Option<crate::types::ItemId>,
+    distance: u32,
+) -> bool {
+    use character::class::Class;
+    if state.character.class != Class::Barbarian {
+        return false;
+    }
+    if !state.character.class_features.rage_active {
+        return false;
+    }
+    // Unarmed: always STR-based melee — qualifies.
+    let Some(id) = weapon_id else { return true };
+    let Some(item) = state.world.items.get(&id) else {
+        return false;
+    };
+    let (properties, range_normal) = match &item.item_type {
+        state::ItemType::Weapon {
+            properties,
+            range_normal,
+            ..
+        } => (*properties, *range_normal),
+        state::ItemType::MagicWeapon {
+            properties,
+            range_normal,
+            ..
+        } => (*properties, *range_normal),
+        _ => return false,
+    };
+    let is_ammo = properties & equipment::AMMUNITION != 0;
+    let is_thrown = properties & equipment::THROWN != 0;
+    let is_finesse = properties & equipment::FINESSE != 0;
+    // Ranged attack: ammunition weapons are always ranged; a thrown weapon at
+    // range uses the ranged mode; a pure ranged weapon (range > 0, no thrown)
+    // at > 5 ft is also ranged. Rage bonus does not apply to ranged attacks.
+    let is_ranged = if is_ammo {
+        true
+    } else if is_thrown && distance > 5 {
+        true
+    } else {
+        range_normal > 0 && distance > 5 && !is_thrown
+    };
+    if is_ranged {
+        return false;
+    }
+    // Finesse weapons: check whether STR ≥ DEX (player used STR for the roll).
+    // If DEX > STR the player benefits more from DEX and the attack is DEX-based
+    // — rage bonus does not apply per SRD.
+    if is_finesse {
+        let str_m = state.character.ability_modifier(types::Ability::Strength);
+        let dex_m = state.character.ability_modifier(types::Ability::Dexterity);
+        return str_m >= dex_m;
+    }
+    true
+}
+
+/// Apply the Barbarian Rage damage bonus (+2 flat) to a qualifying hit.
+///
+/// Called immediately after `apply_magic_weapon_bonuses` at every
+/// `resolve_player_attack` call site in `lib.rs`. The function is a no-op
+/// when the attack does not meet eligibility (see `rage_damage_eligible`).
+///
+/// Mutates `result.damage` in place. Appends a narration line
+/// `(+2 rage damage.)` when the bonus is applied.
+fn apply_rage_damage_bonus(
+    state: &GameState,
+    result: &mut combat::AttackResult,
+    lines: &mut Vec<String>,
+    weapon_id: Option<crate::types::ItemId>,
+    distance: u32,
+) {
+    if !result.hit || result.damage <= 0 {
+        return;
+    }
+    if !rage_damage_eligible(state, weapon_id, distance) {
+        return;
+    }
+    result.damage += 2;
+    lines.push("(+2 rage damage.)".to_string());
 }
 
 /// Looks up the SRD mastery for a weapon item (if any) and returns it only
@@ -20881,6 +20992,235 @@ mod tests {
         apply_magic_weapon_bonuses(&mut r, 2, 2);
         assert!(r.hit);
         assert_eq!(r.damage, 17);
+    }
+
+    // ---- Rage damage bonus --------------------------------------------------
+
+    /// Helper: build an AttackResult representing a plain hit for testing.
+    fn hit_result(damage: i32) -> combat::AttackResult {
+        combat::AttackResult {
+            hit: true,
+            natural_20: false,
+            natural_1: false,
+            attack_roll_first: 15,
+            attack_roll_second: None,
+            attack_roll: 15,
+            total_attack: 19,
+            target_ac: 14,
+            damage,
+            damage_type: state::DamageType::Slashing,
+            weapon_name: "Longsword".to_string(),
+            disadvantage: false,
+            attacker_had_advantage: false,
+            roll_mode_reason: String::new(),
+        }
+    }
+
+    #[test]
+    fn test_apply_rage_damage_bonus_adds_two_on_str_melee_hit() {
+        // Barbarian with rage_active, unarmed (None weapon_id) — always STR melee.
+        let mut state = create_test_exploration_state();
+        state.character.class = character::class::Class::Barbarian;
+        state.character.class_features.rage_active = true;
+        let mut r = hit_result(5);
+        let mut lines = Vec::new();
+        apply_rage_damage_bonus(&state, &mut r, &mut lines, None, 5);
+        assert_eq!(r.damage, 7, "Rage +2 bonus must be added on melee hit");
+        assert!(
+            lines.iter().any(|l| l.contains("+2 rage")),
+            "Narration must mention '+2 rage'. Got: {:?}", lines
+        );
+    }
+
+    #[test]
+    fn test_apply_rage_damage_bonus_no_op_on_miss() {
+        let mut state = create_test_exploration_state();
+        state.character.class = character::class::Class::Barbarian;
+        state.character.class_features.rage_active = true;
+        let mut r = hit_result(0);
+        r.hit = false;
+        r.damage = 0;
+        let mut lines = Vec::new();
+        apply_rage_damage_bonus(&state, &mut r, &mut lines, None, 5);
+        assert_eq!(r.damage, 0, "Rage bonus must not apply on a miss");
+        assert!(lines.is_empty(), "No narration on miss");
+    }
+
+    #[test]
+    fn test_apply_rage_damage_bonus_no_op_when_not_raging() {
+        let mut state = create_test_exploration_state();
+        state.character.class = character::class::Class::Barbarian;
+        state.character.class_features.rage_active = false;
+        let mut r = hit_result(5);
+        let mut lines = Vec::new();
+        apply_rage_damage_bonus(&state, &mut r, &mut lines, None, 5);
+        assert_eq!(r.damage, 5, "Rage bonus must not apply when not raging");
+        assert!(lines.is_empty(), "No narration when not raging");
+    }
+
+    #[test]
+    fn test_apply_rage_damage_bonus_no_op_for_non_barbarian() {
+        let mut state = create_test_exploration_state();
+        state.character.class = character::class::Class::Fighter;
+        state.character.class_features.rage_active = true; // irrelevant but set
+        let mut r = hit_result(5);
+        let mut lines = Vec::new();
+        apply_rage_damage_bonus(&state, &mut r, &mut lines, None, 5);
+        assert_eq!(r.damage, 5, "Rage bonus must not apply to non-Barbarian");
+        assert!(lines.is_empty());
+    }
+
+    #[test]
+    fn test_apply_rage_damage_bonus_no_op_for_ranged_attack() {
+        // Unarmed at range > 5 ft is not a real scenario, but we test the
+        // weapon_id = None path at range — eligibility uses distance for
+        // thrown/ranged checks on weapons; unarmed always qualifies regardless
+        // of distance (no range field to check). Use a real ranged weapon to
+        // test the ranged gate.
+        let mut state = create_test_exploration_state();
+        state.character.class = character::class::Class::Barbarian;
+        state.character.class_features.rage_active = true;
+        // Build a shortbow item in the world (AMMUNITION property).
+        let bow_id = {
+            use state::{Item, ItemType, WeaponCategory};
+            let id: types::ItemId = 99901;
+            state.world.items.insert(
+                id,
+                Item {
+                    id,
+                    name: "Shortbow".to_string(),
+                    description: "A shortbow.".to_string(),
+                    item_type: ItemType::Weapon {
+                        damage_dice: 1,
+                        damage_die: 6,
+                        damage_type: state::DamageType::Piercing,
+                        properties: equipment::AMMUNITION,
+                        category: WeaponCategory::Simple,
+                        versatile_die: 0,
+                        range_normal: 80,
+                        range_long: 320,
+                    },
+                    location: None,
+                    carried_by_player: true,
+                    charges_remaining: None,
+                },
+            );
+            id
+        };
+        let mut r = hit_result(5);
+        let mut lines = Vec::new();
+        // distance > 5 ft, AMMUNITION weapon
+        apply_rage_damage_bonus(&state, &mut r, &mut lines, Some(bow_id), 30);
+        assert_eq!(r.damage, 5, "Rage bonus must not apply to ranged attacks");
+        assert!(lines.is_empty());
+    }
+
+    #[test]
+    fn test_rage_damage_bonus_integration_via_resolve_player_attack() {
+        // Integration test: resolve_player_attack then apply_rage_damage_bonus
+        // for a Barbarian with rage_active; damage must be >= 2 higher than
+        // the same attack without rage.
+        use rand::SeedableRng;
+        let mut state = create_test_exploration_state();
+        state.character.class = character::class::Class::Barbarian;
+        // Force STR to 18 (mod +4), DEX to 10 (mod 0) so STR is used.
+        state.character.ability_scores.insert(types::Ability::Strength, 18);
+        state.character.ability_scores.insert(types::Ability::Dexterity, 10);
+        // Re-initialise class features for Barbarian.
+        state.character.class_features = character::class::ClassFeatureState::default();
+        let cha_mod = state.character.ability_modifier(types::Ability::Charisma);
+        character::init_class_features(
+            &mut state.character.class_features,
+            character::class::Class::Barbarian,
+            1,
+            cha_mod,
+            &state.character.known_spells,
+        );
+
+        // Build a melee longsword item (no AMMUNITION, no FINESSE, STR-based).
+        let sword_id = {
+            use state::{Item, ItemType, WeaponCategory};
+            let id: types::ItemId = 99902;
+            state.world.items.insert(
+                id,
+                Item {
+                    id,
+                    name: "Longsword".to_string(),
+                    description: "A longsword.".to_string(),
+                    item_type: ItemType::Weapon {
+                        damage_dice: 1,
+                        damage_die: 8,
+                        damage_type: state::DamageType::Slashing,
+                        properties: 0,
+                        category: WeaponCategory::Martial,
+                        versatile_die: 10,
+                        range_normal: 0,
+                        range_long: 0,
+                    },
+                    location: None,
+                    carried_by_player: true,
+                    charges_remaining: None,
+                },
+            );
+            id
+        };
+
+        // Seed both RNGs the same so dice rolls are identical.
+        let mut rng_no_rage = rand::rngs::StdRng::seed_from_u64(42);
+        let mut rng_rage = rand::rngs::StdRng::seed_from_u64(42);
+
+        // Resolve attack WITHOUT rage active.
+        state.character.class_features.rage_active = false;
+        let result_no_rage = combat::resolve_player_attack(
+            &mut rng_no_rage,
+            &state.character,
+            10, // low AC so we reliably hit
+            false,
+            Some(sword_id),
+            &state.world.items,
+            5,
+            true,
+            false,
+            &[],
+            false,
+            false,
+            &types::Cover::None,
+        );
+
+        // Resolve attack WITH rage active.
+        state.character.class_features.rage_active = true;
+        let mut result_with_rage = combat::resolve_player_attack(
+            &mut rng_rage,
+            &state.character,
+            10,
+            false,
+            Some(sword_id),
+            &state.world.items,
+            5,
+            true,
+            false,
+            &[],
+            false,
+            false,
+            &types::Cover::None,
+        );
+        let mut lines = Vec::new();
+        apply_rage_damage_bonus(&state, &mut result_with_rage, &mut lines, Some(sword_id), 5);
+
+        if result_no_rage.hit && result_with_rage.hit {
+            assert_eq!(
+                result_with_rage.damage,
+                result_no_rage.damage + 2,
+                "Rage must add exactly +2 damage on a hit. no_rage={}, with_rage={}",
+                result_no_rage.damage,
+                result_with_rage.damage
+            );
+            assert!(
+                lines.iter().any(|l| l.contains("+2 rage")),
+                "Expected '+2 rage' in narration. Got: {:?}", lines
+            );
+        }
+        // If both miss (unlikely with AC 10 and STR +4 + prof), the test is vacuously passing.
     }
 
     #[test]
