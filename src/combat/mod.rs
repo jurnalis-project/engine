@@ -538,10 +538,16 @@ impl CombatState {
 ///
 /// Returns human-readable lines describing the roll result and any state
 /// transitions (stabilize, defeat, crit). The caller passes the raw d20
-/// roll value alongside the outcome variant. Kept as a free function so
-/// callers (orchestrator and tests) can format narration deterministically
-/// from a known (roll, outcome) pair.
-pub fn narrate_death_save_outcome(d20: i32, outcome: DeathSaveOutcome) -> Vec<String> {
+/// roll value alongside the outcome variant, plus the **post-roll** tally
+/// of successes and failures (used to append a running count for non-terminal
+/// outcomes). Kept as a free function so callers (orchestrator and tests) can
+/// format narration deterministically from a known (roll, outcome) pair.
+pub fn narrate_death_save_outcome(
+    d20: i32,
+    outcome: DeathSaveOutcome,
+    successes: u8,
+    failures: u8,
+) -> Vec<String> {
     let mut lines = Vec::new();
     match outcome {
         DeathSaveOutcome::CritSuccess => {
@@ -557,15 +563,21 @@ pub fn narrate_death_save_outcome(d20: i32, outcome: DeathSaveOutcome) -> Vec<St
             ));
         }
         DeathSaveOutcome::Success => {
-            lines.push(format!("Death saving throw: {} — success.", d20,));
+            lines.push(format!(
+                "[Death save: {} — Success. {}/3 successes, {}/3 failures.]",
+                d20, successes, failures,
+            ));
         }
         DeathSaveOutcome::Failure => {
-            lines.push(format!("Death saving throw: {} — failure.", d20,));
+            lines.push(format!(
+                "[Death save: {} — Failure. {}/3 successes, {}/3 failures.]",
+                d20, successes, failures,
+            ));
         }
         DeathSaveOutcome::CritFailure => {
             lines.push(format!(
-                "Death saving throw: {} — natural 1! That counts as two failures.",
-                d20,
+                "[Death save: {} — Natural 1! That counts as two failures. {}/3 successes, {}/3 failures.]",
+                d20, successes, failures,
             ));
         }
         DeathSaveOutcome::Dead => {

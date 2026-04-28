@@ -5067,13 +5067,43 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
     // Take combat out for the duration of action processing
     let mut combat = state.active_combat.take().unwrap();
 
-    // Death Saving Throws (issue #84): if it's the player's turn but they
-    // are dying, auto-roll a death save. Unconscious characters can't
+    // Death Saving Throws (issue #84, #342): if it's the player's turn but
+    // they are dying, auto-roll a death save. Unconscious characters can't
     // issue commands, so any player input received while they're at 0 HP
-    // simply triggers the save and advances to NPC turns.
+    // triggers the save and advances to NPC turns.
     if combat.is_player_turn() && combat.is_player_dying(state) {
+        let mut lines = Vec::new();
+
+        // Issue #342 — scope item 1: on the FIRST tick at 0 HP (both
+        // counters at zero before the roll), explain the death save mechanic.
+        let is_first_tick =
+            combat.death_save_successes == 0 && combat.death_save_failures == 0;
+        if is_first_tick {
+            lines.push(
+                "You are unconscious (0 HP). Death saving throws roll automatically \
+                 each round. Roll 10+ on a d20 to succeed. You need 3 successes \
+                 before 3 failures."
+                    .to_string(),
+            );
+        }
+
+        // Issue #342 — scope item 3: acknowledge the player's input rather
+        // than silently consuming it.
+        lines.push("You are unconscious and cannot act.".to_string());
+
         let (d20, outcome) = combat.roll_death_save(&mut rng, &mut state.character);
-        let mut lines = combat::narrate_death_save_outcome(d20, outcome);
+
+        // Issue #342 — scope item 2: pass the post-roll tally so the
+        // narration includes the running success/failure count.
+        let post_successes = combat.death_save_successes;
+        let post_failures = combat.death_save_failures;
+        lines.extend(combat::narrate_death_save_outcome(
+            d20,
+            outcome,
+            post_successes,
+            post_failures,
+        ));
+
         match outcome {
             combat::DeathSaveOutcome::CritSuccess => {
                 // Issue #225: nat-20 revives the player at 1 HP on their
@@ -5118,6 +5148,13 @@ fn handle_combat(state: &mut GameState, input: &str) -> Vec<String> {
                 return lines;
             }
             _ => {
+                // Issue #342 — scope item 4: append a dying indicator line
+                // after each save while still dying.
+                lines.push(format!(
+                    "[dying: {}/3 successes, {}/3 failures]",
+                    post_successes, post_failures,
+                ));
+
                 // Still dying: skip the player's turn, let NPCs act.
                 combat.end_player_turn();
                 combat.advance_turn(state);
@@ -26808,6 +26845,153 @@ mod tests {
         assert!(
             hit_found,
             "No Fire Bolt hit found in first 20 seeds — check INT/PB values"
+        );
+    }
+
+    // ---- Dying-state prompt and death save communication (issue #342) ----
+    //
+    // Hypothesis: The dying-state input path emits no introductory message on
+    // the first death save tick, no tally after each roll, and silently swallows
+    // player input. These tests verify all four scope items from the handoff.
+
+    /// Find a seed where the first d20 roll is a failure (2..=9).
+    fn find_seed_single_failure(counter: u64) -> u64 {
+        use rand::Rng;
+        for seed in 0u64..100_000 {
+            let mut rng = StdRng::seed_from_u64(seed + counter);
+            let d20: i32 = rng.gen_range(1..=20);
+            if (2..=9).contains(&d20) {
+                return seed;
+            }
+        }
+        panic!("no single-failure seed found");
+    }
+
+    /// Find a seed where the first d20 roll is a non-crit success (10..=19).
+    fn find_seed_single_success(counter: u64) -> u64 {
+        use rand::Rng;
+        for seed in 0u64..100_000 {
+            let mut rng = StdRng::seed_from_u64(seed + counter);
+            let d20: i32 = rng.gen_range(1..=20);
+            if (10..=19).contains(&d20) {
+                return seed;
+            }
+        }
+        panic!("no single-success seed found");
+    }
+
+    // Scope item 1: On the FIRST tick at 0 HP (successes == 0 && failures == 0
+    // before roll), emit the introductory message explaining death saving throws.
+    #[test]
+    fn test_first_death_save_tick_shows_introductory_message() {
+        let mut state = create_dying_combat_state();
+        let failure_seed = find_seed_single_failure(state.rng_counter);
+        state.rng_seed = failure_seed;
+
+        let out = process_input(&serde_json::to_string(&state).unwrap(), "wait");
+        let text = out.text.join("\n");
+
+        assert!(
+            text.contains("You are unconscious (0 HP)"),
+            "First death save should show introductory message. Got: {}",
+            text
+        );
+        assert!(
+            text.contains("3 successes before 3 failures"),
+            "Introductory message should explain the 3-success / 3-failure mechanic. Got: {}",
+            text
+        );
+    }
+
+    // Scope item 2: Each death save tick shows the roll result and updated tally.
+    #[test]
+    fn test_death_save_shows_tally_after_roll() {
+        let mut state = create_dying_combat_state();
+        let failure_seed = find_seed_single_failure(state.rng_counter);
+        state.rng_seed = failure_seed;
+
+        let out = process_input(&serde_json::to_string(&state).unwrap(), "wait");
+        let text = out.text.join("\n");
+
+        // After a failure roll: 0/3 successes, 1/3 failures
+        assert!(
+            text.contains("0/3 successes") && text.contains("1/3 failures"),
+            "Death save should show updated tally. Got: {}",
+            text
+        );
+    }
+
+    // Scope item 2 (success variant): tally after a success roll.
+    #[test]
+    fn test_death_save_success_shows_tally() {
+        let mut state = create_dying_combat_state();
+        let success_seed = find_seed_single_success(state.rng_counter);
+        state.rng_seed = success_seed;
+
+        let out = process_input(&serde_json::to_string(&state).unwrap(), "wait");
+        let text = out.text.join("\n");
+
+        // After a success roll: 1/3 successes, 0/3 failures
+        assert!(
+            text.contains("1/3 successes") && text.contains("0/3 failures"),
+            "Death save success should show updated tally. Got: {}",
+            text
+        );
+    }
+
+    // Scope item 3: While dying, if the player types anything, respond with
+    // "You are unconscious and cannot act." before proceeding with the auto-save.
+    #[test]
+    fn test_dying_player_input_shows_unconscious_message() {
+        let mut state = create_dying_combat_state();
+        let failure_seed = find_seed_single_failure(state.rng_counter);
+        state.rng_seed = failure_seed;
+
+        let out = process_input(&serde_json::to_string(&state).unwrap(), "attack goblin");
+        let text = out.text.join("\n");
+
+        assert!(
+            text.contains("You are unconscious and cannot act"),
+            "Should tell the player they are unconscious when they type a command. Got: {}",
+            text
+        );
+    }
+
+    // Scope item 4: After each save (while still dying), append a dying indicator line.
+    #[test]
+    fn test_dying_indicator_after_death_save() {
+        let mut state = create_dying_combat_state();
+        let failure_seed = find_seed_single_failure(state.rng_counter);
+        state.rng_seed = failure_seed;
+
+        let out = process_input(&serde_json::to_string(&state).unwrap(), "wait");
+        let text = out.text.join("\n");
+
+        assert!(
+            text.contains("[dying:"),
+            "Should append a [dying: X/3 successes, Y/3 failures] indicator. Got: {}",
+            text
+        );
+    }
+
+    // Verify introductory message is NOT shown on subsequent ticks (only first).
+    #[test]
+    fn test_second_death_save_tick_omits_introductory_message() {
+        let mut state = create_dying_combat_state();
+        // Pre-set 1 failure to simulate a subsequent tick
+        if let Some(ref mut combat) = state.active_combat {
+            combat.death_save_failures = 1;
+        }
+        let failure_seed = find_seed_single_failure(state.rng_counter);
+        state.rng_seed = failure_seed;
+
+        let out = process_input(&serde_json::to_string(&state).unwrap(), "wait");
+        let text = out.text.join("\n");
+
+        assert!(
+            !text.contains("You are unconscious (0 HP)"),
+            "Introductory message should NOT appear on subsequent ticks. Got: {}",
+            text
         );
     }
 }
