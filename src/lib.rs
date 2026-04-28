@@ -1164,9 +1164,74 @@ fn handle_creation(state: &mut GameState, input: &str, step: CreationStep) -> Ve
             }
 
             state.character.skill_proficiencies = skills;
+
+            // Rogue gains Expertise (two skills) at level 1 — insert the
+            // selection step before ChooseAlignment.
+            if state.character.class == character::class::Class::Rogue {
+                state.game_phase =
+                    GamePhase::CharacterCreation(CreationStep::ChooseExpertiseSkills);
+                let choices: Vec<String> = state
+                    .character
+                    .skill_proficiencies
+                    .iter()
+                    .enumerate()
+                    .map(|(i, s)| format!("  {}. {}", i + 1, s))
+                    .collect();
+                let mut lines =
+                    vec!["Skills chosen! As a Rogue, choose 2 skills to gain Expertise (doubled proficiency bonus):".to_string()];
+                lines.extend(choices);
+                lines.push("Enter two numbers (e.g. \"1 3\").".to_string());
+                return lines;
+            }
+
             state.game_phase = GamePhase::CharacterCreation(CreationStep::ChooseAlignment);
 
             let mut lines = vec!["Skills chosen! Choose your alignment:".to_string()];
+            for (i, alignment) in ALIGNMENT_OPTIONS.iter().enumerate() {
+                lines.push(format!("  {}. {}", i + 1, alignment));
+            }
+            lines.push("Enter a number or name.".to_string());
+            lines
+        }
+        CreationStep::ChooseExpertiseSkills => {
+            let proficiencies = state.character.skill_proficiencies.clone();
+            let count = 2usize;
+
+            let indices: Vec<usize> = input
+                .split_whitespace()
+                .filter_map(|s| s.parse::<usize>().ok())
+                .collect();
+
+            if indices.len() != count {
+                return vec![format!(
+                    "Please choose exactly {} skills for Expertise.",
+                    count
+                )];
+            }
+
+            let mut expertise = Vec::new();
+            let mut seen = std::collections::HashSet::new();
+            for &idx in &indices {
+                if idx < 1 || idx > proficiencies.len() {
+                    return vec![format!(
+                        "Invalid choice: {}. Pick from 1-{}.",
+                        idx,
+                        proficiencies.len()
+                    )];
+                }
+                if !seen.insert(idx) {
+                    return vec![format!(
+                        "Duplicate choice: {}. Each skill must be different.",
+                        idx
+                    )];
+                }
+                expertise.push(proficiencies[idx - 1]);
+            }
+
+            state.character.expertise_skills = expertise;
+            state.game_phase = GamePhase::CharacterCreation(CreationStep::ChooseAlignment);
+
+            let mut lines = vec!["Expertise chosen! Choose your alignment:".to_string()];
             for (i, alignment) in ALIGNMENT_OPTIONS.iter().enumerate() {
                 lines.push(format!("  {}. {}", i + 1, alignment));
             }
@@ -2050,6 +2115,7 @@ fn resolve_search_trigger(
                 skill,
                 &state.character.ability_scores,
                 &state.character.skill_proficiencies,
+                &state.character.expertise_skills,
                 state.character.proficiency_bonus(),
                 trigger.dc,
                 false,
@@ -2078,8 +2144,9 @@ fn resolve_search_trigger(
                 .copied()
                 .unwrap_or(10);
             let is_prof = state.character.is_proficient_in_skill(Skill::Perception);
+            let has_exp = state.character.has_expertise(Skill::Perception);
             let passive =
-                rules::checks::passive_check(score, state.character.proficiency_bonus(), is_prof);
+                rules::checks::passive_check(score, state.character.proficiency_bonus(), is_prof, has_exp);
             if passive >= trigger.dc {
                 if trigger.one_shot {
                     state.world.triggered.insert(trigger_id);
@@ -2314,6 +2381,7 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
                                             *skill,
                                             &state.character.ability_scores,
                                             &state.character.skill_proficiencies,
+                                            &state.character.expertise_skills,
                                             state.character.proficiency_bonus(),
                                             trigger.dc,
                                             false,
@@ -2393,10 +2461,14 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
                                         let is_prof = state
                                             .character
                                             .is_proficient_in_skill(Skill::Perception);
+                                        let has_exp = state
+                                            .character
+                                            .has_expertise(Skill::Perception);
                                         let passive = rules::checks::passive_check(
                                             score,
                                             state.character.proficiency_bonus(),
                                             is_prof,
+                                            has_exp,
                                         );
                                         let success = passive >= trigger.dc;
                                         None // Passive checks are silent on failure
@@ -2726,6 +2798,7 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
                         skill,
                         &state.character.ability_scores,
                         &state.character.skill_proficiencies,
+                        &state.character.expertise_skills,
                         state.character.proficiency_bonus(),
                         15, // Default DC for voluntary checks
                         false,
@@ -9121,6 +9194,7 @@ fn use_magic_scroll(
         types::Skill::Arcana,
         &state.character.ability_scores,
         &state.character.skill_proficiencies,
+        &state.character.expertise_skills,
         state.character.proficiency_bonus(),
         10,
         false,
@@ -12857,6 +12931,7 @@ mod tests {
         let output = process_input(&output.state_json, "1"); // Standard array
         let output = process_input(&output.state_json, "15 14 13 12 10 8");
         let output = process_input(&output.state_json, "1 2 3 4"); // 4 rogue skills
+        let output = process_input(&output.state_json, "1 2"); // expertise: skills 1 and 2
         let output = process_input(&output.state_json, "5"); // alignment: Neutral
         let output = process_input(&output.state_json, "Shadow");
         let state: GameState = serde_json::from_str(&output.state_json).unwrap();
@@ -12917,6 +12992,7 @@ mod tests {
         let output = process_input(&output.state_json, "1"); // Standard array
         let output = process_input(&output.state_json, "15 14 13 12 10 8");
         let output = process_input(&output.state_json, "1 2 3 4");
+        let output = process_input(&output.state_json, "1 2"); // expertise: skills 1 and 2
         let output = process_input(&output.state_json, "5"); // alignment: Neutral
         let output = process_input(&output.state_json, "Shadow");
         let state: GameState = serde_json::from_str(&output.state_json).unwrap();
@@ -12983,6 +13059,7 @@ mod tests {
         let output = process_input(&output.state_json, "1"); // Standard array
         let output = process_input(&output.state_json, "8 15 14 13 12 10"); // DEX=15 for max
         let output = process_input(&output.state_json, "1 2 3 4");
+        let output = process_input(&output.state_json, "1 2"); // expertise: skills 1 and 2
         let output = process_input(&output.state_json, "5"); // alignment: Neutral
         let output = process_input(&output.state_json, "Shadow");
         let state: GameState = serde_json::from_str(&output.state_json).unwrap();
@@ -13126,6 +13203,7 @@ mod tests {
         let output = process_input(&output.state_json, "1"); // Standard array
         let output = process_input(&output.state_json, "15 14 13 12 10 8");
         let output = process_input(&output.state_json, "1 2 3 4"); // 4 skills
+        let output = process_input(&output.state_json, "1 2"); // expertise: skills 1 and 2
         let output = process_input(&output.state_json, "5"); // alignment: Neutral
         let output = process_input(&output.state_json, "Shadow");
 
@@ -13165,6 +13243,60 @@ mod tests {
             .iter()
             .find(|&&id| state.world.items[&id].name == "Dagger");
         assert!(dagger.is_some(), "Dagger should be in inventory");
+    }
+
+    #[test]
+    fn test_rogue_expertise_creation_flow_stores_skills_and_doubles_modifier() {
+        // Full Rogue creation flow — verify expertise_skills is populated and
+        // skill_modifier doubles PB for the chosen skills.
+        // Same inputs as test_rogue_gets_starting_equipment but asserting expertise.
+        let output = new_game(42, false);
+        let output = process_input(&output.state_json, "1"); // Human
+        let output = process_input(&output.state_json, "Rogue");
+        let output = process_input(&output.state_json, "1"); // Background: Acolyte
+        let output = process_input(&output.state_json, "default"); // origin feat
+        let output = process_input(&output.state_json, "2"); // Ability pattern: +1/+1/+1
+        let output = process_input(&output.state_json, "1"); // Standard array
+        let output = process_input(&output.state_json, "15 14 13 12 10 8");
+        // Pick 4 skills — first two will become expertise
+        let output = process_input(&output.state_json, "1 2 3 4");
+        let output = process_input(&output.state_json, "1 2"); // expertise: skills 1 and 2
+        let output = process_input(&output.state_json, "5"); // alignment: Neutral
+        let output = process_input(&output.state_json, "Shadow");
+        let state: GameState = serde_json::from_str(&output.state_json).unwrap();
+
+        // Two expertise skills should be stored.
+        assert_eq!(
+            state.character.expertise_skills.len(),
+            2,
+            "Rogue should have 2 expertise skills after creation"
+        );
+        // Each expertise skill should also be in skill_proficiencies.
+        for skill in &state.character.expertise_skills {
+            assert!(
+                state.character.skill_proficiencies.contains(skill),
+                "Expertise skill {:?} must also be a proficiency",
+                skill
+            );
+        }
+        // The modifier for the first expertise skill should be higher than
+        // the same character without expertise (PB doubled).
+        let skill = state.character.expertise_skills[0];
+        let modifier_with = state.character.skill_modifier(skill);
+        let mut c_no_exp = state.character.clone();
+        c_no_exp.expertise_skills.clear();
+        let modifier_without = c_no_exp.skill_modifier(skill);
+        assert!(
+            modifier_with > modifier_without,
+            "Expertise must increase skill_modifier: with={} without={}",
+            modifier_with,
+            modifier_without
+        );
+        assert_eq!(
+            modifier_with - modifier_without,
+            state.character.proficiency_bonus(),
+            "Expertise should add exactly one extra PB (doubling it)"
+        );
     }
 
     #[test]

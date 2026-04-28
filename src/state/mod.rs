@@ -543,6 +543,12 @@ pub enum CreationStep {
     PointBuy,
     AssignAbilities,
     ChooseSkills,
+    /// Rogue (and eventually Bard) must choose two skill proficiencies to
+    /// gain Expertise (doubled proficiency bonus) at level 1. Inserted
+    /// between ChooseSkills and ChooseAlignment for those classes. Classes
+    /// that do not grant Expertise at level 1 skip this step entirely.
+    /// See `docs/specs/srd-classes.md` and `docs/reference/rogue.md`.
+    ChooseExpertiseSkills,
     /// New (#35): SRD alignment selection. Sits between ChooseSkills and
     /// ChooseName so it mirrors the SRD creation order (background/species/
     /// abilities -> alignment -> details).

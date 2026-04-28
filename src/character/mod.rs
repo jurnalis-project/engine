@@ -126,6 +126,14 @@ pub struct Character {
     /// to 0.
     #[serde(default)]
     pub gold_cp: u32,
+    /// Skills for which the character has Expertise (doubled proficiency
+    /// bonus). Per SRD 2024: Rogue gains Expertise in two chosen skills at
+    /// level 1 (and two more at level 6); Bard gains Expertise at level 3.
+    /// Expertise requires proficiency — if the skill is not also in
+    /// `skill_proficiencies`, the extra bonus is ignored. `#[serde(default)]`
+    /// so legacy saves deserialize cleanly to an empty vec.
+    #[serde(default)]
+    pub expertise_skills: Vec<Skill>,
 }
 
 impl Character {
@@ -138,7 +146,19 @@ impl Character {
     pub fn is_proficient_in_save(&self, ability: Ability) -> bool { self.save_proficiencies.contains(&ability) }
     pub fn skill_modifier(&self, skill: Skill) -> i32 {
         let base = self.ability_modifier(skill.ability());
-        if self.is_proficient_in_skill(skill) { base + self.proficiency_bonus() } else { base }
+        if self.is_proficient_in_skill(skill) {
+            let pb = self.proficiency_bonus();
+            let effective_pb = if self.expertise_skills.contains(&skill) { pb * 2 } else { pb };
+            base + effective_pb
+        } else {
+            base
+        }
+    }
+
+    /// Returns true when the character has Expertise in the given skill
+    /// (i.e. the skill is in `expertise_skills` AND in `skill_proficiencies`).
+    pub fn has_expertise(&self, skill: Skill) -> bool {
+        self.expertise_skills.contains(&skill) && self.is_proficient_in_skill(skill)
     }
 }
 
@@ -267,6 +287,7 @@ pub fn create_character(
         subrace: None,
         ammo: HashMap::new(),
         gold_cp: 0,
+        expertise_skills: Vec::new(),
     }
 }
 
@@ -453,6 +474,49 @@ mod tests {
     fn test_skill_modifier_without_proficiency() {
         let c = create_character("Test".to_string(), Race::Elf, Class::Rogue, test_scores(), vec![]);
         assert_eq!(c.skill_modifier(Skill::Stealth), 3);
+    }
+
+    #[test]
+    fn test_skill_modifier_with_expertise_doubles_pb() {
+        // Elf Rogue: DEX starts at 14 → racial +2 → 16 → modifier +3.
+        // Level 1 proficiency bonus = +2. With Expertise on Stealth:
+        // expected modifier = +3 DEX + (2 * 2) doubled PB = +7.
+        let mut c = create_character("Test".to_string(), Race::Elf, Class::Rogue, test_scores(), vec![Skill::Stealth]);
+        c.expertise_skills = vec![Skill::Stealth];
+        assert_eq!(c.skill_modifier(Skill::Stealth), 7, "Expertise should double PB: +3 DEX + +4 PB = +7");
+    }
+
+    #[test]
+    fn test_expertise_without_proficiency_has_no_effect() {
+        // expertise_skills without the skill in skill_proficiencies must not double.
+        let mut c = create_character("Test".to_string(), Race::Elf, Class::Rogue, test_scores(), vec![]);
+        c.expertise_skills = vec![Skill::Stealth];
+        // Not proficient — base DEX only (+3 for Elf Rogue).
+        assert_eq!(c.skill_modifier(Skill::Stealth), 3);
+        assert!(!c.has_expertise(Skill::Stealth));
+    }
+
+    #[test]
+    fn test_has_expertise_true_when_proficient_and_in_expertise_list() {
+        let mut c = create_character("Test".to_string(), Race::Elf, Class::Rogue, test_scores(), vec![Skill::Stealth]);
+        c.expertise_skills = vec![Skill::Stealth];
+        assert!(c.has_expertise(Skill::Stealth));
+    }
+
+    #[test]
+    fn test_rogue_expertise_bug_example_stealth_plus7() {
+        // Regression: Rogue with DEX 16 (+3) and PB 2 with Expertise in Stealth
+        // should show +7, not +5 (the pre-fix bug value).
+        let mut scores = HashMap::new();
+        scores.insert(Ability::Strength, 10);
+        scores.insert(Ability::Dexterity, 16);
+        scores.insert(Ability::Constitution, 10);
+        scores.insert(Ability::Intelligence, 10);
+        scores.insert(Ability::Wisdom, 10);
+        scores.insert(Ability::Charisma, 10);
+        let mut c = create_character("Shadow".to_string(), Race::Human, Class::Rogue, scores, vec![Skill::Stealth]);
+        c.expertise_skills = vec![Skill::Stealth];
+        assert_eq!(c.skill_modifier(Skill::Stealth), 7, "Bug: was +5, should be +7 with Expertise");
     }
 
     #[test]
