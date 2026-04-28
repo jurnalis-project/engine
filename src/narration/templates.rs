@@ -262,6 +262,12 @@ pub const BARK_ADVENTURER: &[&str] = &[
     "\"Treasure's deeper in, if you dare.\"",
 ];
 
+// -- NPC aggro indicator template --
+// Emitted once per hostile NPC immediately before "=== COMBAT BEGINS ===" when the
+// player enters a room containing living hostile combatants.
+// Placeholder: {name} = NPC's display name.
+pub const NPC_AGGRO: &str = "{name}'s eyes narrow — they reach for their weapon.";
+
 pub const HELP_TEXT: &str = "\
 Commands:
   look [target]     - Examine surroundings or a specific thing

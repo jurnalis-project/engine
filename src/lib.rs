@@ -2534,6 +2534,16 @@ fn handle_exploration(state: &mut GameState, input: &str) -> Vec<String> {
                                 &state.world.npcs,
                                 loc.location_type,
                             );
+                            // Emit one aggro indicator line per hostile NPC before combat begins
+                            lines.push(String::new());
+                            for &id in &hostile_ids {
+                                if let Some(npc) = state.world.npcs.get(&id) {
+                                    lines.push(
+                                        narration::templates::NPC_AGGRO
+                                            .replace("{name}", &npc.name),
+                                    );
+                                }
+                            }
                             lines.push(String::new());
                             lines.extend(combat::format_initiative(&combat_state, state));
 
@@ -26992,6 +27002,118 @@ mod tests {
             !text.contains("You are unconscious (0 HP)"),
             "Introductory message should NOT appear on subsequent ticks. Got: {}",
             text
+        );
+    }
+
+    // NPC aggro indicator: hostile NPCs should emit "eyes narrow" line before "=== COMBAT BEGINS ==="
+    // when the player enters a room containing living hostile NPCs.
+    #[test]
+    fn test_npc_aggro_indicator_appears_before_combat_begins() {
+        use crate::types::Direction;
+
+        let mut state = create_test_exploration_state();
+        let current = state.current_location;
+        let target_loc_id: u32 = 9901;
+        let hostile_npc_id: u32 = 9902;
+        let friendly_npc_id: u32 = 9903;
+
+        // Add a north exit from the current location
+        if let Some(loc) = state.world.locations.get_mut(&current) {
+            loc.exits.insert(Direction::North, target_loc_id);
+        }
+
+        // Insert a hostile NPC with combat stats (living)
+        state.world.npcs.insert(
+            hostile_npc_id,
+            state::Npc {
+                id: hostile_npc_id,
+                name: "Snarling Bandit".to_string(),
+                role: state::NpcRole::Guard,
+                disposition: state::Disposition::Hostile,
+                dialogue_tags: vec![],
+                location: target_loc_id,
+                combat_stats: Some(state::CombatStats {
+                    max_hp: 11,
+                    current_hp: 11,
+                    ac: 13,
+                    speed: 30,
+                    ability_scores: HashMap::new(),
+                    attacks: vec![],
+                    proficiency_bonus: 2,
+                    cr: 0.5,
+                    ..Default::default()
+                }),
+                conditions: vec![],
+                inventory: vec![],
+            },
+        );
+
+        // Insert a friendly NPC in the same room (must NOT get an aggro line)
+        state.world.npcs.insert(
+            friendly_npc_id,
+            state::Npc {
+                id: friendly_npc_id,
+                name: "Helpful Innkeeper".to_string(),
+                role: state::NpcRole::Merchant,
+                disposition: state::Disposition::Friendly,
+                dialogue_tags: vec![],
+                location: target_loc_id,
+                combat_stats: None,
+                conditions: vec![],
+                inventory: vec![],
+            },
+        );
+
+        // Create the target location containing both NPCs
+        state.world.locations.insert(
+            target_loc_id,
+            state::Location {
+                id: target_loc_id,
+                name: "Dark Corridor".to_string(),
+                description: "A narrow corridor reeking of danger.".to_string(),
+                location_type: state::LocationType::Room,
+                exits: {
+                    let mut m = HashMap::new();
+                    m.insert(Direction::South, current);
+                    m
+                },
+                npcs: vec![hostile_npc_id, friendly_npc_id],
+                items: vec![],
+                triggers: vec![],
+                light_level: state::LightLevel::Bright,
+                room_features: vec![],
+            },
+        );
+
+        let output = process_input(&serde_json::to_string(&state).unwrap(), "go north");
+        let all_text = output.text.join("\n");
+
+        // The aggro line for the hostile NPC must appear
+        assert!(
+            all_text.contains("Snarling Bandit") && all_text.contains("eyes narrow"),
+            "Hostile NPC should produce an aggro indicator line. Got:\n{}",
+            all_text
+        );
+
+        // The aggro line must appear BEFORE "=== COMBAT BEGINS ==="
+        let aggro_pos = all_text
+            .find("eyes narrow")
+            .expect("aggro line not found");
+        let combat_pos = all_text
+            .find("=== COMBAT BEGINS ===")
+            .expect("combat header not found");
+        assert!(
+            aggro_pos < combat_pos,
+            "Aggro line must appear before '=== COMBAT BEGINS ==='. aggro_pos={}, combat_pos={}",
+            aggro_pos,
+            combat_pos
+        );
+
+        // The friendly NPC must NOT produce an aggro line
+        assert!(
+            !all_text.contains("Helpful Innkeeper's eyes narrow"),
+            "Friendly NPC must NOT produce an aggro indicator. Got:\n{}",
+            all_text
         );
     }
 }
