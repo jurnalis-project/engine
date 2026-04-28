@@ -11536,7 +11536,7 @@ impl state::Npc {
                         location.name, feature, light, place_kind, topic
                     ),
                     state::NpcRole::Hermit => format!(
-                        "\"{} has a memory of its own. In the {} of {}, even {} lingers.\"",
+                        "\"{} has a memory of its own. In {} of {}, even {} lingers.\"",
                         location.name, feature, location.name, topic
                     ),
                     state::NpcRole::Adventurer => format!(
@@ -14954,6 +14954,57 @@ mod tests {
         assert!(joined.contains("ancient library"), "Got: {:?}", lines);
         assert!(joined.contains("bookshelf"), "Got: {:?}", lines);
         assert!(joined.contains("danger"), "Got: {:?}", lines);
+    }
+
+    // Hypothesis: The Hermit template "In the {} of {}" doubles the article because
+    // `feature` is already built as "the <name>". Regression test for #348.
+    #[test]
+    fn test_generate_dialogue_no_doubled_article() {
+        for role in &[
+            state::NpcRole::Merchant,
+            state::NpcRole::Guard,
+            state::NpcRole::Hermit,
+            state::NpcRole::Adventurer,
+        ] {
+            let npc = state::Npc {
+                id: 42,
+                name: "Test NPC".to_string(),
+                role: *role,
+                disposition: state::Disposition::Neutral,
+                dialogue_tags: vec!["secrets".to_string()],
+                location: 0,
+                combat_stats: None,
+                conditions: vec![],
+                inventory: vec![],
+            };
+            let location = state::Location {
+                id: 0,
+                name: "Hidden Alcove".to_string(),
+                description: "A narrow alcove.".to_string(),
+                location_type: state::LocationType::Room,
+                exits: HashMap::new(),
+                npcs: vec![npc.id],
+                items: vec![],
+                triggers: vec![],
+                light_level: state::LightLevel::Dim,
+                room_features: vec![state::RoomFeature {
+                    name: "mural".to_string(),
+                    description: "A faded mural.".to_string(),
+                    ..Default::default()
+                }],
+            };
+
+            let mut rng = StdRng::seed_from_u64(99);
+            let lines = npc.generate_dialogue(Some(&location), None, &mut rng);
+            let joined = lines.join(" ").to_lowercase();
+
+            assert!(
+                !joined.contains("the the"),
+                "Doubled article in {:?} dialogue: {:?}",
+                role,
+                lines
+            );
+        }
     }
 
     #[test]
