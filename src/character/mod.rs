@@ -189,7 +189,15 @@ pub fn validate_point_buy(scores: &[i32; 6]) -> Result<(), String> {
             None => return Err(format!("Score {} is out of range (8-15)", score)),
         }
     }
-    if total != 27 { return Err(format!("Total cost is {} (must be 27)", total)); }
+    if total != 27 {
+        let delta = (27 - total).unsigned_abs();
+        let msg = if total < 27 {
+            format!("spent {}/27 points — {} remaining", total, delta)
+        } else {
+            format!("spent {}/27 points — {} over budget", total, delta)
+        };
+        return Err(msg);
+    }
     Ok(())
 }
 
@@ -538,6 +546,22 @@ mod tests {
 
     #[test]
     fn test_point_buy_wrong_total() { assert!(validate_point_buy(&[15, 15, 14, 8, 8, 8]).is_err()); }
+
+    #[test]
+    fn test_point_buy_underspend_message() {
+        // [8,8,8,8,8,8] costs 0 points — 27 remaining
+        let err = validate_point_buy(&[8, 8, 8, 8, 8, 8]).unwrap_err();
+        assert!(err.contains("spent 0/27 points"), "unexpected message: {}", err);
+        assert!(err.contains("27 remaining"), "unexpected message: {}", err);
+    }
+
+    #[test]
+    fn test_point_buy_overspend_message() {
+        // [15,15,15,15,15,15] costs 54 points — 27 over budget
+        let err = validate_point_buy(&[15, 15, 15, 15, 15, 15]).unwrap_err();
+        assert!(err.contains("spent 54/27 points"), "unexpected message: {}", err);
+        assert!(err.contains("27 over budget"), "unexpected message: {}", err);
+    }
 
     #[test]
     fn test_point_buy_out_of_range() {

@@ -1044,10 +1044,13 @@ fn handle_creation(state: &mut GameState, input: &str, step: CreationStep) -> Ve
             }
 
             if total_cost != 27 {
-                return vec![format!(
-                    "Total cost is {} points (must be exactly 27). Adjust your scores.",
-                    total_cost
-                )];
+                let delta = (27 - total_cost).unsigned_abs();
+                let budget_msg = if total_cost < 27 {
+                    format!("spent {}/27 points — {} remaining", total_cost, delta)
+                } else {
+                    format!("spent {}/27 points — {} over budget", total_cost, delta)
+                };
+                return vec![format!("{}. Adjust your scores.", budget_msg)];
             }
 
             let abilities = Ability::all();
